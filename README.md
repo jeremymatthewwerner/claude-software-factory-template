@@ -347,4 +347,3 @@ MIT License - feel free to use this template for your projects.
 ---
 
 **Built with [Claude Code](https://github.com/anthropics/claude-code) and the [Claude Code Action](https://github.com/anthropics/claude-code-action)**
-
