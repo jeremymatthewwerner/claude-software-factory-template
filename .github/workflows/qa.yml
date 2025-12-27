@@ -1,0 +1,227 @@
+name: QA Agent
+on:
+  schedule:
+    # Run nightly at 2am UTC for comprehensive analysis
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+    inputs:
+      focus:
+        description: 'Focus area for this run'
+        type: choice
+        options:
+          - auto-detect
+          - coverage-sprint
+          - flaky-hunt
+          - integration-gaps
+          - e2e-enhancement
+          - edge-cases
+          - test-refactoring
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  id-token: write
+
+jobs:
+  qa:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Set up Python
+        run: uv python install 3.11
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+        continue-on-error: true
+
+      # TODO: Customize for your project structure
+      - name: Install backend dependencies
+        working-directory: backend
+        run: uv sync --group dev
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci || true
+
+      - name: Install Playwright browsers
+        working-directory: frontend
+        run: npx playwright install --with-deps chromium
+        continue-on-error: true
+
+      - name: Get day of week for focus rotation
+        id: day
+        run: |
+          DAY=$(date +%u)
+          case $DAY in
+            1) FOCUS="coverage-sprint" ;;
+            2) FOCUS="flaky-hunt" ;;
+            3) FOCUS="integration-gaps" ;;
+            4) FOCUS="e2e-enhancement" ;;
+            5) FOCUS="test-refactoring" ;;
+            6) FOCUS="edge-cases" ;;
+            7) FOCUS="regression-prevention" ;;
+          esac
+          echo "focus=$FOCUS" >> $GITHUB_OUTPUT
+          echo "day_name=$(date +%A)" >> $GITHUB_OUTPUT
+          echo "Today's focus: $FOCUS"
+
+      - name: Get current coverage
+        id: coverage
+        working-directory: backend
+        run: |
+          # Run coverage and extract percentage
+          COVERAGE=$(uv run pytest --cov=app --cov-report=term 2>/dev/null | grep "TOTAL" | awk '{print $4}' || echo "unknown")
+          echo "current=$COVERAGE" >> $GITHUB_OUTPUT
+          echo "Current backend coverage: $COVERAGE"
+
+      - name: Create tracking issue
+        id: create-issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          FOCUS="${{ github.event.inputs.focus || steps.day.outputs.focus }}"
+          DAY="${{ steps.day.outputs.day_name }}"
+          COVERAGE="${{ steps.coverage.outputs.current }}"
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+          ISSUE_URL=$(gh issue create \
+            --title "🤖 QA Agent: $FOCUS ($DAY)" \
+            --label "qa-agent,automation" \
+            --body "## QA Agent Work Session
+
+          **Focus:** $FOCUS
+          **Day:** $DAY
+          **Current Coverage:** $COVERAGE
+          **Workflow Run:** [View logs]($RUN_URL)
+
+          ---
+
+          ## Progress Checklist
+
+          - [ ] 📊 Analyze coverage gaps
+          - [ ] 📝 Create detailed test plan
+          - [ ] 🧪 Implement tests (updating below as each completes)
+          - [ ] ✅ Verify all tests pass 3x
+          - [ ] 📄 Update TEST_PLAN.md
+          - [ ] 🚀 Create PR
+
+          ---
+
+          ## Coverage Gaps Identified
+          _Analyzing..._
+
+          ## Test Plan
+          | File | Current | Target | Tests to Add |
+          |------|---------|--------|--------------|
+          | _Analyzing..._ | | | |
+
+          ## Tests Added
+          - [ ] _None yet_
+
+          ## Final Results
+          - **Coverage Before:** $COVERAGE
+          - **Coverage After:** _Pending_
+          - **PR:** _Pending_
+
+          ---
+          *This issue is automatically managed by the QA Agent*")
+
+          # Extract issue number from URL
+          ISSUE_NUMBER=$(echo "$ISSUE_URL" | grep -oE '[0-9]+$')
+          echo "issue_number=$ISSUE_NUMBER" >> $GITHUB_OUTPUT
+          echo "issue_url=$ISSUE_URL" >> $GITHUB_OUTPUT
+          echo "Created tracking issue #$ISSUE_NUMBER"
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          prompt: |
+            Read CLAUDE.md and .claude/agents/qa-improver.md first.
+
+            ## Your Mission: Improve Test Quality
+
+            **CRITICAL: Update progress by EDITING issue #${{ steps.create-issue.outputs.issue_number }} body to check boxes!**
+
+            Focus for this run: ${{ github.event.inputs.focus || steps.day.outputs.focus }}
+            Current coverage: ${{ steps.coverage.outputs.current }}
+            Coverage goal: 85%
+
+            ## How to Update Progress (EDIT THE ISSUE BODY!)
+
+            After completing EACH step, edit the issue body to check boxes and add details:
+            ```bash
+            gh api repos/${{ github.repository }}/issues/${{ steps.create-issue.outputs.issue_number }} \
+              -X PATCH -f body="[FULL UPDATED ISSUE BODY WITH CHECKED BOXES]"
+            ```
+
+            The issue body has this structure - update it as you progress:
+            - Check boxes: change `- [ ]` to `- [x]`
+            - Fill in sections: replace `_Analyzing..._` with actual content
+            - Update "Tests Added" list as you implement each test
+
+            ### Step 1: Analysis
+            1. Run coverage reports:
+               - Backend: `cd backend && uv run pytest --cov=app --cov-report=term-missing`
+               - Frontend: `cd frontend && npm run test:coverage`
+            2. **EDIT ISSUE**: Check "📊 Analyze coverage gaps" box and fill in "Coverage Gaps Identified"
+
+            ### Step 2: Create Detailed Plan
+            Based on focus "${{ github.event.inputs.focus || steps.day.outputs.focus }}":
+            - **coverage-sprint**: Pick lowest coverage file, plan tests to increase by 15%+
+            - **flaky-hunt**: Run test suite 5x, identify failures
+            - **integration-gaps**: Find untested API endpoints
+            - **e2e-enhancement**: Plan edge case E2E tests
+            - **edge-cases**: Plan tests for error paths
+            - **regression-prevention**: Review recent commits
+
+            **EDIT ISSUE**: Check "📝 Create detailed test plan" box and fill in "Test Plan" table
+
+            ### Step 3: Implement Tests
+            For each test:
+            1. Write the test
+            2. Run it 3x to verify no flakiness
+            3. **EDIT ISSUE**: Add completed test to "Tests Added" list with [x]
+
+            When all tests done, check "🧪 Implement tests" box
+
+            ### Step 4: Verify & Update TEST_PLAN.md
+            1. Run full test suite to verify everything passes
+            2. **EDIT ISSUE**: Check "✅ Verify all tests pass 3x" box
+            3. Update TEST_PLAN.md with new test descriptions
+            4. **EDIT ISSUE**: Check "📄 Update TEST_PLAN.md" box
+
+            ### Step 5: Create PR and Final Update
+            1. Create PR: `gh pr create --title "test: [description]" --body "Relates to #${{ steps.create-issue.outputs.issue_number }}"`
+            2. **EDIT ISSUE**: Check "🚀 Create PR" box, update "Final Results" with coverage and PR link
+            3. Close the issue: `gh issue close ${{ steps.create-issue.outputs.issue_number }}`
+
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_args: |
+            --dangerously-skip-permissions
+            --allowedTools "Bash(uv:*),Bash(npm:*),Bash(npx:*),Bash(cd:*),Bash(git:*),Bash(gh:*),Read,Write,Edit,Glob,Grep"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Ensure issue is updated on failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue comment ${{ steps.create-issue.outputs.issue_number }} --body "## ❌ QA Agent Run Failed
+
+          The workflow encountered an error. Please check the [workflow logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}).
+
+          This issue remains open for manual follow-up or retry."
+
+          gh issue edit ${{ steps.create-issue.outputs.issue_number }} --add-label "needs-human"

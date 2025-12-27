@@ -1,0 +1,610 @@
+name: Code Agent
+on:
+  issues:
+    types: [labeled]
+  issue_comment:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: 'Issue number to fix'
+        required: true
+        type: number
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+  id-token: write
+  actions: read
+  checks: read
+
+# Prevent concurrent runs on the same issue
+concurrency:
+  group: code-agent-issue-${{ github.event.issue.number || github.event.inputs.issue_number }}
+  cancel-in-progress: false
+
+jobs:
+  fix:
+    # Triggers on:
+    # 1. ai-ready label + (bug OR enhancement)
+    # 2. Comment containing @claude on an issue with ai-ready label
+    # 3. Manual workflow dispatch
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'issues' &&
+       github.event.label.name == 'ai-ready' &&
+       (contains(github.event.issue.labels.*.name, 'bug') ||
+        contains(github.event.issue.labels.*.name, 'enhancement'))) ||
+      (github.event_name == 'issue_comment' &&
+       contains(github.event.comment.body, '@claude') &&
+       contains(github.event.issue.labels.*.name, 'ai-ready') &&
+       !github.event.issue.pull_request)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.PAT_WITH_WORKFLOW_ACCESS }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+        continue-on-error: true
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Set up Python
+        run: uv python install 3.11
+
+      # TODO: Customize these for your project structure
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci || true
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: uv sync || true
+
+      - name: Get issue number and context
+        id: context
+        run: |
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            echo "number=${{ github.event.inputs.issue_number }}" >> $GITHUB_OUTPUT
+            echo "mode=fix" >> $GITHUB_OUTPUT
+          elif [ "${{ github.event_name }}" == "issue_comment" ]; then
+            echo "number=${{ github.event.issue.number }}" >> $GITHUB_OUTPUT
+            echo "mode=respond" >> $GITHUB_OUTPUT
+            echo "comment_author=${{ github.event.comment.user.login }}" >> $GITHUB_OUTPUT
+          else
+            echo "number=${{ github.event.issue.number }}" >> $GITHUB_OUTPUT
+            echo "mode=fix" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Update status labels
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Remove other status labels and add bot-working
+          gh issue edit ${{ steps.context.outputs.number }} \
+            --remove-label "status:awaiting-human" \
+            --remove-label "status:awaiting-bot" 2>/dev/null || true
+          gh issue edit ${{ steps.context.outputs.number }} \
+            --add-label "status:bot-working"
+
+      - name: Acknowledge comment (respond mode)
+        if: steps.context.outputs.mode == 'respond'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue comment ${{ steps.context.outputs.number }} --body "## 🤖 Responding to @${{ steps.context.outputs.comment_author }}
+
+          **Status:** Processing your comment...
+          **Workflow Run:** [View logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+
+      - name: Create progress comment
+        if: steps.context.outputs.mode == 'fix'
+        id: progress
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Create initial progress comment with checkboxes using gh api (returns comment ID)
+          COMMENT_BODY="## 🤖 Progress Tracker
+
+          - [ ] 📖 Reading issue and understanding requirements
+          - [ ] 🔍 Analyzing codebase and finding affected files
+          - [ ] 🛠️ Implementing fix
+          - [ ] ✅ Running tests and quality checks
+          - [ ] 📝 Creating PR
+          - [ ] 🚀 Waiting for CI
+
+          **Status:** Starting analysis...
+          **Workflow:** [View logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+
+          COMMENT_ID=$(gh api repos/${{ github.repository }}/issues/${{ steps.context.outputs.number }}/comments \
+            -X POST -f body="$COMMENT_BODY" --jq '.id')
+
+          echo "comment_id=$COMMENT_ID" >> $GITHUB_OUTPUT
+          echo "Created progress comment #$COMMENT_ID"
+
+      - name: Run Claude (fix mode)
+        if: steps.context.outputs.mode == 'fix'
+        uses: anthropics/claude-code-action@v1
+        with:
+          prompt: |
+            Read CLAUDE.md and .claude/agents/bug-fixer.md first.
+
+            **CRITICAL: Update progress by EDITING comment #${{ steps.progress.outputs.comment_id }} with checkboxes!**
+
+            ## Decision-Making: BE AUTONOMOUS!
+
+            **Make technical decisions yourself. Don't ask "Should I do A or B?" - DECIDE.**
+
+            Decide autonomously:
+            - Implementation approach (pick the cleanest)
+            - Test strategy (decide what tests are needed)
+            - Timeout values (use reasonable defaults: 30s)
+            - Code style (follow existing patterns)
+
+            Only escalate to human for:
+            - Security decisions (credentials, auth)
+            - Breaking changes (public API changes)
+            - Business logic (product decisions)
+
+            If stuck on a DECISION for 10 minutes, MAKE A CHOICE and document your reasoning.
+
+            ## 📋 LOG ANALYSIS PROTOCOL (MANDATORY!)
+
+            **BEFORE implementing ANY fix, you MUST analyze logs.** Don't guess - READ THE ACTUAL ERRORS!
+
+            ### Step 1: Check Issue Comments for Previous Failures
+            ```bash
+            gh issue view ${{ steps.context.outputs.number }} --comments
+            ```
+            Look for "❌ CI Failed" comments - they contain ACTUAL failure logs. If you see one, that tells you EXACTLY what to fix.
+
+            ### Step 2: Get Workflow Logs
+            ```bash
+            # Find recent CI runs for this issue's branches
+            gh run list --workflow=ci.yml --limit 10 --json databaseId,headBranch,conclusion,status
+
+            # Get detailed failure logs from a specific run
+            gh run view <RUN_ID> --log-failed
+            ```
+
+            ### Step 3: Download E2E Artifacts (if E2E tests failed)
+            ```bash
+            # Download backend logs and Playwright reports
+            gh run download <RUN_ID> --name e2e-debug-logs --dir /tmp/e2e-logs 2>/dev/null
+
+            # Read backend logs - shows API errors, exceptions, slow responses
+            cat /tmp/e2e-logs/backend.log 2>/dev/null | tail -200
+            ```
+
+            ### Step 4: Document What You Found
+            In your progress comment, EXPLAIN what the logs showed before implementing a fix.
+            Example: "Backend logs show 500 error on /api/endpoint - the query is missing a WHERE clause"
+
+            **If you skip log analysis and just guess at fixes, you will fail repeatedly!**
+
+            ## IMPORTANT: Check for Previous Attempts First!
+
+            Before starting fresh, check if there's already work done on this issue:
+
+            1. **Check for existing PRs:**
+               ```bash
+               gh pr list --search "head:fix/${{ steps.context.outputs.number }}" --state all --json number,title,state,headRefName
+               gh pr list --search "head:feat/${{ steps.context.outputs.number }}" --state all --json number,title,state,headRefName
+               ```
+
+            2. **Read ALL issue comments for context:**
+               ```bash
+               gh issue view ${{ steps.context.outputs.number }} --comments
+               ```
+               Look for:
+               - "❌ CI Failed" comments with failure logs (these tell you EXACTLY what went wrong)
+               - Previous analysis or proposed fixes
+               - Human feedback or suggestions
+
+            3. **If a PR already exists:**
+               - Check out that branch: `git fetch origin && git checkout <branch-name>`
+               - Look at what was already implemented
+               - Focus on fixing the SPECIFIC failure, don't start over
+
+            ## Progress Comment Format
+            After completing EACH step, update the progress comment by editing it:
+            ```bash
+            gh api repos/${{ github.repository }}/issues/comments/${{ steps.progress.outputs.comment_id }} \
+              -X PATCH -f body="## 🤖 Progress Tracker
+
+            - [x] 📖 Reading issue and understanding requirements
+            - [x] 🔍 Analyzing codebase and finding affected files
+            - [ ] 🛠️ Implementing fix
+            - [ ] ✅ Running tests and quality checks
+            - [ ] 📝 Creating PR
+            - [ ] 🚀 Waiting for CI
+
+            **Status:** [current status message]
+            **Workflow:** [View logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+
+            ---
+            ### Analysis
+            **Root Cause:** [what's wrong]
+            **Files Affected:** [list]
+            **Proposed Fix:** [plan]"
+            ```
+
+            ## Step 1: Analyze (Check Previous Work First!)
+            1. Read the issue AND all comments: gh issue view ${{ steps.context.outputs.number }} --comments
+            2. Check first box [x] and update status to "Reading issue..."
+            3. **If there's a "❌ CI Failed" comment with logs, focus on fixing THAT specific error**
+            4. Check for existing PR/branch and reuse it if possible
+            5. Diagnose the root cause - search codebase, read relevant files
+            6. Check second box [x] and add Analysis section to progress comment
+
+            ## Step 2: Implement Fix
+            1. Check third box [x] and update status to "Implementing fix..."
+            2. If existing branch: `git checkout <branch>` and fix the issue
+               If new: Create a fix branch: git checkout -b fix/${{ steps.context.outputs.number }}-description
+            3. Implement the fix with tests
+            4. Check fourth box [x] and update status to "Running tests..."
+            5. Run quality gates (customize for your project):
+               - cd frontend && npm run lint && npm run typecheck && npm test
+               - cd backend && uv run ruff check . && uv run mypy . && uv run pytest
+
+            ## Step 3: Create/Update PR
+            1. Check fifth box [x] and update status to "Creating PR..."
+            2. **ALWAYS work on a branch, NEVER push directly to main!**
+               - Pushing to main with "Fixes #N" auto-closes issues even if PR hasn't merged
+               - Create branch: git checkout -b fix/${{ steps.context.outputs.number }}-description
+            3. Commit with message: "fix: description\n\nRelates to #${{ steps.context.outputs.number }}"
+               - Use "Relates to #N" in commits (NOT "Fixes #N" - that auto-closes issues!)
+            4. Push to branch and create PR:
+               gh pr create --title "fix: ..." --body "Fixes #${{ steps.context.outputs.number }}"
+               - Put "Fixes #N" only in PR description (closes issue when PR merges)
+            5. Check sixth box [x] and add PR link to progress comment
+            6. Final status: "✅ PR created! Waiting for CI..."
+
+            ## Status Label Management
+            - If you need human input: gh issue edit ${{ steps.context.outputs.number }} --remove-label "status:bot-working" --add-label "status:awaiting-human"
+            - When done (PR created): remove status:bot-working label
+
+            If stuck for 30min or CI fails 3x, escalate to maintainer.
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          timeout_minutes: 45
+          claude_args: |
+            --model claude-opus-4-5-20250514
+            --dangerously-skip-permissions
+            --allowedTools "Bash(gh:*),Bash(git:*),Bash(npm:*),Bash(cd:*),Bash(uv:*),Read,Write,Edit,Glob,Grep"
+        env:
+          GH_TOKEN: ${{ secrets.PAT_WITH_WORKFLOW_ACCESS }}
+          GITHUB_TOKEN: ${{ secrets.PAT_WITH_WORKFLOW_ACCESS }}
+
+      - name: Run Claude (respond mode)
+        if: steps.context.outputs.mode == 'respond'
+        uses: anthropics/claude-code-action@v1
+        with:
+          prompt: |
+            Read CLAUDE.md first.
+
+            A user (@${{ steps.context.outputs.comment_author }}) has commented on issue #${{ steps.context.outputs.number }} with a question or suggestion for you.
+
+            ## Your Task
+            1. Read the full issue and all comments: gh issue view ${{ steps.context.outputs.number }} --comments
+            2. Focus on the latest comment from @${{ steps.context.outputs.comment_author }}
+            3. Think carefully about their question/suggestion
+            4. If it's a clarifying question: Answer it thoughtfully
+            5. If it's a suggestion about the fix: Consider it and explain if/how you'll incorporate it
+            6. If they're asking you to take action: Do it if reasonable
+
+            ## After Thinking
+            Post a response to the issue:
+            ```bash
+            gh issue comment ${{ steps.context.outputs.number }} --body "## Response
+
+            [Your thoughtful response here, addressing their specific points]
+
+            [If you took any action, describe what you did]
+            [If you need more info, ask a specific question and add status:awaiting-human label]"
+            ```
+
+            ## Status Label Management
+            - If you need more info from the human: gh issue edit ${{ steps.context.outputs.number }} --remove-label "status:bot-working" --add-label "status:awaiting-human"
+            - If you've fully addressed their comment and no more action needed: remove status:bot-working
+            - If there's still work to do on the issue, keep status:bot-working
+
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          timeout_minutes: 30
+          claude_args: |
+            --dangerously-skip-permissions
+            --allowedTools "Bash(gh:*),Bash(git:*),Bash(npm:*),Bash(cd:*),Bash(uv:*),Read,Write,Edit,Glob,Grep"
+        env:
+          GH_TOKEN: ${{ secrets.PAT_WITH_WORKFLOW_ACCESS }}
+          GITHUB_TOKEN: ${{ secrets.PAT_WITH_WORKFLOW_ACCESS }}
+
+      - name: Monitor CI and report results
+        if: steps.context.outputs.mode == 'fix' && success()
+        id: ci-monitor
+        env:
+          GH_TOKEN: ${{ secrets.PAT_WITH_WORKFLOW_ACCESS }}
+          ISSUE_NUMBER: ${{ steps.context.outputs.number }}
+          PROGRESS_COMMENT_ID: ${{ steps.progress.outputs.comment_id }}
+        run: |
+          # Find PR by branch pattern fix/{issue_number}-* OR feat/{issue_number}-* (supports both bugs and enhancements)
+          PR_NUMBER=$(gh pr list --state open --json number,headRefName \
+            --jq ".[] | select(.headRefName | test(\"^(fix|feat)/${ISSUE_NUMBER}-\")) | .number" 2>/dev/null | head -1 || echo "")
+
+          if [ -z "$PR_NUMBER" ]; then
+            echo "No open PR found for issue #${ISSUE_NUMBER}, skipping CI monitoring"
+            exit 0
+          fi
+
+          echo "pr_number=$PR_NUMBER" >> $GITHUB_OUTPUT
+          echo "Monitoring CI for PR #$PR_NUMBER"
+
+          # Update progress comment with CI monitoring status
+          if [ -n "$PROGRESS_COMMENT_ID" ]; then
+            gh api repos/${{ github.repository }}/issues/comments/$PROGRESS_COMMENT_ID \
+              -X PATCH -f body="## 🤖 Progress Tracker
+
+          - [x] 📖 Reading issue and understanding requirements
+          - [x] 🔍 Analyzing codebase and finding affected files
+          - [x] 🛠️ Implementing fix
+          - [x] ✅ Running tests and quality checks
+          - [x] 📝 Creating PR
+          - [ ] 🚀 Waiting for CI
+
+          **Status:** ⏳ Monitoring CI for PR #${PR_NUMBER}...
+          **Workflow:** [View logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})" 2>/dev/null || true
+          fi
+
+          # Wait for CI to start
+          sleep 30
+
+          # Poll for up to 15 minutes (30 iterations * 30 seconds)
+          for i in $(seq 1 30); do
+            echo "Check $i/30..."
+
+            # Get check status
+            IN_PROGRESS=$(gh pr checks $PR_NUMBER --json state --jq '[.[] | select(.state=="PENDING" or .state=="IN_PROGRESS")] | length' 2>/dev/null || echo "0")
+
+            if [ "$IN_PROGRESS" = "0" ]; then
+              # All checks complete, get results
+              FAILED=$(gh pr checks $PR_NUMBER --json state --jq '[.[] | select(.state=="FAILURE")] | length' 2>/dev/null || echo "0")
+              FAILED_CHECKS=$(gh pr checks $PR_NUMBER --json name,state --jq '[.[] | select(.state=="FAILURE") | .name] | join(", ")' 2>/dev/null || echo "unknown")
+
+              if [ "$FAILED" -gt 0 ]; then
+                echo "ci_failed=true" >> $GITHUB_OUTPUT
+                echo "failed_checks=$FAILED_CHECKS" >> $GITHUB_OUTPUT
+
+                # CRITICAL: Capture actual failure logs so retry has context
+                echo "Fetching failure logs for PR #$PR_NUMBER..."
+
+                # Get the CI run ID for this PR
+                CI_RUN_ID=$(gh run list --branch "$(gh pr view $PR_NUMBER --json headRefName -q .headRefName)" \
+                  --workflow=ci.yml --limit 1 --json databaseId -q '.[0].databaseId' 2>/dev/null || echo "")
+
+                FAILURE_LOGS=""
+                if [ -n "$CI_RUN_ID" ]; then
+                  # Capture failed job logs (truncated to last 150 lines per job)
+                  FAILURE_LOGS=$(gh run view "$CI_RUN_ID" --log-failed 2>/dev/null | tail -150 || echo "Could not fetch logs")
+                fi
+
+                echo "failure_logs<<LOGS_EOF" >> $GITHUB_OUTPUT
+                echo "$FAILURE_LOGS" >> $GITHUB_OUTPUT
+                echo "LOGS_EOF" >> $GITHUB_OUTPUT
+
+                # Update progress comment with failure
+                if [ -n "$PROGRESS_COMMENT_ID" ]; then
+                  gh api repos/${{ github.repository }}/issues/comments/$PROGRESS_COMMENT_ID \
+                    -X PATCH -f body="## 🤖 Progress Tracker
+
+          - [x] 📖 Reading issue and understanding requirements
+          - [x] 🔍 Analyzing codebase and finding affected files
+          - [x] 🛠️ Implementing fix
+          - [x] ✅ Running tests and quality checks
+          - [x] 📝 Creating PR
+          - [ ] 🚀 CI Failed - retrying...
+
+          **Status:** ❌ CI failed: ${FAILED_CHECKS}
+          **Workflow:** [View logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})" 2>/dev/null || true
+                fi
+
+                # Post failure comment WITH actual logs so retry can see them
+                gh issue comment ${{ steps.context.outputs.number }} --body "## ❌ CI Failed
+
+          PR #${PR_NUMBER} has failing checks: **${FAILED_CHECKS}**
+
+          <details>
+          <summary>📋 Failure Logs (click to expand)</summary>
+
+          \`\`\`
+          ${FAILURE_LOGS:0:8000}
+          \`\`\`
+
+          </details>
+
+          [View full logs](https://github.com/${{ github.repository }}/pull/${PR_NUMBER}/checks)
+
+          🔄 **Auto-retry:** Triggering Code Agent to investigate and fix..."
+              else
+                # CI passed - auto-merge the PR with retry logic
+                echo "CI passed, auto-merging PR #${PR_NUMBER}..."
+
+                MERGE_SUCCESS=false
+                for attempt in 1 2 3; do
+                  if gh pr merge $PR_NUMBER --squash --delete-branch 2>/dev/null; then
+                    MERGE_SUCCESS=true
+                    break
+                  fi
+                  if [ $attempt -lt 3 ]; then
+                    DELAY=$((2 ** attempt))
+                    echo "Merge attempt $attempt failed, retrying in ${DELAY}s..."
+                    sleep $DELAY
+                  fi
+                done
+
+                if [ "$MERGE_SUCCESS" = "true" ]; then
+                  # Update progress comment with success
+                  if [ -n "$PROGRESS_COMMENT_ID" ]; then
+                    gh api repos/${{ github.repository }}/issues/comments/$PROGRESS_COMMENT_ID \
+                      -X PATCH -f body="## 🤖 Progress Tracker
+
+          - [x] 📖 Reading issue and understanding requirements
+          - [x] 🔍 Analyzing codebase and finding affected files
+          - [x] 🛠️ Implementing fix
+          - [x] ✅ Running tests and quality checks
+          - [x] 📝 Creating PR
+          - [x] 🚀 CI Passed & Merged!
+
+          **Status:** ✅ Complete! Deploying to production...
+          **Workflow:** [View logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})" 2>/dev/null || true
+                  fi
+
+                  gh issue comment ${{ steps.context.outputs.number }} --body "## ✅ CI Passed & Merged
+
+          All checks passed! PR #${PR_NUMBER} has been automatically merged.
+
+          🚀 **Deploying to production...** The changes will be live shortly."
+                else
+                  gh issue comment ${{ steps.context.outputs.number }} --body "## ✅ CI Passed
+
+          All checks passed! [PR #${PR_NUMBER}](https://github.com/${{ github.repository }}/pull/${PR_NUMBER}) is ready for review.
+
+          ⚠️ Auto-merge failed after 3 attempts (may need admin approval or branch protection allows only admins to merge)."
+                fi
+              fi
+              exit 0
+            fi
+
+            sleep 30
+          done
+
+          # Timeout - still running after 15 min
+          gh issue comment ${{ steps.context.outputs.number }} --body "## ⏳ CI Still Running
+
+          CI checks for PR #${PR_NUMBER} are still running after 15 minutes. [Check status](https://github.com/${{ github.repository }}/pull/${PR_NUMBER})"
+
+      - name: Trigger CI fix retry (with limit)
+        if: steps.ci-monitor.outputs.ci_failed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.PAT_WITH_WORKFLOW_ACCESS }}
+          ISSUE_NUMBER: ${{ steps.context.outputs.number }}
+        run: |
+          # Count CI failure comments to prevent infinite retry loop
+          # Per CLAUDE.md: "Escalate when CI fails 3x on same issue"
+          FAILURE_COUNT=$(gh issue view "$ISSUE_NUMBER" --comments --json comments \
+            --jq '[.comments[] | select(.body | contains("❌ CI Failed"))] | length' 2>/dev/null || echo "0")
+
+          echo "CI failure count for issue #$ISSUE_NUMBER: $FAILURE_COUNT"
+
+          if [ "$FAILURE_COUNT" -ge 3 ]; then
+            echo "CI has failed 3+ times - escalating to human instead of retrying"
+            gh issue comment "$ISSUE_NUMBER" --body "## 🚨 CI Retry Limit Reached
+
+          CI has failed **$FAILURE_COUNT times** on this issue. Stopping automatic retries to prevent an infinite loop.
+
+          **Failed checks:** ${{ steps.ci-monitor.outputs.failed_checks }}
+
+          **Next steps:**
+          1. Review the [CI logs](${{ github.server_url }}/${{ github.repository }}/pull/${{ steps.ci-monitor.outputs.pr_number }})
+          2. The issue may require manual investigation or a different approach
+          3. After fixing, comment \`@claude please retry\` to trigger another attempt
+
+          Escalating to maintainer for review."
+
+            gh issue edit "$ISSUE_NUMBER" \
+              --remove-label "status:bot-working" \
+              --add-label "needs-principal-engineer" \
+              --add-label "status:awaiting-human"
+          else
+            echo "Retrying (attempt $((FAILURE_COUNT + 1)) of 3)..."
+            gh workflow run bug-fix.yml \
+              -f issue_number="$ISSUE_NUMBER" \
+              --ref ${{ github.ref_name }} 2>/dev/null || \
+            echo "Could not trigger retry workflow - may need manual intervention"
+          fi
+
+      - name: Update status on success
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Remove bot-working status when done (Claude should have set appropriate status)
+          gh issue edit ${{ steps.context.outputs.number }} \
+            --remove-label "status:bot-working" 2>/dev/null || true
+
+      - name: Handle timeout gracefully
+        if: cancelled()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PROGRESS_COMMENT_ID: ${{ steps.progress.outputs.comment_id }}
+        run: |
+          # Update progress comment to show timeout
+          if [ -n "$PROGRESS_COMMENT_ID" ]; then
+            gh api repos/${{ github.repository }}/issues/comments/$PROGRESS_COMMENT_ID \
+              -X PATCH -f body="## 🤖 Progress Tracker
+
+          - [x] 📖 Reading issue and understanding requirements
+          - [?] 🔍 Analyzing codebase... (timed out)
+          - [ ] 🛠️ Implementing fix
+          - [ ] ✅ Running tests and quality checks
+          - [ ] 📝 Creating PR
+          - [ ] 🚀 Waiting for CI
+
+          **Status:** ⏰ Agent timed out after 45 minutes
+          **Workflow:** [View logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})" 2>/dev/null || true
+          fi
+
+          gh issue comment ${{ steps.context.outputs.number }} --body "## ⏰ Code Agent Timed Out
+
+          The agent ran for 45 minutes without completing. This usually means:
+          - The issue is complex and needs to be broken into smaller tasks
+          - There's a dependency or environment issue blocking progress
+
+          **Next steps:**
+          1. Check the [workflow logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) to see what was happening
+          2. Consider breaking this issue into smaller sub-issues
+          3. Re-trigger by adding a comment with \`@claude please continue\`
+
+          Assigning to maintainer for review."
+
+          gh issue edit ${{ steps.context.outputs.number }} \
+            --remove-label "status:bot-working" \
+            --add-label "needs-human" \
+            --add-label "status:awaiting-human"
+
+      - name: Update issue on failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PROGRESS_COMMENT_ID: ${{ steps.progress.outputs.comment_id }}
+        run: |
+          # Update progress comment to show failure
+          if [ -n "$PROGRESS_COMMENT_ID" ]; then
+            gh api repos/${{ github.repository }}/issues/comments/$PROGRESS_COMMENT_ID \
+              -X PATCH -f body="## 🤖 Progress Tracker
+
+          - [x] 📖 Reading issue and understanding requirements
+          - [?] Work in progress... (workflow failed)
+          - [ ] 🛠️ Implementing fix
+          - [ ] ✅ Running tests and quality checks
+          - [ ] 📝 Creating PR
+          - [ ] 🚀 Waiting for CI
+
+          **Status:** ❌ Workflow failed - see logs
+          **Workflow:** [View logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})" 2>/dev/null || true
+          fi
+
+          gh issue comment ${{ steps.context.outputs.number }} --body "## ❌ Code Agent Failed
+
+          The workflow encountered an error. Please check the [workflow logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}).
+
+          This issue remains open for manual follow-up."
+          gh issue edit ${{ steps.context.outputs.number }} \
+            --remove-label "status:bot-working" \
+            --add-label "needs-human" \
+            --add-label "status:awaiting-human"
