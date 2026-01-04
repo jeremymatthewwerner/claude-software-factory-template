@@ -256,6 +256,47 @@ When agents encounter these situations, apply these defaults:
 - Create issue for proper resolution
 - Don't spend >30min on dependency issues
 
+**Transient CI failures (502, 503, timeouts):**
+- Add retry logic with exponential backoff (3 attempts, 5s → 10s → 20s)
+- Distinguish transient errors (retry) from real errors (fail fast)
+- Add stability waits after deployment before running API tests
+- Don't let infrastructure blips block PRs for hours
+
+## Observability & DevOps Hygiene
+
+**Every production system needs visibility.** Agents should always consider:
+
+### Health Endpoints
+- **Basic** (`/health`): Returns 200 if process is alive
+- **Deep** (`/health/ready`): Verifies DB, cache, external APIs - returns 503 if degraded
+
+### The Four Golden Signals
+1. **Latency** - Request duration (p50, p95, p99)
+2. **Traffic** - Requests per second
+3. **Errors** - Error rate by endpoint
+4. **Saturation** - CPU, memory, connection pools
+
+### When Adding Features
+Before shipping, verify:
+- [ ] Health endpoint updated if new dependencies added
+- [ ] Key operations logged (INFO level)
+- [ ] Errors logged with context
+- [ ] Metrics added for new endpoints
+- [ ] Failure scenarios have alerts
+
+### DevOps Agent Responsibilities
+- Monitor health endpoints every 5 minutes
+- Create issues for anomalies
+- Pull logs and diagnose failures
+- Restart services (max 2 attempts, then escalate)
+- Weekly audit of monitoring effectiveness
+
+### Railway Observability
+Railway provides built-in dashboards for CPU, memory, network. For custom metrics:
+- Use OpenTelemetry collector
+- Export to Grafana/Datadog if needed
+- See: https://docs.railway.app/guides/observability
+
 ## Escalation
 
 Assign to maintainer when:
