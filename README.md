@@ -157,6 +157,39 @@ cd frontend && npm run dev
 
 ---
 
+## Slack Bot Integration (Optional)
+
+Want a Claude Code-like experience in Slack? This template includes a Slack bot that:
+
+- **Conversational AI** - Chat naturally about your codebase
+- **Agent Dispatch** - Send tasks to agents via Slack (`dispatch code fix the login bug`)
+- **Status Updates** - Receive progress notifications in Slack threads
+- **Intervention Help** - Collaborate when workflows need human input
+
+### Quick Setup
+
+```bash
+./scripts/setup-slack.sh
+```
+
+This wizard guides you through creating a Slack app and configuring secrets.
+
+### How It Works
+
+The Slack bot is a "meta-agent" that sits on top of your GitHub-based workflow:
+
+1. You chat with Claude in Slack (like Claude Code, but in Slack)
+2. When you need an agent to take action, dispatch to GitHub: `dispatch code <task>`
+3. The bot creates a GitHub issue with appropriate labels
+4. Agent workflows run on GitHub (as usual)
+5. Status updates post back to your Slack thread
+
+> **Note**: The agents themselves still work via GitHub Actions. The Slack bot is your collaboration layer, not a replacement for the GitHub workflow.
+
+See [`services/slack-bot/README.md`](./services/slack-bot/README.md) for full documentation.
+
+---
+
 ## Architecture
 
 ```
@@ -305,8 +338,13 @@ cd frontend && npm start
 │   ├── src/app/
 │   ├── __tests__/
 │   └── package.json
+├── services/
+│   └── slack-bot/           # Slack bot for Claude-like experience
+│       ├── src/
+│       └── package.json
 ├── scripts/
-│   └── setup.sh             # Setup wizard
+│   ├── setup.sh             # Main setup wizard
+│   └── setup-slack.sh       # Slack bot setup wizard
 ├── CLAUDE.md                # Agent instructions & philosophy
 ├── GETTING_STARTED.md       # Quick start guide
 └── README.md                # This file

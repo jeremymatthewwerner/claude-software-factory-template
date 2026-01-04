@@ -1,0 +1,34 @@
+{
+  "$schema": "https://modelcontextprotocol.io/schemas/server-config.json",
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@anthropic-ai/mcp-server-filesystem",
+        "--root",
+        "${REPO_BASE_PATH}"
+      ],
+      "description": "Provides read/write access to repository files"
+    },
+    "github": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@anthropic-ai/mcp-server-github"
+      ],
+      "env": {
+        "GITHUB_TOKEN": "${GITHUB_TOKEN}"
+      },
+      "description": "Provides GitHub API access for issues, PRs, and repository operations"
+    },
+    "bash": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@anthropic-ai/mcp-server-bash"
+      ],
+      "description": "Provides shell command execution (git, npm, etc.)"
+    }
+  }
+}
