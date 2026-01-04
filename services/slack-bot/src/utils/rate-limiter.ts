@@ -77,6 +77,27 @@ class RateLimiter {
   }
 
   /**
+   * Simple check if a request is allowed (convenience method)
+   */
+  check(userId: string): boolean {
+    return this.checkLimit(userId).allowed;
+  }
+
+  /**
+   * Get remaining tokens for a user
+   */
+  getRemainingTokens(userId: string): number {
+    return this.checkTokenBudget(userId).remaining;
+  }
+
+  /**
+   * Reset all rate limit data (primarily for testing)
+   */
+  reset(): void {
+    this.limits.clear();
+  }
+
+  /**
    * Clean up old entries periodically
    */
   cleanup(): void {

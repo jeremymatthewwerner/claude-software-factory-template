@@ -30,6 +30,17 @@ jobs:
             echo "number=${{ github.event.issue.number }}" >> $GITHUB_OUTPUT
           fi
 
+      # Optional: Notify Slack that Triage Agent is starting
+      - name: Notify Slack (started)
+        uses: ./.github/actions/slack-notify
+        with:
+          agent: triage
+          status: started
+          message: "Triaging new issue #${{ steps.issue.outputs.number }}"
+          issue_number: ${{ steps.issue.outputs.number }}
+          slack_webhook_url: ${{ secrets.SLACK_WEBHOOK_URL }}
+          webhook_secret: ${{ secrets.SLACK_WEBHOOK_SECRET }}
+
       - uses: anthropics/claude-code-action@v1
         with:
           prompt: |
@@ -53,3 +64,26 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Optional: Notify Slack of completion
+      - name: Notify Slack (completed)
+        if: success()
+        uses: ./.github/actions/slack-notify
+        with:
+          agent: triage
+          status: completed
+          message: "Triage complete for issue #${{ steps.issue.outputs.number }}"
+          issue_number: ${{ steps.issue.outputs.number }}
+          slack_webhook_url: ${{ secrets.SLACK_WEBHOOK_URL }}
+          webhook_secret: ${{ secrets.SLACK_WEBHOOK_SECRET }}
+
+      - name: Notify Slack (failed)
+        if: failure()
+        uses: ./.github/actions/slack-notify
+        with:
+          agent: triage
+          status: failed
+          message: "Triage failed for issue #${{ steps.issue.outputs.number }}"
+          issue_number: ${{ steps.issue.outputs.number }}
+          slack_webhook_url: ${{ secrets.SLACK_WEBHOOK_URL }}
+          webhook_secret: ${{ secrets.SLACK_WEBHOOK_SECRET }}

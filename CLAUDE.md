@@ -256,6 +256,35 @@ When agents encounter these situations, apply these defaults:
 - Create issue for proper resolution
 - Don't spend >30min on dependency issues
 
+## Slack Integration (Optional)
+
+This repo includes a Slack bot for a Claude Code-like experience in Slack:
+
+**Setup:**
+```bash
+./scripts/setup-slack.sh
+```
+
+**What the Slack bot provides:**
+- Conversational AI - Chat about your codebase in Slack
+- Agent dispatch - Say `dispatch code fix the bug` to create GitHub issues
+- Status updates - Receive notifications when agents complete work
+
+**How it works:**
+1. Slack bot provides human collaboration layer
+2. Dispatch commands create GitHub issues with `ai-ready` label
+3. Agent workflows run on GitHub (same as before)
+4. Agents POST status updates back to Slack threads (optional)
+
+**Secrets for Slack (if using):**
+- `SLACK_BOT_TOKEN` - Bot User OAuth Token (xoxb-...)
+- `SLACK_APP_TOKEN` - App-Level Token (xapp-...)
+- `SLACK_SIGNING_SECRET` - Signing Secret
+- `SLACK_WEBHOOK_URL` - URL where Slack bot is deployed
+- `SLACK_WEBHOOK_SECRET` - Secret for webhook authentication
+
+See `services/slack-bot/README.md` for complete documentation.
+
 ## Escalation
 
 Assign to maintainer when:
