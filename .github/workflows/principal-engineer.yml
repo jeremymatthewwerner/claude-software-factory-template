@@ -40,14 +40,25 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.PAT_WITH_WORKFLOW_ACCESS }}
 
-      # TODO: Add your project's setup steps here
-      # Examples:
-      # - uses: actions/setup-node@v4
-      #   with:
-      #     node-version: '20'
-      # - uses: astral-sh/setup-uv@v6
-      # - run: npm ci
-      # - run: uv sync
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+        continue-on-error: true
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Set up Python
+        run: uv python install 3.11
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci || true
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: uv sync || true
 
       - name: Get issue context
         id: context
@@ -124,6 +135,10 @@ jobs:
 
             **You are empowered to make technical decisions.** Don't ask "Should I do A, B, or C?" - DECIDE.
 
+            ### Case Study: Issue #84
+            The Code Agent got stuck and asked: "Should I A) Create new issue, B) Close PR, or C) Merge anyway?"
+            This was WRONG. It should have DECIDED based on engineering judgment.
+
             ### When to Decide Autonomously (DO THIS):
             - **Implementation approach** - Pick the cleanest solution
             - **Test strategy** - Decide what tests are needed
@@ -144,49 +159,70 @@ jobs:
             If you've been stuck on a DECISION (not implementation) for 10 minutes, MAKE A CHOICE.
             Document your reasoning. A reasonable choice made quickly > perfect choice never made.
 
-            ## 📋 LOG ANALYSIS PROTOCOL (MANDATORY!)
-
-            **BEFORE implementing ANY fix, you MUST analyze logs.** Don't guess - READ THE ACTUAL ERRORS!
-
-            ### Step 1: Check Issue Comments for Previous Failures
-            ```bash
-            gh issue view ${{ steps.context.outputs.number }} --comments
-            ```
-            Look for "❌ CI Failed" comments - they contain ACTUAL failure logs.
-
-            ### Step 2: Get Workflow Logs
-            ```bash
-            gh run list --workflow=ci.yml --status=failure --limit 5 --json databaseId,headBranch,conclusion
-            gh run view <RUN_ID> --log-failed
-            ```
-
-            ### Step 3: Download E2E Artifacts (if E2E tests failed)
-            ```bash
-            gh run download <RUN_ID> --name e2e-debug-logs --dir /tmp/e2e-logs 2>/dev/null
-            cat /tmp/e2e-logs/backend.log 2>/dev/null | tail -200
-            ls -la /tmp/e2e-logs/ 2>/dev/null
-            ```
-
             ## Investigation Process
 
             ### Step 1: Understand What Happened
+            Update progress comment, then:
+            ```bash
+            # Read FULL issue history
+            gh issue view ${{ steps.context.outputs.number }} --comments
+
+            # Check for related PRs
+            gh pr list --search "head:fix/${{ steps.context.outputs.number }}" --state all --json number,title,state,headRefName
+            gh pr list --search "head:feat/${{ steps.context.outputs.number }}" --state all --json number,title,state,headRefName
+            ```
+
+            Look for:
             - Why did Code Agent escalate? (timeout? 3x CI failure? needed decision?)
             - What approaches were already tried?
-            - Check for related PRs
+            - Any "❌ CI Failed" comments with logs?
 
-            ### Step 2: Identify Root Cause Category
+            ### Step 2: Get E2E/CI Artifacts (CRITICAL!)
+            If there were E2E failures, download and analyze the artifacts:
+            ```bash
+            # Find the failed CI run
+            gh run list --workflow=ci.yml --status=failure --limit 5 --json databaseId,headBranch,conclusion
+
+            # Download artifacts from failed run
+            gh run download <RUN_ID> --name e2e-debug-logs --dir /tmp/e2e-logs 2>/dev/null || echo "No artifacts"
+
+            # Read backend logs
+            cat /tmp/e2e-logs/backend.log 2>/dev/null || echo "No backend logs"
+
+            # Check Playwright report
+            ls -la /tmp/e2e-logs/ 2>/dev/null || echo "No E2E artifacts"
+            ```
+
+            The backend logs often reveal the REAL issue (API errors, exceptions, timeouts).
+
+            ### Step 3: Identify Root Cause Category
+            Determine which type of problem this is:
+
             **A) Code Bug** - The actual feature/fix has a bug
-            **B) Test Infrastructure** - E2E setup, timeouts, flaky tests
-            **C) Workflow/Agent Issue** - Code Agent prompt unclear, missing capabilities
-            **D) Architecture/Design** - Needs rethinking the approach
+            - Fix the code, update tests
 
-            ### Step 3: Implement Fix
+            **B) Test Infrastructure** - E2E setup, timeouts, flaky tests
+            - Fix test infrastructure in ci.yml or test files
+            - Update CLAUDE.md with learnings
+
+            **C) Workflow/Agent Issue** - Code Agent prompt unclear, missing capabilities
+            - Update bug-fix.yml prompts
+            - Add missing instructions to CLAUDE.md
+
+            **D) Architecture/Design** - Needs rethinking the approach
+            - Document the issue
+            - Propose alternative approach
+
+            ### Step 4: Implement Fix
+            Based on root cause:
             - Create branch: `git checkout -b fix/${{ steps.context.outputs.number }}-pe-fix`
             - Make necessary changes
             - Run quality gates
             - Create PR with "Fixes #${{ steps.context.outputs.number }}" in body
 
-            ### Step 4: Prevent Recurrence (CRITICAL!)
+            ### Step 5: Prevent Recurrence (CRITICAL!)
+            This is what makes you different from Code Agent:
+
             **Always ask:** "How do I prevent this class of problem from happening again?"
 
             Options:
@@ -194,6 +230,9 @@ jobs:
             - Add rules to `CLAUDE.md`
             - Improve E2E test infrastructure in `ci.yml`
             - Add better error handling to code
+            - Create new tests for edge cases
+
+            Document your factory improvement in the PR description.
 
             ## Progress Comment Format
             Update comment #${{ steps.progress.outputs.comment_id }} as you work:
@@ -201,18 +240,31 @@ jobs:
             gh api repos/${{ github.repository }}/issues/comments/${{ steps.progress.outputs.comment_id }} \
               -X PATCH -f body="## 🔧 Principal Engineer Investigation
 
-            - [x] 📖 Reading full issue history
-            - [x] 📊 Analyzing CI failures
-            - [x] 🔍 Identifying root cause
+            - [x] 📖 Reading full issue history and understanding context
+            - [x] 📊 Analyzing CI failures and downloading artifacts
+            - [x] 🔍 Identifying root cause (code bug vs infrastructure vs workflow)
             - [ ] 🛠️ Implementing fix
-            - [ ] 🏭 Updating factory
-            - [ ] ✅ Verifying fix
+            - [ ] 🏭 Updating factory to prevent recurrence
+            - [ ] ✅ Verifying fix works
 
             **Status:** [current status]
+            **Workflow:** [View logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
 
             ---
             ## 🔍 Root Cause Analysis
-            [What happened, why, and how to prevent]
+
+            ### What Happened
+            [Summary of why Code Agent got stuck]
+
+            ### Root Cause
+            [Detailed explanation - is it code bug, test infra, workflow issue, or architecture?]
+
+            ### Fix Plan
+            1. [Immediate fix]
+            2. [Factory improvement to prevent recurrence]
+
+            ### E2E Logs Analysis (if applicable)
+            [Key findings from backend.log or Playwright reports]
 
             cc @${{ steps.context.outputs.issue_author }}"
             ```
@@ -226,15 +278,14 @@ jobs:
             After trying multiple approaches, if you really can't fix it:
             1. Document everything you tried
             2. Explain what additional information or decisions are needed
-            3. Add label: needs-human
+            3. @mention @jeremymatthewwerner with specific questions
             4. Set label: status:awaiting-human
 
             But try HARD before escalating - you're the last line of defense!
 
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          timeout_minutes: 55
           claude_args: |
-            --model claude-opus-4-5-20250514
+            --model claude-opus-4-5-20251101
             --dangerously-skip-permissions
             --allowedTools "Bash(gh:*),Bash(git:*),Bash(npm:*),Bash(cd:*),Bash(uv:*),Bash(cat:*),Bash(ls:*),Read,Write,Edit,Glob,Grep"
         env:
@@ -269,6 +320,8 @@ jobs:
           ---
           Even the Principal Engineer got stuck. This issue needs human review.
 
+          @jeremymatthewwerner - please investigate.
+
           cc @${ISSUE_AUTHOR}" 2>/dev/null || true
           fi
 
@@ -279,6 +332,8 @@ jobs:
           **Next steps:**
           1. Check the [workflow logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
           2. This likely needs human investigation
+
+          @jeremymatthewwerner
 
           cc @${ISSUE_AUTHOR}"
 
