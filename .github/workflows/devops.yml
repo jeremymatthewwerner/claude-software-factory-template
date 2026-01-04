@@ -386,7 +386,7 @@ jobs:
             1. Check health endpoints using the URLs from environment variables:
                - Backend: $PRODUCTION_BACKEND_URL/health
                - Frontend: $PRODUCTION_FRONTEND_URL
-               **IMPORTANT:** Do NOT try to reach custom domains (e.g., diningphilosophers.ai) directly -
+               **IMPORTANT:** Do NOT try to reach custom domains (e.g., example.com) directly -
                GitHub Actions runners have network restrictions that cause false DNS failures.
                Always use the Railway URLs from the environment variables.
             2. Get logs from all services
