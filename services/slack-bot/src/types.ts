@@ -49,7 +49,16 @@ export interface AgentStatusPayload {
 }
 
 // Intent detection for message routing
-export type IntentType = 'conversation' | 'dispatch' | 'status' | 'help';
+export type IntentType =
+  | 'conversation'
+  | 'dispatch'
+  | 'status'
+  | 'help'
+  | 'factory-status'
+  | 'factory-analyze'
+  | 'factory-failures'
+  | 'factory-agents'
+  | 'factory-workflows';
 
 export interface MessageIntent {
   type: IntentType;

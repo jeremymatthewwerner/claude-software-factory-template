@@ -1,10 +1,23 @@
 /**
  * Message router - parses intent and routes to appropriate handler
+ *
+ * IMPORTANT: This bot's job is NOT to unblock specific issues, PRs, or actions.
+ * Its job is to help engineers identify patterns, diagnose systemic issues,
+ * and improve the factory workflows to be more robust, autonomous, and general.
+ *
+ * The factory should fix issues. This bot helps fix the factory.
  */
 
 import type { AgentType, SlackSession, MessageIntent, IntentType } from '../types.js';
 import { dispatchToAgent } from '../integrations/github-dispatcher.js';
 import { chat, streamChat } from '../integrations/claude-sdk.js';
+import {
+  getFactoryStatus,
+  analyzeIssue,
+  getFailurePatterns,
+  getAgentPerformance,
+  getWorkflowHealth,
+} from './factory-commands.js';
 import sessionManager from '../state/session-manager.js';
 import logger from '../utils/logger.js';
 
@@ -21,10 +34,64 @@ const AGENT_KEYWORDS: Record<AgentType, string[]> = {
 };
 
 /**
+ * Factory command patterns
+ */
+const FACTORY_COMMANDS = {
+  status: ['factory status', 'factory health', 'how is the factory', 'factory report'],
+  analyze: ['analyze #', 'analyze issue', 'learn from #', 'what happened with #'],
+  failures: ['failures', 'failure patterns', 'why is ci failing', 'what\'s failing', 'show failures'],
+  agents: ['agent performance', 'how are agents', 'agent stats', 'autonomy rate'],
+  workflows: ['workflow health', 'workflows', 'workflow status', 'check workflows'],
+};
+
+/**
  * Parse message to determine intent
  */
 export function parseIntent(message: string): MessageIntent {
   const lowerMessage = message.toLowerCase();
+
+  // Check for factory commands first (these are the primary purpose)
+  // Factory status
+  if (FACTORY_COMMANDS.status.some(cmd => lowerMessage.includes(cmd))) {
+    return {
+      type: 'factory-status' as IntentType,
+      confidence: 1.0,
+    };
+  }
+
+  // Analyze issue
+  const issueMatch = lowerMessage.match(/(?:analyze|learn from|what happened with)\s*#?(\d+)/i);
+  if (issueMatch) {
+    return {
+      type: 'factory-analyze' as IntentType,
+      confidence: 1.0,
+      extractedTask: issueMatch[1], // issue number
+    };
+  }
+
+  // Failure patterns
+  if (FACTORY_COMMANDS.failures.some(cmd => lowerMessage.includes(cmd))) {
+    return {
+      type: 'factory-failures' as IntentType,
+      confidence: 1.0,
+    };
+  }
+
+  // Agent performance
+  if (FACTORY_COMMANDS.agents.some(cmd => lowerMessage.includes(cmd))) {
+    return {
+      type: 'factory-agents' as IntentType,
+      confidence: 1.0,
+    };
+  }
+
+  // Workflow health
+  if (FACTORY_COMMANDS.workflows.some(cmd => lowerMessage.includes(cmd))) {
+    return {
+      type: 'factory-workflows' as IntentType,
+      confidence: 1.0,
+    };
+  }
 
   // Check for explicit dispatch commands
   if (lowerMessage.startsWith('/dispatch ') || lowerMessage.startsWith('dispatch ')) {
@@ -42,9 +109,9 @@ export function parseIntent(message: string): MessageIntent {
     }
   }
 
-  // Check for status commands
+  // Check for status commands (session status, not factory)
   if (
-    lowerMessage.includes('status') ||
+    lowerMessage === 'status' ||
     lowerMessage.includes('what are you working on') ||
     lowerMessage.includes("what's happening")
   ) {
@@ -108,6 +175,23 @@ export async function routeMessage(
   });
 
   switch (intent.type) {
+    // Factory improvement commands (primary purpose)
+    case 'factory-status':
+      return { response: await getFactoryStatus() };
+
+    case 'factory-analyze':
+      return { response: await analyzeIssue(parseInt(intent.extractedTask || '0', 10)) };
+
+    case 'factory-failures':
+      return { response: await getFailurePatterns() };
+
+    case 'factory-agents':
+      return { response: await getAgentPerformance() };
+
+    case 'factory-workflows':
+      return { response: await getWorkflowHealth() };
+
+    // Dispatch to agents (for creating work, not fixing it yourself)
     case 'dispatch':
       return handleDispatch(intent.agent!, intent.extractedTask || message, session);
 
@@ -250,34 +334,31 @@ async function handleConversation(
  * Get help message
  */
 function getHelpMessage(): string {
-  return `*Claude Software Factory Bot*
+  return `*🏭 Factory Improvement Bot*
 
-I'm your AI development assistant! Here's what I can do:
+My job is to help you *improve the factory*, not fix individual issues.
+The factory should fix issues. I help you fix the factory.
 
-*Conversation*
-Just chat with me naturally. I have context about your codebase and can help with:
-- Code questions and explanations
-- Debugging help
-- Architecture discussions
-- Documentation
+*Factory Diagnostics (my primary purpose):*
+- \`factory status\` - Overall factory health & autonomy metrics
+- \`failures\` - CI/workflow failure patterns (what's brittle?)
+- \`agent performance\` - Which agents need improvement?
+- \`workflows\` - Check workflow configuration
+- \`analyze #123\` - Learn from an issue (why did it escalate?)
 
-*Dispatch to Agents*
-Say "dispatch <agent> <task>" to create a GitHub issue for an agent:
+*Dispatch Work (create issues for agents):*
+- \`dispatch code <task>\` - Code Agent
+- \`dispatch qa <task>\` - QA Agent
+- \`dispatch devops <task>\` - DevOps Agent
 
-- \`dispatch code fix the login bug\` - Code Agent fixes bugs/implements features
-- \`dispatch qa improve test coverage\` - QA Agent improves testing
-- \`dispatch devops check production health\` - DevOps Agent monitors systems
-- \`dispatch release update dependencies\` - Release Engineer handles updates
-- \`dispatch triage classify this issue\` - Triage Agent categorizes issues
+*Philosophy:*
+• Each escalation = factory bug. Find the pattern, fix the workflow.
+• Don't unblock issues—make the factory handle them autonomously.
+• Low autonomy rate? Improve agent prompts/workflows.
+• High failure rate? Harden the brittle workflows.
 
-*Commands*
-- \`status\` - See current session status
-- \`help\` - Show this message
-
-*Tips*
-- Start a thread for focused conversations
-- I'll post updates when agents complete tasks
-- Use reactions for quick feedback`;
+*For direct code work:* Use claude.ai/code or the CLI.
+I'm your factory control panel, not an IDE.`;
 }
 
 export default {
