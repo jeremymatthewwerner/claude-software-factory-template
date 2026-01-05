@@ -140,6 +140,44 @@ cat /tmp/e2e-logs/backend.log | tail -200
 
 **Agents must document what logs showed BEFORE implementing a fix.**
 
+### Testing Workflow Changes (CRITICAL)
+
+**Workflow changes need testing just like code changes.** A regex that looks right can fail silently. An API call that seems correct might have wrong permissions.
+
+**Before merging workflow changes:**
+
+1. **Test components locally first:**
+   ```bash
+   # Test regex patterns against real data
+   COMMENT_BODY=$(gh api .../issues/123/comments --jq '...')
+   echo "$COMMENT_BODY" | grep -E 'your-pattern' | wc -l
+
+   # Test shell commands
+   gh issue list --label "ai-ready" --json number,labels
+   ```
+
+2. **Know when a real issue test is required:**
+   - Changes to Code Agent trigger conditions (label handling, event types)
+   - Changes to progress comment format or update logic
+   - Changes to CI monitoring, auto-merge, or auto-close behavior
+   - Changes to agent prompts that affect behavior
+   - Any change to bug-fix.yml, triage.yml, or principal-engineer.yml
+
+3. **Create a trivial test issue when needed:**
+   ```bash
+   gh issue create --title "Test: Verify workflow change [describe what]" \
+     --body "Test issue to verify [specific change]. Expected: [behavior]. Delete after." \
+     --label "bug" --label "ai-ready"
+   ```
+
+4. **Verify the workflow ran correctly:**
+   - Check Actions tab for the workflow run
+   - Verify progress comments were created/updated
+   - Check that labels were applied correctly
+   - Confirm the expected behavior occurred
+
+5. **Clean up test issues** - Close or delete after verification
+
 ## Git Workflow
 
 **Claude Code sessions use feature branches:**
