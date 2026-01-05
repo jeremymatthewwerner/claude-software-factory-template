@@ -83,6 +83,20 @@ After each session, create a PR with:
 4. Any flaky tests identified and fixed
 5. Recommendations for areas needing human attention
 
+## CRITICAL: Pre-Commit Requirements
+
+**ALWAYS run formatters and linters BEFORE committing ANY code!**
+
+```bash
+# Backend (customize for your project)
+cd backend && uv run ruff format . && uv run ruff check . --fix
+
+# Frontend (customize for your project)
+cd frontend && npm run format && npm run lint -- --fix
+```
+
+CI will fail if code is not properly formatted. Never skip this step.
+
 ## Escalation
 
 Create a GitHub issue and assign to maintainer if:

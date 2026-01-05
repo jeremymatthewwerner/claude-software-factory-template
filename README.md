@@ -67,6 +67,7 @@ gh label create "priority-low" --color "0E8A16" --description "Low priority"
 gh label create "P0" --color "B60205" --description "Critical - system down"
 gh label create "P1" --color "D93F0B" --description "High - blocks functionality"
 gh label create "P2" --color "FBCA04" --description "Medium - optimization/cleanup"
+gh label create "factory-improvement" --color "1D76DB" --description "Documents a workflow/factory fix"
 ```
 
 #### 2.2 Configure Repository Secrets
