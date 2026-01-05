@@ -2,7 +2,7 @@
  * Message router - parses intent and routes to appropriate handler
  */
 
-import type { AgentType, SlackSession, MessageIntent } from '../types.js';
+import type { AgentType, SlackSession, MessageIntent, IntentType } from '../types.js';
 import { dispatchToAgent } from '../integrations/github-dispatcher.js';
 import { chat, streamChat } from '../integrations/claude-sdk.js';
 import sessionManager from '../state/session-manager.js';
@@ -33,7 +33,7 @@ export function parseIntent(message: string): MessageIntent {
       const agent = agentMatch[1] as AgentType;
       if (Object.keys(AGENT_KEYWORDS).includes(agent)) {
         return {
-          type: 'dispatch',
+          type: 'dispatch' as IntentType,
           agent,
           confidence: 1.0,
           extractedTask: message.replace(/\/?(dispatch\s+\w+\s*)/i, '').trim(),
@@ -49,7 +49,7 @@ export function parseIntent(message: string): MessageIntent {
     lowerMessage.includes("what's happening")
   ) {
     return {
-      type: 'status',
+      type: 'status' as IntentType,
       confidence: 0.8,
     };
   }
@@ -61,7 +61,7 @@ export function parseIntent(message: string): MessageIntent {
     lowerMessage.includes('what can you do')
   ) {
     return {
-      type: 'help',
+      type: 'help' as IntentType,
       confidence: 1.0,
     };
   }
@@ -72,7 +72,7 @@ export function parseIntent(message: string): MessageIntent {
       if (lowerMessage.includes(keyword)) {
         // Don't auto-dispatch, but note the suggestion
         return {
-          type: 'conversation',
+          type: 'conversation' as IntentType,
           suggestedAgent: agent as AgentType,
           confidence: 0.6,
         };
@@ -82,7 +82,7 @@ export function parseIntent(message: string): MessageIntent {
 
   // Default to conversation
   return {
-    type: 'conversation',
+    type: 'conversation' as IntentType,
     confidence: 1.0,
   };
 }

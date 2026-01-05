@@ -46,13 +46,15 @@ export interface AgentStatusPayload {
 }
 
 // Intent detection for message routing
-export type MessageIntent =
-  | 'chat' // General conversation, questions
-  | 'code' // Code-related questions, debugging
-  | 'dispatch' // Request to dispatch agent
-  | 'status' // Status check
-  | 'config' // Configuration commands
-  | 'help'; // Help request
+export type IntentType = 'conversation' | 'dispatch' | 'status' | 'help';
+
+export interface MessageIntent {
+  type: IntentType;
+  agent?: AgentType;
+  confidence: number;
+  extractedTask?: string;
+  suggestedAgent?: AgentType;
+}
 
 export interface ParsedMessage {
   intent: MessageIntent;
