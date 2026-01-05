@@ -65,7 +65,7 @@ export async function createIssue(options: CreateIssueOptions): Promise<IssueRes
       };
     }
 
-    const issue = await response.json();
+    const issue = await response.json() as { number: number; html_url: string };
 
     logger.info('Created GitHub issue', {
       issueNumber: issue.number,
@@ -234,11 +234,15 @@ export async function getIssueStatus(issueNumber: number): Promise<{
       return null;
     }
 
-    const issue = await response.json();
+    const issue = await response.json() as {
+      state: string;
+      labels: Array<{ name: string }>;
+      pull_request?: { number: number };
+    };
 
     return {
       state: issue.state,
-      labels: issue.labels.map((l: { name: string }) => l.name),
+      labels: issue.labels.map((l) => l.name),
       linkedPR: issue.pull_request?.number,
     };
   } catch (error) {

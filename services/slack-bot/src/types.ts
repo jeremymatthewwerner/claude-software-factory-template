@@ -15,6 +15,7 @@ export interface SlackSession {
   claudeSessionId?: string;
   linkedIssue?: number;
   linkedPR?: number;
+  activeAgent?: AgentType;
   status: 'active' | 'waiting' | 'completed';
   createdAt: string;
   updatedAt: string;
@@ -33,13 +34,15 @@ export interface ConversationMessage {
 export interface AgentStatusPayload {
   agent: AgentType;
   status: AgentStatus;
-  issueNumber: number;
+  issueNumber?: number;
+  prNumber?: number;
   slackThreadTs?: string;
   slackChannelId?: string;
-  message: string;
+  message?: string;
   links?: {
     pr?: string;
     issue?: string;
+    run?: string;
     deployment?: string;
   };
   details?: Record<string, unknown>;

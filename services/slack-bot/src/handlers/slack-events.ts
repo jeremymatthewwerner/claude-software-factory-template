@@ -16,7 +16,7 @@ import { config } from '../config.js';
 export function registerEventHandlers(app: App): void {
   // Handle direct messages
   app.message(async ({ message, client, say }) => {
-    const msg = message as MessageEvent & { text?: string; user?: string; thread_ts?: string };
+    const msg = message as MessageEvent & { text?: string; user?: string; thread_ts?: string; bot_id?: string };
 
     // Ignore bot messages and messages without text
     if (msg.subtype === 'bot_message' || !msg.text || !msg.user) {
@@ -56,7 +56,7 @@ export function registerEventHandlers(app: App): void {
 
     await handleMessage(
       text,
-      mention.user,
+      mention.user || 'unknown',
       mention.channel,
       mention.thread_ts || mention.ts,
       mention.ts,

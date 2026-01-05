@@ -43,8 +43,12 @@ export const config = {
   // Server Configuration
   server: {
     port: parseInt(optionalEnv('PORT', '3000'), 10),
+    webhookPort: parseInt(optionalEnv('WEBHOOK_PORT', '3001'), 10),
     webhookSecret: optionalEnv('WEBHOOK_SECRET'),
   },
+
+  // Logging
+  logLevel: optionalEnv('LOG_LEVEL', 'info'),
 
   // Repository Configuration
   repo: {
@@ -64,6 +68,30 @@ export const config = {
     maxRequestsPerMinute: parseInt(optionalEnv('RATE_LIMIT_PER_MINUTE', '30'), 10),
     maxTokensPerHour: parseInt(optionalEnv('RATE_LIMIT_TOKENS_PER_HOUR', '100000'), 10),
   },
+  // Webhook secret at top level for convenience
+  webhookSecret: optionalEnv('WEBHOOK_SECRET'),
 } as const;
 
 export type Config = typeof config;
+
+/**
+ * Validate configuration and return any errors
+ */
+export function validateConfig(): string[] {
+  const errors: string[] = [];
+
+  if (!process.env.SLACK_BOT_TOKEN) {
+    errors.push('Missing SLACK_BOT_TOKEN');
+  }
+  if (!process.env.SLACK_APP_TOKEN) {
+    errors.push('Missing SLACK_APP_TOKEN');
+  }
+  if (!process.env.SLACK_SIGNING_SECRET) {
+    errors.push('Missing SLACK_SIGNING_SECRET');
+  }
+  if (!process.env.ANTHROPIC_API_KEY) {
+    errors.push('Missing ANTHROPIC_API_KEY');
+  }
+
+  return errors;
+}
