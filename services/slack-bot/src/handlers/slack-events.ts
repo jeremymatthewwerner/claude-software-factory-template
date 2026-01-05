@@ -16,7 +16,7 @@ import { config } from '../config.js';
 export function registerEventHandlers(app: App): void {
   // Handle direct messages
   app.message(async ({ message, client, say }) => {
-    const msg = message as MessageEvent & { text?: string; user?: string; thread_ts?: string; bot_id?: string };
+    const msg = message as MessageEvent & { text?: string; user?: string; thread_ts?: string; bot_id?: string; channel_type?: string };
 
     // Ignore bot messages and messages without text
     if (msg.subtype === 'bot_message' || !msg.text || !msg.user) {
@@ -25,6 +25,12 @@ export function registerEventHandlers(app: App): void {
 
     // Ignore messages from the bot itself
     if (msg.bot_id) {
+      return;
+    }
+
+    // Ignore @mentions in channels - those are handled by app_mention event
+    // Only process DMs (channel_type === 'im') or non-mention messages
+    if (msg.channel_type !== 'im' && msg.text.includes('<@')) {
       return;
     }
 

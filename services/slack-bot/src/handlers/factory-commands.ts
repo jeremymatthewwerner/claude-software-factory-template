@@ -65,7 +65,12 @@ async function githubFetch<T>(endpoint: string): Promise<T> {
 /**
  * Get repository path for API calls
  */
-function getRepoPath(): string {
+function getRepoPath(): string | null {
+  // Check if repository is configured
+  if (!config.github.repository && !config.github.owner) {
+    return null;
+  }
+
   if (config.github.repository) {
     return config.github.repository.includes('/')
       ? config.github.repository
@@ -79,6 +84,10 @@ function getRepoPath(): string {
  */
 export async function getFactoryStatus(): Promise<string> {
   const repo = getRepoPath();
+
+  if (!repo) {
+    return `❌ *Repository not configured*\n\nSet these environment variables in Railway:\n• \`GITHUB_REPOSITORY\` = \`owner/repo\` (e.g., \`jeremymatthewwerner/claude-software-factory-template\`)\n• \`GITHUB_OWNER\` = \`owner\` (e.g., \`jeremymatthewwerner\`)\n• \`GITHUB_TOKEN\` = GitHub PAT with \`repo\` scope`;
+  }
 
   try {
     // Fetch data in parallel
@@ -118,6 +127,7 @@ export async function getFactoryStatus(): Promise<string> {
     // Build status report focused on factory health
     const lines: string[] = [
       `*🏭 Factory Health Report*`,
+      `_Repository: ${repo}_`,
       ``,
       `*Autonomy Indicators:*`,
       `• Escalated to humans: ${escalated.length} ${escalated.length > 0 ? '⚠️' : '✅'}`,
@@ -162,8 +172,6 @@ export async function getFactoryStatus(): Promise<string> {
       lines.push(``);
     }
 
-    lines.push(`*Your job:* Don't fix individual issues—fix the factory so it handles them autonomously.`);
-
     return lines.join('\n');
   } catch (error) {
     logger.error('Error fetching factory status', { error });
@@ -176,6 +184,10 @@ export async function getFactoryStatus(): Promise<string> {
  */
 export async function analyzeIssue(issueNumber: number): Promise<string> {
   const repo = getRepoPath();
+
+  if (!repo) {
+    return `❌ Repository not configured. Set \`GITHUB_REPOSITORY\` in Railway.`;
+  }
 
   try {
     const [issue, comments, events] = await Promise.all([
@@ -248,9 +260,6 @@ export async function analyzeIssue(issueNumber: number): Promise<string> {
       lines.push(``);
     }
 
-    lines.push(`*Remember:* Your goal is to improve the factory, not to fix this issue directly.`);
-    lines.push(`Ask: "What change to workflows/prompts/CLAUDE.md would prevent this?"`);
-
     return lines.join('\n');
   } catch (error) {
     logger.error('Error analyzing issue', { error, issueNumber });
@@ -263,6 +272,10 @@ export async function analyzeIssue(issueNumber: number): Promise<string> {
  */
 export async function getFailurePatterns(): Promise<string> {
   const repo = getRepoPath();
+
+  if (!repo) {
+    return `❌ Repository not configured. Set \`GITHUB_REPOSITORY\` in Railway.`;
+  }
 
   try {
     const runs = await githubFetch<{ workflow_runs: GitHubWorkflowRun[] }>(
@@ -347,6 +360,10 @@ export async function getFailurePatterns(): Promise<string> {
  */
 export async function getAgentPerformance(): Promise<string> {
   const repo = getRepoPath();
+
+  if (!repo) {
+    return `❌ Repository not configured. Set \`GITHUB_REPOSITORY\` in Railway.`;
+  }
 
   try {
     // Get closed issues to analyze resolution patterns
@@ -447,6 +464,10 @@ export async function getAgentPerformance(): Promise<string> {
  */
 export async function getWorkflowHealth(): Promise<string> {
   const repo = getRepoPath();
+
+  if (!repo) {
+    return `❌ Repository not configured. Set \`GITHUB_REPOSITORY\` in Railway.`;
+  }
 
   try {
     const workflows = await githubFetch<{ workflows: Array<{ id: number; name: string; state: string; path: string }> }>(
