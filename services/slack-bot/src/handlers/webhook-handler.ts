@@ -4,8 +4,7 @@
  * GitHub workflows call this endpoint to post status updates to Slack threads
  */
 
-import type { Request, Response, Router } from 'express';
-import { Router as createRouter } from 'express';
+import express from 'express';
 import type { WebClient } from '@slack/web-api';
 import type { AgentStatusPayload, AgentStatus } from '../types.js';
 import sessionManager from '../state/session-manager.js';
@@ -16,11 +15,11 @@ import { config } from '../config.js';
 /**
  * Create webhook router
  */
-export function createWebhookRouter(slackClient: WebClient): Router {
-  const router = createRouter();
+export function createWebhookRouter(slackClient: WebClient): express.Router {
+  const router = express.Router();
 
   // Health check endpoint
-  router.get('/health', (req: Request, res: Response) => {
+  router.get('/health', (req: express.Request, res: express.Response) => {
     res.json({
       status: 'ok',
       timestamp: new Date().toISOString(),
@@ -29,7 +28,7 @@ export function createWebhookRouter(slackClient: WebClient): Router {
   });
 
   // Agent status update endpoint
-  router.post('/agent-status', async (req: Request, res: Response) => {
+  router.post('/agent-status', async (req: express.Request, res: express.Response) => {
     try {
       // Verify webhook secret
       const authHeader = req.headers.authorization;
@@ -83,7 +82,7 @@ export function createWebhookRouter(slackClient: WebClient): Router {
   });
 
   // CI status update endpoint
-  router.post('/ci-status', async (req: Request, res: Response) => {
+  router.post('/ci-status', async (req: express.Request, res: express.Response) => {
     try {
       const authHeader = req.headers.authorization;
       if (config.webhookSecret && authHeader !== `Bearer ${config.webhookSecret}`) {
@@ -118,7 +117,7 @@ export function createWebhookRouter(slackClient: WebClient): Router {
   });
 
   // Session info endpoint (for debugging)
-  router.get('/session/:channelId/:threadTs', (req: Request, res: Response) => {
+  router.get('/session/:channelId/:threadTs', (req: express.Request, res: express.Response) => {
     const { channelId, threadTs } = req.params;
     const session = sessionManager.get(channelId, threadTs);
 
@@ -141,7 +140,7 @@ export function createWebhookRouter(slackClient: WebClient): Router {
   });
 
   // Stats endpoint
-  router.get('/stats', (req: Request, res: Response) => {
+  router.get('/stats', (req: express.Request, res: express.Response) => {
     const stats = sessionManager.getStats();
     res.json({
       ...stats,

@@ -13,8 +13,10 @@
  * via GitHub Actions - this bot is the human collaboration layer.
  */
 
-import { App, LogLevel } from '@slack/bolt';
-import { WebClient } from '@slack/web-api';
+import bolt from '@slack/bolt';
+const { App, LogLevel } = bolt;
+import slackWebApi from '@slack/web-api';
+const { WebClient } = slackWebApi;
 import express from 'express';
 import { config, validateConfig } from './config.js';
 import { registerEventHandlers } from './handlers/slack-events.js';
