@@ -58,19 +58,22 @@ async function main(): Promise<void> {
   const webhookRouter = createWebhookRouter(slackClient);
   expressApp.use('/webhooks', webhookRouter);
 
-  // Health check on root
-  expressApp.get('/', (req, res) => {
+  // Health check on root and /health
+  const healthResponse = (req: express.Request, res: express.Response) => {
     res.json({
       service: 'claude-software-factory-slack-bot',
       status: 'running',
       version: '1.0.0',
       timestamp: new Date().toISOString(),
     });
-  });
+  };
+  expressApp.get('/', healthResponse);
+  expressApp.get('/health', healthResponse);
 
-  // Start webhook server
-  const webhookServer = expressApp.listen(config.server.webhookPort, () => {
-    logger.info(`Webhook server listening on port ${config.server.webhookPort}`);
+  // Start webhook server - use PORT from Railway, fallback to webhookPort
+  const port = process.env.PORT || config.server.webhookPort;
+  const webhookServer = expressApp.listen(port, () => {
+    logger.info(`Webhook server listening on port ${port}`);
   });
 
   // Start Slack app in socket mode
