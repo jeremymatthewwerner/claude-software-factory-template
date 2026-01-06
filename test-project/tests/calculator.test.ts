@@ -5,7 +5,7 @@
  * that the factory agents should fix.
  */
 
-import { add, subtract, multiply, divide, average, percentage, power, squareRoot } from '../src/calculator';
+import { add, subtract, multiply, divide, average, percentage, power, squareRoot, modulo } from '../src/calculator';
 
 describe('Calculator', () => {
   describe('add', () => {
@@ -146,6 +146,39 @@ describe('Calculator', () => {
       // BUG: Returns NaN instead of handling gracefully
       const result = squareRoot(-4);
       expect(isNaN(result.value)).toBe(false);
+    });
+  });
+
+  describe('modulo', () => {
+    it('should calculate remainder of division', () => {
+      const result = modulo(10, 3);
+      expect(result.value).toBe(1);
+      expect(result.operation).toBe('modulo');
+      expect(result.inputs).toEqual([10, 3]);
+    });
+
+    it('should handle zero remainder', () => {
+      const result = modulo(10, 5);
+      expect(result.value).toBe(0);
+    });
+
+    it('should handle negative dividend', () => {
+      const result = modulo(-10, 3);
+      expect(result.value).toBe(-1);
+    });
+
+    it('should handle negative divisor', () => {
+      const result = modulo(10, -3);
+      expect(result.value).toBe(1);
+    });
+
+    it('should handle both negative', () => {
+      const result = modulo(-10, -3);
+      expect(result.value).toBe(-1);
+    });
+
+    it('should throw error for division by zero', () => {
+      expect(() => modulo(10, 0)).toThrow('Division by zero');
     });
   });
 });
