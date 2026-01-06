@@ -50,11 +50,12 @@ export function multiply(...numbers: number[]): CalculationResult {
 /**
  * Divide first number by subsequent numbers
  *
- * BUG: Does not handle division by zero!
- * TODO: Add proper error handling for division by zero
+ * @throws Error if any divisor is zero
  */
 export function divide(first: number, ...rest: number[]): CalculationResult {
-  // INTENTIONAL BUG: No check for division by zero
+  if (rest.some((n) => n === 0)) {
+    throw new Error('Division by zero');
+  }
   const value = rest.reduce((quotient, n) => quotient / n, first);
   return {
     value,
