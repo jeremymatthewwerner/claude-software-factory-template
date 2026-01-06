@@ -1,23 +1,15 @@
 # Claude Software Factory Template
 
-A template repository for setting up an autonomous software factory powered by Claude Code agents.
+> Transform any repository into an autonomous software factory powered by Claude AI agents.
 
-## Key Features
-
-- 🤖 **8 Specialized AI Agents** - Triage, Code, Principal Engineer, QA, Release, DevOps, Marketing, CI Monitor
-- 🧠 **Opus Model** - Code Agent and PE use claude-opus-4-5 for superior reasoning
-- 🔄 **Self-Healing** - CI failures auto-create issues, agents auto-fix them
-- 📊 **Log Analysis Protocol** - Agents analyze logs before implementing fixes (not guessing!)
-- 🎯 **Decision-Making Autonomy** - Agents DECIDE technical matters, only escalate for security/business decisions
-- 🔧 **Principal Engineer Escalation** - When Code Agent gets stuck, PE takes a holistic factory-fixing approach
-- 📝 **Progress Visibility** - Checkbox-based progress tracking on all issues
-- 🔁 **Smart Retries** - Up to 3 attempts with increasing context from failure logs
+**Your AI development team, ready in 5 minutes.**
 
 ## What Is This?
 
-This template sets up a complete autonomous development workflow where AI agents:
-- **Triage** incoming issues automatically
-- **Fix bugs** and implement features via PRs
+This template sets up a complete **autonomous development workflow** where AI agents:
+
+- **Triage** incoming issues automatically (classify, detect duplicates, prioritize)
+- **Fix bugs** and implement features via PRs (with tests!)
 - **Monitor production** and auto-create incidents
 - **Improve test coverage** nightly
 - **Manage dependencies** and security updates
@@ -25,200 +17,161 @@ This template sets up a complete autonomous development workflow where AI agents
 
 **Human intervention becomes the exception, not the rule.**
 
-## Quick Start
+### Key Features
+
+| Feature | Description |
+|---------|-------------|
+| **8 Specialized Agents** | Triage, Code, Principal Engineer, QA, Release, DevOps, Marketing, CI Monitor |
+| **Opus Model** | Code Agent and PE use Claude Opus for superior reasoning |
+| **Self-Healing** | CI failures auto-create issues, agents auto-fix them |
+| **Log Analysis** | Agents analyze actual logs before implementing fixes |
+| **Decision Autonomy** | Agents DECIDE technical matters, only escalate for security/business |
+| **Progress Visibility** | Checkbox-based progress tracking on all issues |
+
+---
+
+## Quick Start (5 minutes)
 
 ### 1. Create Your Repository
 
-**Option A: Use as Template (Recommended)**
-1. Click "Use this template" → "Create a new repository"
-2. Name your repo and set visibility
-3. Clone your new repo locally
+```bash
+# Option A: Use as template (recommended)
+# Click "Use this template" on GitHub, then clone
 
-**Option B: Fork**
-1. Fork this repository
-2. Clone your fork locally
+# Option B: Clone directly
+git clone https://github.com/YOUR_USERNAME/claude-software-factory-template.git my-project
+cd my-project
+```
 
-### 2. Required GitHub Configuration
-
-#### 2.1 Create Required Labels
-
-Run these commands to create the necessary labels:
+### 2. Run the Automated Setup
 
 ```bash
-# Navigate to your repo
-cd your-repo
-
-# Create labels (replace OWNER/REPO with your repo)
-gh label create "ai-ready" --color "0E8A16" --description "Ready for autonomous agent"
-gh label create "needs-principal-engineer" --color "7057FF" --description "Escalated to PE (Code Agent stuck)"
-gh label create "needs-human" --color "D93F0B" --description "Requires human intervention (PE escalated)"
-gh label create "qa-agent" --color "0052CC" --description "QA Agent tracking"
-gh label create "automation" --color "BFDADC" --description "Automated by agents"
-gh label create "ci-failure" --color "B60205" --description "CI failure issues"
-gh label create "production-incident" --color "B60205" --description "Production incidents"
-gh label create "status:bot-working" --color "7057FF" --description "Bot is actively working"
-gh label create "status:awaiting-human" --color "D93F0B" --description "Blocked waiting for human"
-gh label create "status:awaiting-bot" --color "0E8A16" --description "Human commented, bot will respond"
-gh label create "bug" --color "d73a4a" --description "Something isn't working"
-gh label create "enhancement" --color "a2eeef" --description "New feature or request"
-gh label create "priority-high" --color "B60205" --description "High priority"
-gh label create "priority-medium" --color "FBCA04" --description "Medium priority"
-gh label create "priority-low" --color "0E8A16" --description "Low priority"
-gh label create "P0" --color "B60205" --description "Critical - system down"
-gh label create "P1" --color "D93F0B" --description "High - blocks functionality"
-gh label create "P2" --color "FBCA04" --description "Medium - optimization/cleanup"
-gh label create "factory-improvement" --color "1D76DB" --description "Documents a workflow/factory fix"
+./scripts/setup-factory.sh
 ```
 
-#### 2.2 Configure Repository Secrets
+This wizard handles everything:
+- ✅ Creates all required GitHub labels
+- ✅ Collects and stores secrets (GitHub PAT, Anthropic key, Slack tokens)
+- ✅ Sets up GitHub repository secrets
+- ✅ Deploys Slack bot to Railway (optional)
+- ✅ Validates the complete setup
 
-Go to **Settings → Secrets and variables → Actions** and add:
-
-| Secret Name | Required | Description |
-|-------------|----------|-------------|
-| `ANTHROPIC_API_KEY` | ✅ Yes | Your Anthropic API key for Claude |
-| `PAT_WITH_WORKFLOW_ACCESS` | ✅ Yes | GitHub PAT with `repo` + `workflow` scopes (see below) |
-| `RAILWAY_TOKEN_SW_FACTORY` | For Railway | Railway API token for deployments |
-| `PRODUCTION_BACKEND_URL` | For monitoring | Your production backend URL (e.g., `https://api.example.com`) |
-| `PRODUCTION_FRONTEND_URL` | For monitoring | Your production frontend URL (e.g., `https://example.com`) |
-
-##### Creating the PAT (Personal Access Token)
-
-1. Go to GitHub → Settings → Developer settings → Personal access tokens → Fine-grained tokens
-2. Click "Generate new token"
-3. Set:
-   - **Token name**: `claude-software-factory`
-   - **Expiration**: 90 days (or custom)
-   - **Repository access**: Only select repositories → select your repo
-   - **Permissions**:
-     - Contents: Read and write
-     - Issues: Read and write
-     - Pull requests: Read and write
-     - Workflows: Read and write
-     - Actions: Read
-4. Generate token and add as `PAT_WITH_WORKFLOW_ACCESS` secret
-
-> **Why a PAT?** The default `GITHUB_TOKEN` cannot trigger workflows or modify workflow files. A PAT enables full autonomous operation.
-
-#### 2.3 Configure Actions Permissions
-
-Go to **Settings → Actions → General**:
-
-1. **Actions permissions**: Allow all actions
-2. **Workflow permissions**:
-   - Select "Read and write permissions"
-   - ✅ Check "Allow GitHub Actions to create and approve pull requests"
-
-### 3. Railway Deployment Setup (Optional)
-
-If deploying to Railway:
-
-#### 3.1 Create Railway Project
-
-1. Sign up at [railway.app](https://railway.app)
-2. Create a new project
-3. Add services:
-   - **Backend**: Connect to your repo's `backend/` directory
-   - **Frontend**: Connect to your repo's `frontend/` directory
-   - **PostgreSQL**: Add from Railway's database templates
-
-#### 3.2 Configure Railway Services
-
-**Backend service:**
+**Or run individual steps:**
 ```bash
-# Build command
-cd backend && pip install uv && uv sync
-
-# Start command
-cd backend && uv run uvicorn app.main:app --host 0.0.0.0 --port $PORT
-
-# Environment variables
-DATABASE_URL=<from PostgreSQL service>
-ANTHROPIC_API_KEY=<your key>
+./scripts/setup-factory.sh        # Full interactive setup
+./scripts/validate-factory.sh     # Validate existing setup
 ```
 
-**Frontend service:**
+### 3. Create a Slack App (30 seconds)
+
+Use the included manifest for instant app creation:
+
+1. Go to https://api.slack.com/apps
+2. Click **"Create New App"** → **"From an app manifest"**
+3. Paste contents of `services/slack-bot/slack-app-manifest.yaml`
+4. Install to workspace
+
+The manifest pre-configures all scopes, events, and settings automatically.
+
+### 4. Test It!
+
 ```bash
-# Build command
-cd frontend && npm ci && npm run build
+# Validate your setup
+./scripts/validate-factory.sh
 
-# Start command
-cd frontend && npm start
+# Create test issues to exercise the agents
+./test-project/scripts/create-test-issues.sh
 
-# Environment variables
-NEXT_PUBLIC_API_URL=<backend service URL>
-NEXT_PUBLIC_WS_URL=<backend WebSocket URL>
+# Or manually create a test issue
+gh issue create --title "Test: Verify agent setup" \
+  --body "Test issue for factory validation" \
+  --label "ai-ready" --label "bug"
 ```
 
-#### 3.3 Get Railway Token
+Then check the **Actions tab** - you should see agents running!
 
-1. Go to Railway Dashboard → Account Settings → Tokens
-2. Create a new token
-3. Add as `RAILWAY_TOKEN_SW_FACTORY` secret in GitHub
+---
 
-### 4. Customize for Your Project
+## Included Hello World Apps
 
-#### 4.1 Update CLAUDE.md
+This template includes working starter applications to get you productive immediately:
 
-Edit `CLAUDE.md` to reflect your project:
-- Project name and description
-- Your production domain
-- Your GitHub username (for escalations)
-- Your tech stack
-- Your quality gate commands
+### Backend (FastAPI + Python)
 
-#### 4.2 Update Workflow Files
-
-The workflows assume a `frontend/` + `backend/` structure. Modify these files if your structure differs:
-
-- `.github/workflows/bug-fix.yml` - Dependency installation steps
-- `.github/workflows/qa.yml` - Test commands and coverage paths
-- `.github/workflows/release-eng.yml` - Audit and lint commands
-- `.github/workflows/devops.yml` - Health check endpoints
-
-#### 4.3 Create CI/CD Workflow
-
-Create `.github/workflows/ci.yml` for your project. The `ci-failure-monitor.yml` workflow watches for failures in a workflow named "CI/CD".
-
-Example minimal CI workflow:
-
-```yaml
-name: CI/CD
-
-on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
-
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      # Add your test steps here
-      - name: Run tests
-        run: npm test  # Customize for your project
+```bash
+cd backend
+uv sync                                    # Install dependencies
+uv run uvicorn app.main:app --reload       # Start server
+open http://localhost:8000/docs            # API documentation
 ```
 
-### 5. Verify Setup
+**Endpoints:**
+- `GET /health` - Health check (used by DevOps monitoring)
+- `GET /api/version` - API version info
+- `GET /api/hello` - Hello World
+- `POST /api/hello` - Personalized greeting
 
-After completing setup:
+### Frontend (Next.js + TypeScript)
 
-1. **Create a test issue:**
-   ```bash
-   gh issue create --title "Test: Verify agent setup" --body "This is a test issue to verify the autonomous agents are working."
-   ```
+```bash
+cd frontend
+npm install                                # Install dependencies
+npm run dev                                # Start dev server
+open http://localhost:3000                 # Open in browser
+```
 
-2. **Watch the Triage Agent:**
-   - Go to Actions tab
-   - You should see "Triage Agent" workflow start
-   - It will label and classify your issue
+**Features:**
+- Connects to backend API
+- Shows API health status
+- Dark/light mode
+- TypeScript + React Testing Library
 
-3. **Check DevOps monitoring:**
-   - If you configured production URLs, go to Actions → DevOps Agent
-   - Manually trigger to verify health checks work
+### Running Both Together
+
+```bash
+# Terminal 1: Backend
+cd backend && uv run uvicorn app.main:app --reload
+
+# Terminal 2: Frontend
+cd frontend && npm run dev
+
+# Visit http://localhost:3000
+```
+
+---
+
+## Slack Bot Integration (Optional)
+
+Want a Claude Code-like experience in Slack? This template includes a Slack bot that:
+
+- **Conversational AI** - Chat naturally about your codebase
+- **Agent Dispatch** - Send tasks to agents via Slack (`dispatch code fix the login bug`)
+- **Status Updates** - Receive progress notifications in Slack threads
+- **Intervention Help** - Collaborate when workflows need human input
+
+### Quick Setup
+
+```bash
+./scripts/setup-slack.sh
+```
+
+This wizard guides you through creating a Slack app and configuring secrets.
+
+### How It Works
+
+The Slack bot is a "meta-agent" that sits on top of your GitHub-based workflow:
+
+1. You chat with Claude in Slack (like Claude Code, but in Slack)
+2. When you need an agent to take action, dispatch to GitHub: `dispatch code <task>`
+3. The bot creates a GitHub issue with appropriate labels
+4. Agent workflows run on GitHub (as usual)
+5. Status updates post back to your Slack thread
+
+> **Note**: The agents themselves still work via GitHub Actions. The Slack bot is your collaboration layer, not a replacement for the GitHub workflow.
+
+See [`services/slack-bot/README.md`](./services/slack-bot/README.md) for full documentation.
+
+---
 
 ## Architecture
 
@@ -230,49 +183,48 @@ After completing setup:
                               ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │                      Triage Agent                               │
-│  - Classifies as bug/enhancement                                │
-│  - Checks for duplicates                                        │
-│  - Adds priority label                                          │
-│  - Adds ai-ready label (triggers Code Agent)                    │
+│  • Classifies as bug/enhancement                                │
+│  • Checks for duplicates                                        │
+│  • Adds priority label (P0/P1/P2)                               │
+│  • Adds ai-ready label → triggers Code Agent                    │
 └─────────────────────────────────────────────────────────────────┘
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │                      Code Agent                                 │
-│  - Analyzes logs from previous failures                         │
-│  - Checks for existing PRs/branches                             │
-│  - Implements fix with tests                                    │
-│  - Creates PR and monitors CI                                   │
-│  - Auto-merges on success                                       │
-│  - Retries up to 3x on failure                                  │
-│  - Escalates to PE if stuck                                     │
+│  • Analyzes logs from previous failures                         │
+│  • Implements fix with tests                                    │
+│  • Creates PR and monitors CI                                   │
+│  • Auto-merges on success                                       │
+│  • Retries up to 3x on failure                                  │
+│  • Escalates to PE if stuck                                     │
 └─────────────────────────────────────────────────────────────────┘
                               │
               (on 3x failure or timeout)
                               ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │                  Principal Engineer                             │
-│  - Called when Code Agent gets stuck                            │
-│  - Downloads and analyzes E2E artifacts                         │
-│  - Identifies root cause (code vs infra vs workflow)            │
-│  - Fixes the issue AND improves factory                         │
-│  - Escalates to human only if truly stuck                       │
+│  • Called when Code Agent gets stuck                            │
+│  • Downloads and analyzes E2E artifacts                         │
+│  • Identifies root cause (code vs infra vs workflow)            │
+│  • Fixes the issue AND improves factory                         │
+│  • Escalates to human only if truly stuck                       │
 └─────────────────────────────────────────────────────────────────┘
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │                         CI/CD                                   │
-│  - Runs tests                                                   │
-│  - If fails on main → CI Monitor creates issue                  │
-│  - If passes → Deploy to production                             │
+│  • Runs tests on all PRs                                        │
+│  • If fails on main → CI Monitor creates ai-ready issue         │
+│  • If passes → Deploy to production                             │
 └─────────────────────────────────────────────────────────────────┘
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │                      DevOps Agent                               │
-│  - Smoke tests every 5 minutes                                  │
-│  - Auto-creates incident on failure                             │
-│  - Code Agent attempts to fix                                   │
+│  • Smoke tests every 5 minutes                                  │
+│  • Auto-creates incident on failure                             │
+│  • Code Agent attempts to fix                                   │
 └─────────────────────────────────────────────────────────────────┘
 
 Background Agents (scheduled):
@@ -283,63 +235,205 @@ Background Agents (scheduled):
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-## Workflow Files
+---
 
-| File | Purpose |
-|------|---------|
-| `bug-fix.yml` | Code Agent - fixes bugs and implements features |
-| `triage.yml` | Triage Agent - classifies and labels issues |
-| `ci-failure-monitor.yml` | Creates issues when CI fails on main |
-| `devops.yml` | Production monitoring and incident response |
-| `qa.yml` | Nightly test quality improvement |
-| `release-eng.yml` | Daily dependency and security maintenance |
-| `marketing.yml` | Documentation updates on releases |
+## Agent Reference
 
-## Agent Definition Files
+| Agent | Trigger | Purpose | Workflow |
+|-------|---------|---------|----------|
+| **Triage** | Issue opened | Classify, dedupe, prioritize, label | `triage.yml` |
+| **Code** | `ai-ready` label | Fix bugs, implement features | `bug-fix.yml` |
+| **Principal Engineer** | `needs-principal-engineer` label | Holistic debugging when Code Agent stuck | `principal-engineer.yml` |
+| **CI Monitor** | CI failure on main | Auto-create `ai-ready` issues | `ci-failure-monitor.yml` |
+| **DevOps** | Every 5 minutes | Production health checks | `devops.yml` |
+| **QA** | 2am UTC daily | Improve test coverage | `qa.yml` |
+| **Release Eng** | 3am UTC daily | Security audits, dependencies | `release-eng.yml` |
+| **Marketing** | On release | Update changelog, docs | `marketing.yml` |
 
-Located in `.claude/agents/`:
+### Interacting with Agents
 
-| File | Agent |
-|------|-------|
-| `bug-fixer.md` | Instructions for the Code Agent |
-| `triage-product.md` | Instructions for the Triage Agent |
-| `qa-improver.md` | Instructions for the QA Agent |
-| `devops-sre.md` | Instructions for the DevOps Agent |
-| `release-engineer.md` | Instructions for the Release Eng Agent |
-| `marketing-docs.md` | Instructions for the Marketing Agent |
+**Comment-driven interaction:** Comment `@claude` on any issue with `ai-ready` label.
+
+**Status labels:**
+| Label | Meaning | Who Acts |
+|-------|---------|----------|
+| `status:bot-working` | Agent is working | Wait |
+| `status:awaiting-human` | Agent needs input | You respond |
+| `status:awaiting-bot` | You commented | Wait |
+
+---
+
+## Customization
+
+### Modify Tech Stack
+
+1. **Change backend language**: Replace `backend/` with your stack, update `bug-fix.yml` and `qa.yml`
+2. **Change frontend framework**: Replace `frontend/` with your choice, update workflows
+3. **Add database**: Add to `backend/`, update CI with service containers
+
+### Add E2E Tests
+
+1. Add Playwright to frontend: `npm install -D @playwright/test`
+2. Uncomment E2E job in `.github/workflows/ci.yml`
+3. Add E2E tests in `frontend/e2e/`
+
+### Deploy to Railway
+
+1. Create Railway project with backend + frontend services
+2. Add `RAILWAY_TOKEN_SW_FACTORY` secret
+3. Uncomment deploy steps in `ci.yml`
+
+**Backend service configuration:**
+```bash
+# Build command
+cd backend && pip install uv && uv sync
+
+# Start command
+cd backend && uv run uvicorn app.main:app --host 0.0.0.0 --port $PORT
+```
+
+**Frontend service configuration:**
+```bash
+# Build command
+cd frontend && npm ci && npm run build
+
+# Start command
+cd frontend && npm start
+```
+
+---
+
+## Test Project
+
+The template includes a **test project** for validating your factory setup:
+
+```bash
+cd test-project
+npm install
+npm test          # Some tests intentionally fail (bugs for agents to fix!)
+```
+
+### What's Included
+
+- **Simple calculator** with intentional bugs (division by zero, negative sqrt)
+- **Tests** that expose the bugs
+- **Issue creation script** to exercise agents
+
+### Testing Your Factory
+
+```bash
+# Create test issues that trigger agents
+./test-project/scripts/create-test-issues.sh
+
+# This creates:
+# 1. A bug issue (division by zero) - triggers Code Agent
+# 2. An enhancement issue (add modulo) - triggers Code Agent
+# 3. A QA issue (improve coverage) - triggers QA Agent
+```
+
+Watch the factory work:
+1. Issues appear with `ai-ready` label
+2. Code Agent picks them up
+3. PRs get created with fixes
+4. Tests pass, PRs merge
+5. Issues close automatically
+
+---
+
+## Project Structure
+
+```
+.
+├── .claude/
+│   └── agents/              # Agent instruction files
+├── .github/
+│   └── workflows/           # GitHub Actions workflows
+├── backend/                 # FastAPI backend (Hello World)
+│   ├── app/
+│   ├── tests/
+│   └── pyproject.toml
+├── frontend/                # Next.js frontend (Hello World)
+│   ├── src/app/
+│   ├── __tests__/
+│   └── package.json
+├── services/
+│   └── slack-bot/           # Factory improvement bot
+│       ├── src/
+│       ├── slack-app-manifest.yaml  # One-click Slack app setup
+│       └── package.json
+├── test-project/            # Validation project with intentional bugs
+│   ├── src/calculator.ts
+│   ├── tests/
+│   └── scripts/create-test-issues.sh
+├── scripts/
+│   ├── setup-factory.sh     # Automated factory setup
+│   └── validate-factory.sh  # Validate setup
+├── CLAUDE.md                # Agent instructions & philosophy
+└── README.md                # This file
+```
+
+---
 
 ## Troubleshooting
 
-### Agents not triggering
+<details>
+<summary>Agents not triggering</summary>
 
 1. **Check secrets**: Ensure `ANTHROPIC_API_KEY` and `PAT_WITH_WORKFLOW_ACCESS` are set
 2. **Check permissions**: Verify Actions permissions allow write access
-3. **Check labels**: Ensure all required labels exist
+3. **Check labels**: Run `./scripts/setup.sh --labels-only` to create missing labels
 
-### CI Monitor not creating issues
+</details>
+
+<details>
+<summary>Code Agent not creating PRs</summary>
+
+1. Check the workflow logs in Actions tab
+2. Ensure the issue has both `ai-ready` AND (`bug` OR `enhancement`) labels
+3. Verify PAT has write access
+
+</details>
+
+<details>
+<summary>CI Monitor not creating issues</summary>
 
 1. Your CI workflow must be named "CI/CD" (or update `ci-failure-monitor.yml`)
 2. It only triggers on failures on the `main` branch
 
-### Code Agent not auto-merging
+</details>
 
-1. Check branch protection rules - agents may not have permission
-2. Verify PAT has write access to the repository
-3. Check if the PR requires approval from a human reviewer
-
-### DevOps monitoring shows failures
+<details>
+<summary>DevOps showing failures</summary>
 
 1. Verify `PRODUCTION_BACKEND_URL` and `PRODUCTION_FRONTEND_URL` are correct
-2. Ensure your health endpoint returns 200 OK
-3. Check if your auth endpoint matches the expected API structure
+2. Ensure health endpoint returns 200: `curl $PRODUCTION_BACKEND_URL/health`
+3. Check if auth endpoint matches expected API structure
+
+</details>
+
+---
+
+## Philosophy
+
+> **Human intervention = factory bug**
+
+If you need to step in, that's a bug in the factory itself. When intervening:
+1. Fix the immediate issue
+2. Update the relevant agent workflow to handle this autonomously next time
+3. Document the improvement
+
+See [CLAUDE.md](./CLAUDE.md) for the full philosophy and agent instructions.
+
+---
 
 ## Contributing
 
-This is a template repository. To contribute improvements:
-
+Improvements to the template are welcome! Please:
 1. Fork this repository
 2. Make your changes
 3. Create a PR back to the main template
+
+---
 
 ## License
 

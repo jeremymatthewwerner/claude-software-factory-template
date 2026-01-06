@@ -25,19 +25,13 @@ See README.md for complete setup instructions including:
 **Key Principles:**
 - **Human intervention = factory bug** - If a human needs to step in, that's a bug in the factory itself
 - **Fix the factory, not the symptom** - When intervening, always ask: "How can I prevent needing to intervene for this type of issue again?"
-- **Workflow fixes over one-off fixes** - ALWAYS prefer updating workflows/agents to handle issues automatically rather than fixing issues manually. A one-off fix helps once; a workflow fix helps forever.
 - **Visibility enables autonomy** - Agents must post progress updates to issues so humans can monitor without intervening
 - **Self-healing over manual fixes** - CI failures auto-create issues, agents auto-fix them
-- **Immediate triggers over polling** - When possible, use webhooks/events (e.g., `push` to main) to trigger actions immediately rather than waiting for scheduled polls
 
 **When you (human or Claude) intervene:**
 1. Fix the immediate issue
 2. Update the relevant agent workflow to handle this case autonomously next time
 3. Document the improvement in this file
-4. **Update the template repo** - If this is a derived project, make a generic version of the fix in [claude-software-factory-template](https://github.com/jeremymatthewwerner/claude-software-factory-template) so other projects benefit
-5. **Create a closed issue documenting the fix** - File an issue with `factory-improvement` label describing the problem, root cause, and solution. Close it immediately with a reference to the fixing PR. This creates a searchable audit trail of factory learnings.
-
-> **Why document as issues?** Workflow fixes often happen in interactive Claude sessions. Without explicit documentation, these learnings are lost in chat history. A closed issue with `factory-improvement` label creates a permanent, searchable record that benefits future debugging and onboarding.
 
 ## Decision-Making Autonomy (CRITICAL)
 
@@ -140,44 +134,6 @@ cat /tmp/e2e-logs/backend.log | tail -200
 
 **Agents must document what logs showed BEFORE implementing a fix.**
 
-### Testing Workflow Changes (CRITICAL)
-
-**Workflow changes need testing just like code changes.** A regex that looks right can fail silently. An API call that seems correct might have wrong permissions.
-
-**Before merging workflow changes:**
-
-1. **Test components locally first:**
-   ```bash
-   # Test regex patterns against real data
-   COMMENT_BODY=$(gh api .../issues/123/comments --jq '...')
-   echo "$COMMENT_BODY" | grep -E 'your-pattern' | wc -l
-
-   # Test shell commands
-   gh issue list --label "ai-ready" --json number,labels
-   ```
-
-2. **Know when a real issue test is required:**
-   - Changes to Code Agent trigger conditions (label handling, event types)
-   - Changes to progress comment format or update logic
-   - Changes to CI monitoring, auto-merge, or auto-close behavior
-   - Changes to agent prompts that affect behavior
-   - Any change to bug-fix.yml, triage.yml, or principal-engineer.yml
-
-3. **Create a trivial test issue when needed:**
-   ```bash
-   gh issue create --title "Test: Verify workflow change [describe what]" \
-     --body "Test issue to verify [specific change]. Expected: [behavior]. Delete after." \
-     --label "bug" --label "ai-ready"
-   ```
-
-4. **Verify the workflow ran correctly:**
-   - Check Actions tab for the workflow run
-   - Verify progress comments were created/updated
-   - Check that labels were applied correctly
-   - Confirm the expected behavior occurred
-
-5. **Clean up test issues** - Close or delete after verification
-
 ## Git Workflow
 
 **Claude Code sessions use feature branches:**
@@ -215,7 +171,6 @@ All bugs AND tasks must be tracked via GitHub Issues for audit history.
 - `ai-ready` - Ready for autonomous agent
 - `needs-principal-engineer` - Escalated to PE (Code Agent stuck)
 - `needs-human` - Requires human intervention (PE escalated)
-- `factory-improvement` - Documents a workflow/factory fix (closed immediately with details)
 - `priority-high`, `priority-medium`, `priority-low`
 
 ## Autonomous Agents
@@ -301,46 +256,34 @@ When agents encounter these situations, apply these defaults:
 - Create issue for proper resolution
 - Don't spend >30min on dependency issues
 
-**Transient CI failures (502, 503, timeouts):**
-- Add retry logic with exponential backoff (3 attempts, 5s → 10s → 20s)
-- Distinguish transient errors (retry) from real errors (fail fast)
-- Add stability waits after deployment before running API tests
-- Don't let infrastructure blips block PRs for hours
+## Slack Integration (Optional)
 
-## Observability & DevOps Hygiene
+This repo includes a Slack bot for a Claude Code-like experience in Slack:
 
-**Every production system needs visibility.** Agents should always consider:
+**Setup:**
+```bash
+./scripts/setup-slack.sh
+```
 
-### Health Endpoints
-- **Basic** (`/health`): Returns 200 if process is alive
-- **Deep** (`/health/ready`): Verifies DB, cache, external APIs - returns 503 if degraded
+**What the Slack bot provides:**
+- Conversational AI - Chat about your codebase in Slack
+- Agent dispatch - Say `dispatch code fix the bug` to create GitHub issues
+- Status updates - Receive notifications when agents complete work
 
-### The Four Golden Signals
-1. **Latency** - Request duration (p50, p95, p99)
-2. **Traffic** - Requests per second
-3. **Errors** - Error rate by endpoint
-4. **Saturation** - CPU, memory, connection pools
+**How it works:**
+1. Slack bot provides human collaboration layer
+2. Dispatch commands create GitHub issues with `ai-ready` label
+3. Agent workflows run on GitHub (same as before)
+4. Agents POST status updates back to Slack threads (optional)
 
-### When Adding Features
-Before shipping, verify:
-- [ ] Health endpoint updated if new dependencies added
-- [ ] Key operations logged (INFO level)
-- [ ] Errors logged with context
-- [ ] Metrics added for new endpoints
-- [ ] Failure scenarios have alerts
+**Secrets for Slack (if using):**
+- `SLACK_BOT_TOKEN` - Bot User OAuth Token (xoxb-...)
+- `SLACK_APP_TOKEN` - App-Level Token (xapp-...)
+- `SLACK_SIGNING_SECRET` - Signing Secret
+- `SLACK_WEBHOOK_URL` - URL where Slack bot is deployed
+- `SLACK_WEBHOOK_SECRET` - Secret for webhook authentication
 
-### DevOps Agent Responsibilities
-- Monitor health endpoints every 5 minutes
-- Create issues for anomalies
-- Pull logs and diagnose failures
-- Restart services (max 2 attempts, then escalate)
-- Weekly audit of monitoring effectiveness
-
-### Railway Observability
-Railway provides built-in dashboards for CPU, memory, network. For custom metrics:
-- Use OpenTelemetry collector
-- Export to Grafana/Datadog if needed
-- See: https://docs.railway.app/guides/observability
+See `services/slack-bot/README.md` for complete documentation.
 
 ## Escalation
 
