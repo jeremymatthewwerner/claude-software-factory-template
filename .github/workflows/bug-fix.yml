@@ -189,17 +189,6 @@ jobs:
           gh issue edit ${{ steps.context.outputs.number }} \
             --add-label "status:bot-working"
 
-      # Optional: Notify Slack that Code Agent is starting (skips if not configured)
-      - name: Notify Slack (started)
-        uses: ./.github/actions/slack-notify
-        with:
-          agent: code
-          status: started
-          message: "Starting work on issue #${{ steps.context.outputs.number }}"
-          issue_number: ${{ steps.context.outputs.number }}
-          slack_webhook_url: ${{ secrets.SLACK_WEBHOOK_URL }}
-          webhook_secret: ${{ secrets.SLACK_WEBHOOK_SECRET }}
-
       - name: Acknowledge comment (respond mode)
         if: steps.context.outputs.mode == 'respond'
         env:
@@ -1089,19 +1078,6 @@ jobs:
           gh issue edit ${{ steps.context.outputs.number }} \
             --remove-label "status:bot-working" 2>/dev/null || true
 
-      # Optional: Notify Slack of completion
-      - name: Notify Slack (completed)
-        if: success()
-        uses: ./.github/actions/slack-notify
-        with:
-          agent: code
-          status: completed
-          message: "Completed work on issue #${{ steps.context.outputs.number }}"
-          issue_number: ${{ steps.context.outputs.number }}
-          pr_number: ${{ steps.ci-monitor.outputs.pr_number }}
-          slack_webhook_url: ${{ secrets.SLACK_WEBHOOK_URL }}
-          webhook_secret: ${{ secrets.SLACK_WEBHOOK_SECRET }}
-
       - name: Handle timeout gracefully
         if: cancelled()
         env:
@@ -1179,15 +1155,3 @@ jobs:
             --remove-label "status:bot-working" \
             --add-label "needs-human" \
             --add-label "status:awaiting-human"
-
-      # Optional: Notify Slack of failure
-      - name: Notify Slack (failed)
-        if: failure()
-        uses: ./.github/actions/slack-notify
-        with:
-          agent: code
-          status: failed
-          message: "Workflow failed for issue #${{ steps.context.outputs.number }} - see logs"
-          issue_number: ${{ steps.context.outputs.number }}
-          slack_webhook_url: ${{ secrets.SLACK_WEBHOOK_URL }}
-          webhook_secret: ${{ secrets.SLACK_WEBHOOK_SECRET }}
