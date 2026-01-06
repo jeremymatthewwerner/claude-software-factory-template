@@ -65,6 +65,22 @@ export function divide(first: number, ...rest: number[]): CalculationResult {
 }
 
 /**
+ * Calculate modulo (remainder of division)
+ *
+ * @throws Error if divisor is zero
+ */
+export function modulo(dividend: number, divisor: number): CalculationResult {
+  if (divisor === 0) {
+    throw new Error('Division by zero');
+  }
+  return {
+    value: dividend % divisor,
+    operation: 'modulo',
+    inputs: [dividend, divisor],
+  };
+}
+
+/**
  * Calculate the average of numbers
  */
 export function average(...numbers: number[]): CalculationResult {

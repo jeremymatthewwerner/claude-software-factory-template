@@ -5,7 +5,7 @@
  * that the factory agents should fix.
  */
 
-import { add, subtract, multiply, divide, average, percentage, power, squareRoot } from '../src/calculator';
+import { add, subtract, multiply, divide, modulo, average, percentage, power, squareRoot } from '../src/calculator';
 
 describe('Calculator', () => {
   describe('add', () => {
@@ -73,6 +73,44 @@ describe('Calculator', () => {
 
     it('should handle division by zero', () => {
       expect(() => divide(10, 0)).toThrow('Division by zero');
+    });
+  });
+
+  describe('modulo', () => {
+    it('should calculate modulo of two numbers', () => {
+      const result = modulo(10, 3);
+      expect(result.value).toBe(1);
+      expect(result.operation).toBe('modulo');
+      expect(result.inputs).toEqual([10, 3]);
+    });
+
+    it('should handle division by zero', () => {
+      expect(() => modulo(10, 0)).toThrow('Division by zero');
+    });
+
+    it('should handle negative dividend', () => {
+      const result = modulo(-10, 3);
+      expect(result.value).toBe(-1);
+    });
+
+    it('should handle negative divisor', () => {
+      const result = modulo(10, -3);
+      expect(result.value).toBe(1);
+    });
+
+    it('should handle both negative', () => {
+      const result = modulo(-10, -3);
+      expect(result.value).toBe(-1);
+    });
+
+    it('should return 0 when dividend is divisible by divisor', () => {
+      const result = modulo(12, 4);
+      expect(result.value).toBe(0);
+    });
+
+    it('should handle decimal numbers', () => {
+      const result = modulo(5.5, 2);
+      expect(result.value).toBeCloseTo(1.5, 10);
     });
   });
 
