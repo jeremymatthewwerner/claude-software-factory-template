@@ -71,18 +71,8 @@ describe('Calculator', () => {
       expect(result.value).toBe(10);
     });
 
-    // This test exposes the bug - division by zero
-    // Currently it returns Infinity, but should throw an error
     it('should handle division by zero', () => {
-      // BUG: This currently returns Infinity instead of throwing
-      // The factory agent should fix this
-      expect(() => {
-        const result = divide(10, 0);
-        // If we get here without throwing, the bug exists
-        if (!isFinite(result.value)) {
-          throw new Error('Division by zero should throw an error');
-        }
-      }).toThrow();
+      expect(() => divide(10, 0)).toThrow('Division by zero');
     });
   });
 
