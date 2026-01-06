@@ -274,8 +274,8 @@ setup_github_secrets() {
     print_step "Adding secrets to GitHub repository..."
 
     if [ -n "$GITHUB_TOKEN" ]; then
-        echo "$GITHUB_TOKEN" | gh secret set FACTORY_GITHUB_TOKEN
-        print_success "Set FACTORY_GITHUB_TOKEN"
+        echo "$GITHUB_TOKEN" | gh secret set PAT_WITH_WORKFLOW_ACCESS
+        print_success "Set PAT_WITH_WORKFLOW_ACCESS"
     fi
 
     if [ -n "$ANTHROPIC_API_KEY" ]; then
