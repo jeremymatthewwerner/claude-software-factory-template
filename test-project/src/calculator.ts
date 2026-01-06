@@ -119,3 +119,19 @@ export function squareRoot(n: number): CalculationResult {
     inputs: [n],
   };
 }
+
+/**
+ * Calculate modulo (remainder of division)
+ *
+ * @throws Error if divisor is zero
+ */
+export function modulo(dividend: number, divisor: number): CalculationResult {
+  if (divisor === 0) {
+    throw new Error('Division by zero');
+  }
+  return {
+    value: dividend % divisor,
+    operation: 'modulo',
+    inputs: [dividend, divisor],
+  };
+}
