@@ -43,69 +43,52 @@ git clone https://github.com/YOUR_USERNAME/claude-software-factory-template.git 
 cd my-project
 ```
 
-### 2. Run the Setup Wizard
+### 2. Run the Automated Setup
 
 ```bash
-./scripts/setup.sh
+./scripts/setup-factory.sh
 ```
 
-The wizard will:
-- Create all required GitHub labels
-- Update CLAUDE.md with your project details
-- Activate the CI workflow
-- Guide you through remaining configuration
+This wizard handles everything:
+- ✅ Creates all required GitHub labels
+- ✅ Collects and stores secrets (GitHub PAT, Anthropic key, Slack tokens)
+- ✅ Sets up GitHub repository secrets
+- ✅ Deploys Slack bot to Railway (optional)
+- ✅ Validates the complete setup
 
-### 3. Add GitHub Secrets
+**Or run individual steps:**
+```bash
+./scripts/setup-factory.sh        # Full interactive setup
+./scripts/validate-factory.sh     # Validate existing setup
+```
 
-Go to **Settings → Secrets and variables → Actions** and add:
+### 3. Create a Slack App (30 seconds)
 
-| Secret | Required | Description |
-|--------|----------|-------------|
-| `ANTHROPIC_API_KEY` | Yes | Your Anthropic API key |
-| `PAT_WITH_WORKFLOW_ACCESS` | Yes | GitHub PAT with `repo` + `workflow` scopes |
-| `RAILWAY_TOKEN_SW_FACTORY` | Optional | Railway token for deployments |
-| `PRODUCTION_BACKEND_URL` | Optional | For DevOps monitoring |
-| `PRODUCTION_FRONTEND_URL` | Optional | For DevOps monitoring |
+Use the included manifest for instant app creation:
 
-<details>
-<summary>How to create the GitHub PAT</summary>
+1. Go to https://api.slack.com/apps
+2. Click **"Create New App"** → **"From an app manifest"**
+3. Paste contents of `services/slack-bot/slack-app-manifest.yaml`
+4. Install to workspace
 
-1. Go to GitHub → Settings → Developer settings → Personal access tokens → Fine-grained tokens
-2. Click "Generate new token"
-3. Configure:
-   - **Token name**: `claude-software-factory`
-   - **Expiration**: 90 days (or custom)
-   - **Repository access**: Only select repositories → your repo
-   - **Permissions**:
-     - Contents: Read and write
-     - Issues: Read and write
-     - Pull requests: Read and write
-     - Workflows: Read and write
-     - Actions: Read
-4. Generate and copy the token
-5. Add as `PAT_WITH_WORKFLOW_ACCESS` secret
+The manifest pre-configures all scopes, events, and settings automatically.
 
-> **Why a PAT?** The default `GITHUB_TOKEN` cannot trigger workflows or modify workflow files. A PAT enables full autonomous operation.
-
-</details>
-
-### 4. Enable Actions Permissions
-
-Go to **Settings → Actions → General**:
-- ✅ Allow all actions
-- ✅ Read and write permissions
-- ✅ Allow GitHub Actions to create and approve pull requests
-
-### 5. Test It!
+### 4. Test It!
 
 ```bash
-# Create a test issue
+# Validate your setup
+./scripts/validate-factory.sh
+
+# Create test issues to exercise the agents
+./test-project/scripts/create-test-issues.sh
+
+# Or manually create a test issue
 gh issue create --title "Test: Verify agent setup" \
-  --body "This is a test issue to verify the autonomous agents are working."
-
-# Watch the Triage Agent in action
-# Go to Actions tab → you should see "Triage Agent" running
+  --body "Test issue for factory validation" \
+  --label "ai-ready" --label "bug"
 ```
+
+Then check the **Actions tab** - you should see agents running!
 
 ---
 
@@ -320,6 +303,43 @@ cd frontend && npm start
 
 ---
 
+## Test Project
+
+The template includes a **test project** for validating your factory setup:
+
+```bash
+cd test-project
+npm install
+npm test          # Some tests intentionally fail (bugs for agents to fix!)
+```
+
+### What's Included
+
+- **Simple calculator** with intentional bugs (division by zero, negative sqrt)
+- **Tests** that expose the bugs
+- **Issue creation script** to exercise agents
+
+### Testing Your Factory
+
+```bash
+# Create test issues that trigger agents
+./test-project/scripts/create-test-issues.sh
+
+# This creates:
+# 1. A bug issue (division by zero) - triggers Code Agent
+# 2. An enhancement issue (add modulo) - triggers Code Agent
+# 3. A QA issue (improve coverage) - triggers QA Agent
+```
+
+Watch the factory work:
+1. Issues appear with `ai-ready` label
+2. Code Agent picks them up
+3. PRs get created with fixes
+4. Tests pass, PRs merge
+5. Issues close automatically
+
+---
+
 ## Project Structure
 
 ```
@@ -330,8 +350,6 @@ cd frontend && npm start
 │   └── workflows/           # GitHub Actions workflows
 ├── backend/                 # FastAPI backend (Hello World)
 │   ├── app/
-│   │   ├── __init__.py
-│   │   └── main.py
 │   ├── tests/
 │   └── pyproject.toml
 ├── frontend/                # Next.js frontend (Hello World)
@@ -339,14 +357,18 @@ cd frontend && npm start
 │   ├── __tests__/
 │   └── package.json
 ├── services/
-│   └── slack-bot/           # Slack bot for Claude-like experience
+│   └── slack-bot/           # Factory improvement bot
 │       ├── src/
+│       ├── slack-app-manifest.yaml  # One-click Slack app setup
 │       └── package.json
+├── test-project/            # Validation project with intentional bugs
+│   ├── src/calculator.ts
+│   ├── tests/
+│   └── scripts/create-test-issues.sh
 ├── scripts/
-│   ├── setup.sh             # Main setup wizard
-│   └── setup-slack.sh       # Slack bot setup wizard
+│   ├── setup-factory.sh     # Automated factory setup
+│   └── validate-factory.sh  # Validate setup
 ├── CLAUDE.md                # Agent instructions & philosophy
-├── GETTING_STARTED.md       # Quick start guide
 └── README.md                # This file
 ```
 
