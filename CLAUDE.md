@@ -1,37 +1,78 @@
-# CLAUDE.md - Autonomous Software Factory
+# CLAUDE.md - Your Project
 
-This repository is configured to run as an autonomous software factory using Claude Code agents.
+Real-time multi-party chat with AI-simulated historical/contemporary thinkers.
 
 ## Project Overview
+- **Name**: Your Project
+- **Description**: Real-time chat with historical philosophers
+- **Domain**: https://example.com
+- **Hosting**: Railway
+- **Maintainer**: @your-github-username
 
-- **Name**: [Your Project Name]
-- **Description**: [Your project description]
-- **Domain**: [Your production URL]
-- **Hosting**: Railway (or your preferred platform)
-- **Maintainer**: @[your-github-username]
+## Repository Setup (One-Time)
 
-## Setup Steps
+**Before the autonomous factory can run without intervention, complete these steps:**
 
-See README.md for complete setup instructions including:
-- GitHub repository configuration
-- Required secrets and tokens
-- Label creation
-- Deployment setup
+### 1. GitHub App Permissions
+Go to **Settings → Actions → General** and grant these permissions to the GitHub App:
+- ✅ `workflows` - Allows agents to modify `.github/workflows/` files
+- ✅ `contents: write` - Allows agents to push code
+- ✅ `issues: write` - Allows agents to create/update issues
+- ✅ `pull-requests: write` - Allows agents to create PRs
+
+### 2. Required Labels
+Create these labels (or run: `gh label create <name> --color <color>`):
+- `ai-ready` (#0E8A16) - Ready for autonomous agent
+- `needs-principal-engineer` (#7057FF) - Escalated to Principal Engineer (Code Agent stuck)
+- `needs-human` (#D93F0B) - Requires human intervention (PE escalated)
+- `qa-agent` (#0052CC) - QA Agent tracking issues
+- `automation` (#BFDADC) - Automated by agents
+- `ci-failure` (#B60205) - CI failure issues
+- `status:bot-working` (#7057FF) - Bot is actively working on this issue
+- `status:awaiting-human` (#D93F0B) - Blocked waiting for human input
+- `status:awaiting-bot` (#0E8A16) - Human commented, bot will respond
+- `bug`, `enhancement`, `priority-high`, `priority-medium`, `priority-low`
+- `factory-improvement` (#1D76DB) - Documents factory/workflow fixes for audit trail
+
+### 3. Secrets
+Ensure these secrets are set in **Settings → Secrets and variables → Actions**:
+- `ANTHROPIC_API_KEY` - For Claude API access
+- `GITHUB_TOKEN` - Auto-provided, but verify workflow permissions
+- `PAT_WITH_WORKFLOW_ACCESS` - Personal Access Token with `workflow` scope (for Code Agent to modify workflows)
+- `RAILWAY_TOKEN` - Railway API token (for DevOps Agent infrastructure management)
+- `RAILWAY_WORKSPACE_ID` - Railway workspace ID (UUID from Railway dashboard URL)
+- `PRODUCTION_BACKEND_URL` - Backend URL for health checks (e.g., `https://api.example.com`)
+- `PRODUCTION_FRONTEND_URL` - Frontend URL for health checks (e.g., `https://example.com`)
+- `TEST_CLEANUP_SECRET` - Secret for test user cleanup endpoint (used by smoke/canary tests)
+- `DEVOPS_API_SECRET` - Secret for DevOps API endpoints (used by DevOps Agent for database maintenance)
+
+### 4. Branch Protection (Optional)
+If using branch protection on `main`, ensure:
+- Allow GitHub Actions to bypass (for auto-merge)
+- Or use admin merge for agent PRs
+
+**Once setup is complete, the factory should run autonomously.**
 
 ## Autonomous Software Factory Philosophy
 
 **This repo is designed to run as an autonomous software factory.** The goal is for AI agents to handle routine development tasks without human intervention.
 
 **Key Principles:**
-- **Human intervention = factory bug** - If a human needs to step in, that's a bug in the factory itself
+- **Human intervention = factory bug** - If a human needs to step in to fix something, that's a bug in the factory itself, not just a bug in the code
 - **Fix the factory, not the symptom** - When intervening, always ask: "How can I prevent needing to intervene for this type of issue again?"
+- **Workflow fixes over one-off fixes** - ALWAYS prefer updating workflows/agents to handle issues automatically rather than fixing issues manually. A one-off fix helps once; a workflow fix helps forever.
 - **Visibility enables autonomy** - Agents must post progress updates to issues so humans can monitor without intervening
 - **Self-healing over manual fixes** - CI failures auto-create issues, agents auto-fix them
+- **Immediate triggers over polling** - When possible, use webhooks/events (e.g., `push` to main) to trigger actions immediately rather than waiting for scheduled polls
 
 **When you (human or Claude) intervene:**
 1. Fix the immediate issue
 2. Update the relevant agent workflow to handle this case autonomously next time
 3. Document the improvement in this file
+4. **Update the template repo** - Make a generic version of the fix in [claude-software-factory-template](https://github.com/jeremymatthewwerner/claude-software-factory-template) so other projects benefit
+5. **Create a closed issue documenting the fix** - File an issue with `factory-improvement` label describing the problem, root cause, and solution. Close it immediately with a reference to the fixing PR. This creates a searchable audit trail of factory learnings.
+
+> **Template Repo:** When improving workflows, CLAUDE.md, or agent behavior, always create a generalized version of the improvement in the template repo at `jeremymatthewwerner/claude-software-factory-template`. This ensures learnings from this project benefit all future projects.
 
 ## Decision-Making Autonomy (CRITICAL)
 
@@ -57,42 +98,50 @@ See README.md for complete setup instructions including:
 If you've been stuck on a DECISION (not implementation) for 10 minutes, MAKE A CHOICE.
 Document your reasoning. A reasonable choice made quickly > perfect choice never made.
 
+### Case Study: Issue #84
+The Code Agent got stuck and asked: "Should I A) Create new issue, B) Close PR, or C) Merge anyway?"
+This was WRONG. It should have DECIDED based on engineering judgment. The Principal Engineer agent
+exists to handle cases where the Code Agent gets stuck, taking a holistic approach to fix the
+factory rather than just the symptom.
+
 ## IMPORTANT Rules
 
 - ALWAYS write tests alongside code (unit, integration, E2E)
-- NEVER commit code without tests - minimum 70% coverage (goal: 85%)
+- NEVER commit code without tests - minimum 70% coverage (goal: 85%, tracked via QA agent)
 - Commit and push frequently at logical checkpoints
-- **ALWAYS check things yourself before asking the user** - Use available tools to verify state
-- **ALWAYS check CI results after every push** - Use `gh run list` and `gh run view <id> --log-failed`
-- **When resuming work, ALWAYS check CI first** - There may be failed runs from a previous session
-- **ALWAYS check open issues at session start** - Work from highest priority (P0 → P1 → P2)
+- See REQUIREMENTS.md for full product specification
+- **ALWAYS check things yourself before asking the user** - Use available tools (CLI, API calls, logs, code inspection) to verify state, configuration, or behavior. Only ask the user to check something if you've confirmed there's no way for you to check it directly.
+- **ALWAYS check CI results after every push** - Use `gh run list` and `gh run view <id> --log-failed` to verify CI passes. If CI fails, debug and fix immediately. Do not consider a task complete until CI is green.
+- **When resuming work or assessing project state, ALWAYS check CI first** - Run `gh run list` before anything else. There may be failed runs from a previous session that need fixing.
+- **ALWAYS check open issues at session start** - Run `gh issue list` and work from highest priority (P0 → P1 → P2). Critical bugs must be addressed before new features.
 
 ## Tech Stack
-
-Customize this section for your project:
 
 - **Frontend**: Next.js (TypeScript strict mode)
 - **Backend**: Python / FastAPI
 - **Database**: PostgreSQL
+- **LLM**: Claude API
 - **Real-time**: WebSockets
 - **Deployment**: Railway
 
 ## Quality Gates
 
 ```bash
-# Backend (customize for your project)
+# Backend
 cd backend
 uv run pytest                    # run tests
 uv run pytest --cov=app          # run tests with coverage
 uv run ruff check .              # lint
 uv run ruff format .             # format
 uv run mypy .                    # type check
+uv run uvicorn app.main:app --reload  # dev server
 
-# Frontend (customize for your project)
+# Frontend
 cd frontend
 npm test                         # jest tests
 npm run lint                     # eslint
 npm run typecheck                # tsc
+npm run dev                      # dev server
 npx playwright test              # e2e tests
 
 # Full test suite
@@ -101,19 +150,33 @@ npx playwright test              # e2e tests
 
 ## Development Workflow (MANDATORY)
 
-At every meaningful milestone:
+At every meaningful milestone (new feature, API changes, UI flow completion):
 
-1. **Run all unit tests**
-2. **Run E2E tests** (with backend running)
-3. **Local user testing** - Have user manually test the feature
+1. **Run all unit tests** - `./scripts/test-all.sh` or run backend/frontend tests separately
+2. **Run E2E tests** - `cd frontend && npx playwright test` (with backend running)
+3. **Local user testing** - Have user manually test the feature in browser
 4. **Fix any issues** - Repeat steps 1-3 until passing
 5. **Commit and push** - Only after E2E and manual testing pass
+
+**Why this matters**: Unit tests with mocked APIs won't catch schema mismatches between frontend and backend. E2E tests exercise the real API and catch integration bugs before they reach the user.
+
+**E2E test requirements**:
+- Every user-facing flow must have E2E coverage
+- Test the happy path AND error cases
+- Use real backend (not mocked) to validate actual API contracts
 
 **When E2E tests hang or timeout (CRITICAL)**:
 - **DO NOT assume it's a test or framework issue** - E2E tests exercise real code paths
 - **ASSUME a real regression** - Something in recent changes broke the functionality
 - **Investigate recent commits** - Look at what changed since tests last passed
-- **Avoid piling on fixes** - Don't keep adjusting test timeouts; find and fix the root cause
+- **Check the feature being tested** - If a test for "thinker suggestions" hangs, the thinker suggestion code likely has a bug
+- **Avoid piling on fixes** - Don't keep adjusting test timeouts or adding workarounds; find and fix the root cause
+
+**E2E Debugging (CI captures server logs)**:
+- When E2E tests fail in CI, backend logs are automatically captured
+- **Artifacts uploaded:** `/tmp/backend.log`, `test-results/`, `playwright-report/`
+- **Logs printed:** Backend logs appear in CI output on failure
+- **To debug:** Check the workflow run artifacts and look for API errors, exceptions, or slow responses in backend logs
 
 ### Log Analysis Protocol (MANDATORY for agents)
 
@@ -127,12 +190,105 @@ gh issue view <ISSUE_NUMBER> --comments
 gh run list --workflow=ci.yml --limit 5 --json databaseId,headBranch,conclusion
 gh run view <RUN_ID> --log-failed
 
-# Step 3: Download E2E artifacts (if available)
+# Step 3: Download E2E artifacts
 gh run download <RUN_ID> --name e2e-debug-logs --dir /tmp/e2e-logs
 cat /tmp/e2e-logs/backend.log | tail -200
 ```
 
-**Agents must document what logs showed BEFORE implementing a fix.**
+**Agents must document what logs showed BEFORE implementing a fix.** Example: "Backend logs show 500 error on /api/thinkers - the query is missing a WHERE clause"
+
+## Testing
+
+- **Backend**: pytest + pytest-asyncio + pytest-cov
+- **Frontend**: Jest + React Testing Library
+- **E2E**: Playwright
+- Coverage minimum: 70% (goal: 85%)
+
+### Test Rigor Protocol (MANDATORY)
+
+**Before implementing any non-trivial feature or change:**
+1. **Think deeply about test cases** - Consider what new unit, integration, and E2E tests are needed
+2. **Document in TEST_PLAN.md** - Update the test plan document with new test cases before writing code
+3. **Consider edge cases** - What could go wrong? What are the boundary conditions?
+
+**After implementing:**
+1. **Write tests for all new code** - Don't just test happy paths
+2. **Update existing tests** - If behavior changed, tests should change too
+3. **Run full test suite** - Verify nothing regressed
+
+### Testing Workflow Changes (CRITICAL)
+
+**Workflow changes need testing just like code changes.** A regex that looks right can fail silently. An API call that seems correct might have wrong permissions.
+
+**Before merging workflow changes:**
+
+1. **Test components locally first:**
+   ```bash
+   # Test regex patterns against real data
+   COMMENT_BODY=$(gh api .../issues/123/comments --jq '...')
+   echo "$COMMENT_BODY" | grep -E 'your-pattern' | wc -l
+
+   # Test shell commands
+   gh issue list --label "ai-ready" --json number,labels
+   ```
+
+2. **Know when a real issue test is required:**
+   - Changes to Code Agent trigger conditions (label handling, event types)
+   - Changes to progress comment format or update logic
+   - Changes to CI monitoring, auto-merge, or auto-close behavior
+   - Changes to agent prompts that affect behavior
+   - Any change to bug-fix.yml, triage.yml, or principal-engineer.yml
+
+3. **Create a trivial test issue when needed:**
+   ```bash
+   # Create a minimal test issue
+   gh issue create --title "Test: Verify workflow change [describe what]" \
+     --body "This is a test issue to verify [specific workflow change].
+
+     Expected behavior: [what should happen]
+
+     Delete this issue after verification." \
+     --label "bug" --label "ai-ready"
+   ```
+
+4. **Verify the workflow ran correctly:**
+   - Check Actions tab for the workflow run
+   - Verify progress comments were created/updated
+   - Check that labels were applied correctly
+   - Confirm the expected behavior occurred
+
+5. **Clean up test issues** - Close or delete after verification
+
+## Code Style
+
+- **Python**: ruff (format + lint + isort), mypy strict
+- **TypeScript**: ESLint + Prettier, strict mode
+
+### MANDATORY: Run Formatters and Linters Before Every Commit
+
+**NEVER commit code without running formatters and linters first.** This applies to ALL code changes.
+
+```bash
+# Frontend (REQUIRED before every commit that touches frontend/)
+cd frontend
+npm run format          # Run Prettier to auto-fix formatting
+npm run lint -- --fix   # Run ESLint with auto-fix
+npm run typecheck       # Verify TypeScript types
+
+# Backend (REQUIRED before every commit that touches backend/)
+cd backend
+uv run ruff format .    # Auto-format Python code
+uv run ruff check . --fix  # Lint and auto-fix Python code
+uv run mypy .           # Type check Python code
+```
+
+**The workflow is:**
+1. Make code changes
+2. Run formatters (`npm run format`, `uv run ruff format .`)
+3. Run linters with auto-fix (`npm run lint -- --fix`, `uv run ruff check . --fix`)
+4. Run type checking (`npm run typecheck`, `uv run mypy .`)
+5. If any issues remain, fix them manually
+6. THEN commit
 
 ## Git Workflow
 
@@ -146,45 +302,75 @@ cat /tmp/e2e-logs/backend.log | tail -200
 
 **CRITICAL: Issue Reference Rules (prevents premature closure)**
 - **In commit messages:** Use `Relates to #N` (NOT `Fixes #N`)
-- **In PR descriptions:** Use `Fixes #N` (closes issue when PR merges)
+- **In PR descriptions:** Use `Fixes #N` ONLY when the PR completely solves the issue
+- **For related-but-not-fixing PRs:** Use `Relates to #N` in PR description too
+  - Example: A workflow fix that "unblocks" an agent to work on an issue is NOT a fix for the issue itself
 - **NEVER push directly to main** - Always use a feature branch + PR
-- **Why:** GitHub auto-closes issues when commits on main contain "Fixes #N"
+- **Why:** GitHub auto-closes issues when "Fixes #N" appears in PR descriptions. If your PR doesn't fully solve the issue, using "Fixes" will close it prematurely.
+
+**Best practices:**
+- Commit frequently with clear messages
+- One logical change per commit
+- Always reference GitHub issues in commits (with `Relates to #N`)
 
 ## Commit Format
 
 `<type>(<scope>): <description>` where type is feat|fix|docs|test|chore|ci
 
+## GitHub CLI Setup
+
+The `gh` CLI is required for creating PRs, checking CI, and managing issues.
+
+```bash
+# Install gh (if not present)
+curl -L https://github.com/cli/cli/releases/download/v2.63.2/gh_2.63.2_linux_amd64.tar.gz -o /tmp/gh.tar.gz
+tar -xzf /tmp/gh.tar.gz -C /tmp
+sudo mv /tmp/gh_2.63.2_linux_amd64/bin/gh /usr/local/bin/
+
+# Authenticate (required after install)
+gh auth login --web --git-protocol https
+```
+
+When using `gh` commands, always specify the repo explicitly (the git remote uses a local proxy):
+```bash
+gh pr create --repo your-org/your-project ...
+gh run list --repo your-org/your-project
+gh issue list --repo your-org/your-project
+```
+
 ## Task & Bug Tracking with GitHub Issues
 
-All bugs AND tasks must be tracked via GitHub Issues for audit history.
+All bugs AND tasks must be tracked via GitHub Issues for audit history and traceability.
 
 ### Issue Priority (MANDATORY)
 
-- **P0** - Blocks most or all functionality (critical bugs, system down)
-- **P1** - Blocks some functionality, OR new feature requests
-- **P2** - Optimizations, cleanup, refactoring, minor improvements
+**Always assign a priority label when creating issues:**
+- **P0** - Blocks most or all functionality from working (critical bugs, system down)
+- **P1** - Blocks some functionality from working correctly, OR new functionality requests
+- **P2** - Optimizations, cleanup, refactoring, or minor improvements
 
 ### Issue Labels
 
+Use labels to categorize issues:
 - `bug` - Something isn't working
-- `enhancement` - New feature request
-- `ai-ready` - Ready for autonomous agent
+- `feature` / `enhancement` - New feature request
+- `ai-ready` - Ready for autonomous agent to pick up
 - `needs-principal-engineer` - Escalated to PE (Code Agent stuck)
 - `needs-human` - Requires human intervention (PE escalated)
 - `priority-high`, `priority-medium`, `priority-low`
 
 ## Autonomous Agents
 
-This repo uses 8 AI-powered GitHub Actions agents:
+This repo uses 8 AI-powered GitHub Actions agents. See `.github/workflows/` and `.claude/agents/` for details.
 
 | Agent | Trigger | Purpose |
 |-------|---------|---------|
 | **Triage** | Issue opened | Classifies issues, detects duplicates, adds labels |
-| **Code Agent** | `ai-ready` + `bug`/`enhancement` | Diagnoses and fixes issues, creates PRs |
+| **Code Agent** | `ai-ready` + `bug`/`enhancement` labels | Diagnoses and fixes issues, creates PRs |
 | **Principal Engineer** | `needs-principal-engineer` label | Holistic debugging, fixes factory not just symptoms |
 | **QA** | Nightly 2am UTC | Test quality improvement with daily focus rotation |
 | **Release Eng** | Daily 3am UTC | Security audits, dependency updates, CI optimization |
-| **DevOps** | Every 5 minutes | Health checks, incident response |
+| **DevOps** | Every 5 min + push to main + manual | Health checks, auto-rebase PRs, auto-merge ready PRs, Railway logs, service restarts |
 | **Marketing** | On release | Updates changelog, docs |
 | **CI Monitor** | On CI failure (main) | Auto-creates `ai-ready` issues for failed builds |
 
@@ -210,10 +396,91 @@ Code Agent stuck → adds needs-principal-engineer → Principal Engineer invest
 - Can modify workflows, CLAUDE.md, agent prompts
 - Document learnings to prevent similar issues
 
+### DevOps Agent - Railway Infrastructure Management
+
+The DevOps agent has full Railway CLI access for infrastructure management:
+
+**Manual Triggers (workflow_dispatch):**
+| Action | What It Does |
+|--------|-------------|
+| `incident-response` | Diagnose and fix production issues |
+| `view-logs` | Fetch and analyze Railway logs |
+| `restart-service` | Redeploy services to recover from issues |
+| `manage-variables` | List/set environment variables |
+| `provision-infrastructure` | Add databases (postgres, redis) or services |
+| `diagnose` | Full diagnostic report of all systems |
+
+**Railway CLI Commands Available:**
+```bash
+railway logs --service backend      # View service logs
+railway redeploy                    # Restart/redeploy service
+railway variables                   # List env variables
+railway variables --set "KEY=val"   # Set env variable
+railway add --database postgres     # Provision new database
+railway status                      # Check project status
+```
+
+**Required Secrets:**
+- `RAILWAY_TOKEN` - Get from Railway dashboard → Account → Tokens (workspace-scoped)
+- `RAILWAY_WORKSPACE_ID` - Railway workspace UUID (visible in dashboard URL)
+- `PRODUCTION_BACKEND_URL` - For health checks
+- `PRODUCTION_FRONTEND_URL` - For health checks
+
+**Inter-Agent Diagnostics:**
+
+Other agents (like Code Agent) can request production diagnostics by commenting `@devops` on issues:
+```
+@devops please check user logs for authentication errors
+@devops check database connection status
+@devops check recent backend logs
+```
+
+DevOps Agent will query production and post results back to the issue. This enables Code Agent to verify production state when debugging issues without having direct production access.
+
+### DevOps API - Database Access for Agents
+
+The DevOps agent has access to a protected Admin API for database maintenance operations. This enables autonomous cleanup, diagnostics, and data management.
+
+**API Endpoints (require `X-DevOps-Secret` header):**
+
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/api/devops/health` | GET | Verify DevOps API authentication |
+| `/api/devops/stats` | GET | Database statistics (users, sessions, messages, etc.) |
+| `/api/devops/cleanup/stale-sessions` | DELETE | Remove sessions older than N hours |
+| `/api/devops/cleanup/orphans` | DELETE | Remove orphaned records (messages without conversations, etc.) |
+
+**Required Secrets:**
+- `DEVOPS_API_SECRET` - Secret for authenticating DevOps API calls
+
+**Self-Evolving API Pattern:**
+
+When an agent needs a new database capability not covered by existing endpoints:
+
+1. **Create issue** with `enhancement` + `admin-api` labels describing the need
+2. **Implement endpoint** following the pattern in `backend/app/api/devops.py`:
+   - Add authentication via `require_devops_secret` dependency
+   - Use Pydantic models for request/response schemas
+   - Support `dry_run` parameter for destructive operations
+   - Log all operations for audit trail
+3. **Add tests** for the new endpoint
+4. **Update REQUIREMENTS.md** Section 7.2 with the new endpoint
+5. **Update this section** to document the new capability
+
+See `REQUIREMENTS.md` Section 7 for full Admin API specification.
+
 ### Agent Visibility (IMPORTANT)
 
-All agents MUST post progress updates to their issues using the **checkbox progress pattern**:
+All agents MUST post progress updates to their issues for visibility using the **checkbox progress pattern**.
 
+#### Checkbox Progress Pattern
+
+Agents create a progress comment/issue with checkboxes, then **edit that same content** (not post new comments) to check off items as they complete. This provides:
+- Real-time visibility into agent progress
+- A single place to see status (not scattered across comments)
+- Clear indication of what's done and what's pending
+
+**Example Progress Tracker:**
 ```markdown
 ## 🤖 Progress Tracker
 
@@ -225,11 +492,50 @@ All agents MUST post progress updates to their issues using the **checkbox progr
 - [ ] 🚀 Waiting for CI
 
 **Status:** Implementing fix...
+**Workflow:** [View logs](...)
+
+---
+### Analysis
+**Root Cause:** [discovered issue]
+**Files Affected:** [list]
+**Proposed Fix:** [plan]
 ```
+
+Agents update this by editing the comment/issue body via API:
+```bash
+gh api repos/OWNER/REPO/issues/comments/COMMENT_ID -X PATCH -f body="[updated body]"
+```
+
+**Code Agent** creates a progress comment on each issue:
+1. Initial: All boxes unchecked, "Starting analysis..."
+2. Checks boxes as each step completes
+3. Adds Analysis section after analyzing
+4. Adds PR link when submitted
+5. Monitors CI, auto-merges on success
+6. Final: "✅ CI Passed & Merged" → triggers deploy → issue auto-closes
+
+**Full Autonomous Flow:**
+```
+Issue Created → Triage labels → Code Agent fixes → PR created → CI passes → Auto-merge → Deploy → Issue closes
+```
+
+**QA Agent** creates a tracking issue with checkboxes:
+1. Creates issue: "🤖 QA Agent: [focus] ([day])" with progress checklist
+2. Edits issue body to check boxes and fill in sections
+3. Closes issue with PR link when complete
+
+**CI Monitor** triggers Code Agent automatically:
+1. Creates issue with `bug`, `priority-high`, `ci-failure` labels
+2. Adds `ai-ready` label separately (triggers Code Agent's `labeled` event)
+3. Code Agent picks up and attempts fix
 
 ### Interacting with the Code Agent
 
-**Comment-driven interaction:** Comment on any issue with `@claude` to ask questions or provide suggestions.
+**Comment-driven interaction:** You can comment on any issue with `@claude` to ask questions or provide suggestions. The bot will:
+1. Read your comment and the full issue context
+2. Think about your question/suggestion
+3. Post a thoughtful response
+4. Take action if appropriate
 
 **Status labels indicate who should act next:**
 | Label | Meaning | Who Acts |
@@ -239,56 +545,107 @@ All agents MUST post progress updates to their issues using the **checkbox progr
 | `status:awaiting-bot` | You commented, bot will respond | Wait for bot |
 | (no status label) | No active work | Add `ai-ready` to trigger |
 
+**Example workflow:**
+1. Issue created with `bug` + `ai-ready` labels
+2. Bot starts → `status:bot-working`
+3. Bot has a question → `status:awaiting-human` + comment asking
+4. You reply with `@claude here's the answer...`
+5. Bot responds → `status:bot-working`
+6. Bot creates PR → removes status labels
+
+**Concurrency:** Only one bot run per issue at a time. Comments are queued, not dropped.
+
+### QA Agent - Test Quality Guardian
+
+The QA agent performs **periodic reflection and enhancement** of the test suite:
+
+**Daily Focus Rotation:**
+- Monday: Coverage Sprint - bring lowest-coverage module up by 15%+
+- Tuesday: Flaky Test Hunt - run tests 5x, identify and fix flaky tests
+- Wednesday: Integration Test Gaps - add tests for untested API endpoints
+- Thursday: E2E Enhancement - add edge case E2E tests (errors, mobile, edge cases)
+- Friday: Test Refactoring - improve readability, reduce duplication
+- Saturday: Edge Case Analysis - test error paths and boundary conditions
+- Sunday: Regression Prevention - add tests for recent bug fixes
+
+**Each run includes:**
+1. Coverage analysis (backend + frontend)
+2. E2E test completeness review
+3. Test sophistication check (edge cases, error paths, race conditions)
+4. Creation of meaningful tests (not just coverage padding)
+5. **Update TEST_PLAN.md** with descriptions of all new tests added
+6. PR with coverage diff and test descriptions
+
+**E2E Enhancement Focus:**
+- Empty form submissions, max length inputs, special characters
+- Session expiry, network disconnection, concurrent operations
+- Mobile-specific behaviors (touch, orientation, viewport)
+- Error recovery and state persistence
+
+### Agent Coordination
+
+- All agents read this `CLAUDE.md` for project rules
+- Agents update `AGENT_STATE.md` with their progress
+- Escalation to @your-github-username when stuck >30min or after 3 CI failures
+
+### Known Limitations (require human intervention)
+
+**Workflow file changes**: The GitHub App cannot modify `.github/workflows/` files due to missing `workflows` permission. When CI fails due to workflow config (like coverage thresholds), a human must update the workflow file.
+
+**To fix**: Grant `workflows` permission to the GitHub App in repo Settings → Actions → General.
+
 ## Default Policies (for autonomous decisions)
 
-When agents encounter these situations, apply these defaults:
+When agents encounter these situations, apply these defaults instead of asking:
 
 **Coverage threshold unreachable:**
-- If coverage is >10% below required, lower threshold to (current + 5%)
+- If coverage is >10% below the required threshold, lower threshold to (current + 5%)
 - Create tracking issue for incremental improvement
+- Let QA agent gradually increase coverage over time
 
 **Test flakiness:**
-- If a test fails intermittently, disable with `@pytest.mark.skip(reason="flaky - issue #N")`
-- Create issue to investigate root cause
+- If a test fails intermittently, disable it with `@pytest.mark.skip(reason="flaky - issue #N")`
+- Create issue to investigate and fix the root cause
+- Don't block CI on flaky tests
 
 **Dependency conflicts:**
 - Pin to last known working version
 - Create issue for proper resolution
 - Don't spend >30min on dependency issues
 
-## Slack Integration (Optional)
+**Transient CI failures (502, 503, timeouts):**
+- CI has retry logic for transient errors (3 attempts with exponential backoff)
+- Distinguish transient errors (retry) from real errors (fail fast)
+- If smoke test fails due to production blip, it will auto-retry
+- See `.github/workflows/ci.yml` smoke-test section for implementation
 
-This repo includes a Slack bot for a Claude Code-like experience in Slack:
+## Observability & DevOps Hygiene
 
-**Setup:**
-```bash
-./scripts/setup-slack.sh
-```
+**See `docs/OBSERVABILITY.md` for full standards.**
 
-**What the Slack bot provides:**
-- Conversational AI - Chat about your codebase in Slack
-- Agent dispatch - Say `dispatch code fix the bug` to create GitHub issues
-- Status updates - Receive notifications when agents complete work
+Key requirements:
+- **Health endpoints**: `/health` (basic) and `/health/ready` (deep with DB check)
+- **Four Golden Signals**: Track latency, traffic, errors, saturation
+- **Structured logging**: Include timestamp, level, service, request_id
+- **Alerting**: P1/P2/P3 severity levels with defined response times
 
-**How it works:**
-1. Slack bot provides human collaboration layer
-2. Dispatch commands create GitHub issues with `ai-ready` label
-3. Agent workflows run on GitHub (same as before)
-4. Agents POST status updates back to Slack threads (optional)
-
-**Secrets for Slack (if using):**
-- `SLACK_BOT_TOKEN` - Bot User OAuth Token (xoxb-...)
-- `SLACK_APP_TOKEN` - App-Level Token (xapp-...)
-- `SLACK_SIGNING_SECRET` - Signing Secret
-- `SLACK_WEBHOOK_URL` - URL where Slack bot is deployed
-- `SLACK_WEBHOOK_SECRET` - Secret for webhook authentication
-
-See `services/slack-bot/README.md` for complete documentation.
+When adding features, always consider:
+- [ ] Health endpoint updated if new dependencies added
+- [ ] Key operations logged at INFO level
+- [ ] Errors logged with full context
+- [ ] Metrics added for new endpoints
+- [ ] Failure scenarios have alerts
 
 ## Escalation
 
-Assign to maintainer when:
+Assign to @your-github-username when:
 - Stuck >30min
 - CI fails 3x on same issue
-- Needs architecture decision
+- Needs architecture decision (not covered by default policies)
 - Security concern
+
+## Architecture
+
+- Thinker agents run as independent async tasks (concurrent responses)
+- Conversation only progresses when user has chat window open
+- Agents resume automatically when user returns to chat

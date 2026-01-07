@@ -543,7 +543,7 @@ jobs:
             ## IMPORTANT: Always @mention the human!
             When posting ANY comment (questions, status updates, escalations), always include "@${{ steps.context.outputs.issue_author }}" so they get notified.
 
-            If stuck for 30min or CI fails 3x, escalate to @jeremymatthewwerner (and cc @${{ steps.context.outputs.issue_author }}).
+            If stuck for 30min or CI fails 3x, escalate to @your-github-username (and cc @${{ steps.context.outputs.issue_author }}).
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           claude_args: |
             --model claude-opus-4-5-20251101
@@ -1033,7 +1033,7 @@ jobs:
           ISSUE_AUTHOR: ${{ steps.context.outputs.issue_author }}
         run: |
           # Count CI failure comments to prevent infinite retry loop
-          # Per CLAUDE.md: "Escalate to @jeremymatthewwerner when CI fails 3x on same issue"
+          # Per CLAUDE.md: "Escalate to @your-github-username when CI fails 3x on same issue"
           FAILURE_COUNT=$(gh issue view "$ISSUE_NUMBER" --comments --json comments \
             --jq '[.comments[] | select(.body | contains("❌ CI Failed"))] | length' 2>/dev/null || echo "0")
 
@@ -1052,7 +1052,7 @@ jobs:
           2. The issue may require manual investigation or a different approach
           3. After fixing, comment \`@claude please retry\` to trigger another attempt
 
-          Escalating to @jeremymatthewwerner for review.
+          Escalating to @your-github-username for review.
 
           cc @${ISSUE_AUTHOR}"
 
@@ -1112,7 +1112,7 @@ jobs:
           2. Consider breaking this issue into smaller sub-issues
           3. Re-trigger by adding a comment with \`@claude please continue\`
 
-          Assigning to @jeremymatthewwerner for review.
+          Assigning to @your-github-username for review.
 
           cc @${ISSUE_AUTHOR}"
 

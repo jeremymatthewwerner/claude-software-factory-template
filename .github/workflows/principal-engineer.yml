@@ -342,7 +342,7 @@ jobs:
             1. Document everything you tried (with specifics)
             2. Explain WHY this needs human judgment (not just "I'm stuck")
             3. Provide 2-3 specific options for the human to choose from
-            4. @mention @jeremymatthewwerner with the specific decision needed
+            4. @mention @your-github-username with the specific decision needed
             5. Set label: status:awaiting-human
 
             **Remember:** Every human escalation is a factory bug. If you're escalating for
@@ -433,7 +433,7 @@ jobs:
 
           $(if [ \"$IS_FACTORY_BUG\" = \"true\" ]; then echo \"⚠️ This appears to be a factory/workflow bug, not a code bug. A human should fix the workflow file, then retry.\"; else echo \"This may require human review to determine the root cause.\"; fi)
 
-          @jeremymatthewwerner - please investigate.
+          @your-github-username - please investigate.
 
           cc @${ISSUE_AUTHOR}" 2>/dev/null || true
           fi
@@ -452,7 +452,7 @@ jobs:
 
           [View workflow logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
 
-          @jeremymatthewwerner
+          @your-github-username
 
           cc @${ISSUE_AUTHOR}"
           else
@@ -466,7 +466,7 @@ jobs:
           1. Check the [workflow logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
           2. Determine if this is a code bug, workflow bug, or needs a design decision
 
-          @jeremymatthewwerner
+          @your-github-username
 
           cc @${ISSUE_AUTHOR}"
           fi
