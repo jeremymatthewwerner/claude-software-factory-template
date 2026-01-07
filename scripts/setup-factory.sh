@@ -261,6 +261,23 @@ collect_secrets() {
         print_info "Slack signing secret already configured"
     fi
 
+    if [ -z "$SLACK_WEBHOOK_SECRET" ]; then
+        echo ""
+        print_step "Slack Webhook Secret (for secure webhook callbacks)"
+        echo "  Generate a random secret for webhook authentication."
+        echo "  You can use: openssl rand -hex 32"
+        echo ""
+        read -p "  Enter Slack Webhook Secret (or press Enter to auto-generate): " SLACK_WEBHOOK_SECRET
+        if [ -z "$SLACK_WEBHOOK_SECRET" ]; then
+            SLACK_WEBHOOK_SECRET=$(openssl rand -hex 32)
+            echo "  Auto-generated: ${SLACK_WEBHOOK_SECRET:0:16}..."
+        fi
+        save_state "SLACK_WEBHOOK_SECRET" "$SLACK_WEBHOOK_SECRET"
+        print_success "Slack webhook secret saved"
+    else
+        print_info "Slack webhook secret already configured"
+    fi
+
     echo ""
     print_success "Configuration collected!"
 }
@@ -288,9 +305,24 @@ setup_github_secrets() {
         print_success "Set SLACK_BOT_TOKEN"
     fi
 
+    if [ -n "$SLACK_APP_TOKEN" ]; then
+        echo "$SLACK_APP_TOKEN" | gh secret set SLACK_APP_TOKEN
+        print_success "Set SLACK_APP_TOKEN"
+    fi
+
+    if [ -n "$SLACK_SIGNING_SECRET" ]; then
+        echo "$SLACK_SIGNING_SECRET" | gh secret set SLACK_SIGNING_SECRET
+        print_success "Set SLACK_SIGNING_SECRET"
+    fi
+
     if [ -n "$SLACK_WEBHOOK_URL" ]; then
         echo "$SLACK_WEBHOOK_URL" | gh secret set SLACK_WEBHOOK_URL
         print_success "Set SLACK_WEBHOOK_URL"
+    fi
+
+    if [ -n "$SLACK_WEBHOOK_SECRET" ]; then
+        echo "$SLACK_WEBHOOK_SECRET" | gh secret set SLACK_WEBHOOK_SECRET
+        print_success "Set SLACK_WEBHOOK_SECRET"
     fi
 
     echo ""
@@ -332,6 +364,7 @@ deploy_railway() {
     [ -n "$SLACK_BOT_TOKEN" ] && railway variables set SLACK_BOT_TOKEN="$SLACK_BOT_TOKEN"
     [ -n "$SLACK_APP_TOKEN" ] && railway variables set SLACK_APP_TOKEN="$SLACK_APP_TOKEN"
     [ -n "$SLACK_SIGNING_SECRET" ] && railway variables set SLACK_SIGNING_SECRET="$SLACK_SIGNING_SECRET"
+    [ -n "$SLACK_WEBHOOK_SECRET" ] && railway variables set SLACK_WEBHOOK_SECRET="$SLACK_WEBHOOK_SECRET"
     railway variables set GITHUB_REPOSITORY="$REPO_NAME"
     railway variables set GITHUB_OWNER="${REPO_NAME%%/*}"
     railway variables set PORT="3000"
