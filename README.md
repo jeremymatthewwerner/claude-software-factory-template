@@ -15,6 +15,8 @@ This template sets up a complete **autonomous development workflow** where AI ag
 - **Manage dependencies** and security updates
 - **Update documentation** on releases
 
+Plus a **Factory Manager** (Slack bot) that helps you monitor factory health, analyze failure patterns, and dispatch work to agents.
+
 **Human intervention becomes the exception, not the rule.**
 
 ### Key Features
