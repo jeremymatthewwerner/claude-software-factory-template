@@ -27,6 +27,8 @@ This template sets up a complete **autonomous development workflow** where AI ag
 | **Log Analysis** | Agents analyze actual logs before implementing fixes |
 | **Decision Autonomy** | Agents DECIDE technical matters, only escalate for security/business |
 | **Progress Visibility** | Checkbox-based progress tracking on all issues |
+| **Reaction Polling** | Agents detect emoji reactions as responses (5-min polling) |
+| **Factory Manager** | Slack bot for monitoring factory health and dispatching work |
 
 ---
 
@@ -49,17 +51,26 @@ cd my-project
 ./scripts/setup-factory.sh
 ```
 
-This wizard handles everything:
-- ✅ Creates all required GitHub labels
-- ✅ Collects and stores secrets (GitHub PAT, Anthropic key, Slack tokens)
-- ✅ Sets up GitHub repository secrets
-- ✅ Deploys Slack bot to Railway (optional)
-- ✅ Validates the complete setup
+This interactive wizard handles the complete setup:
 
-**Or run individual steps:**
+| Step | What It Does |
+|------|-------------|
+| **Prerequisites** | Verifies `gh` CLI, Railway CLI (optional), git repo |
+| **Labels** | Creates 11 required labels (`ai-ready`, `needs-principal-engineer`, status labels, etc.) |
+| **Secrets** | Collects GitHub PAT, Anthropic key, Slack tokens (bot, app, signing, webhook) |
+| **GitHub Secrets** | Uploads 7 secrets to your repository |
+| **Railway Deploy** | Deploys Slack bot with 10 environment variables (optional) |
+| **Validation** | Tests API access and deployment health |
+
+**Menu options:**
 ```bash
-./scripts/setup-factory.sh        # Full interactive setup
-./scripts/validate-factory.sh     # Validate existing setup
+./scripts/setup-factory.sh        # Full interactive setup (recommended)
+# Or choose specific steps:
+# 1) Full setup
+# 2) GitHub labels only
+# 3) GitHub secrets only
+# 4) Railway deploy only
+# 5) Validate setup
 ```
 
 ### 3. Create a Slack App (30 seconds)
@@ -140,34 +151,55 @@ cd frontend && npm run dev
 
 ---
 
-## Slack Bot Integration (Optional)
+## Factory Manager (Slack Bot)
 
-Want a Claude Code-like experience in Slack? This template includes a Slack bot that:
+The Slack bot isn't just a chat interface—it's your **Factory Manager**: a meta-agent designed to help you monitor, diagnose, and improve the factory itself.
+
+> **Philosophy**: The factory should fix issues. The Factory Manager helps you fix the factory.
+
+### Factory Diagnostic Commands
+
+| Command | What It Does |
+|---------|-------------|
+| `factory status` | Factory health report: escalations, stuck agents, CI failure rate, queue depth |
+| `failures` | Analyze CI/workflow failure patterns—which workflows are flaky? |
+| `agent performance` | Autonomy metrics—what % of issues are resolved without human help? |
+| `workflows` | Check workflow configuration and identify missing workflows |
+| `analyze #123` | Learn from a specific issue—why did it escalate? What pattern caused it? |
+
+### Dispatch Commands
+
+Create issues for agents to handle:
+
+```
+dispatch code fix the login timeout bug
+dispatch qa improve test coverage for auth module
+dispatch devops check why staging is slow
+```
+
+### Additional Features
 
 - **Conversational AI** - Chat naturally about your codebase
-- **Agent Dispatch** - Send tasks to agents via Slack (`dispatch code fix the login bug`)
 - **Status Updates** - Receive progress notifications in Slack threads
-- **Intervention Help** - Collaborate when workflows need human input
+- **Agent Suggestions** - Bot detects keywords and suggests relevant agents
 
 ### Quick Setup
 
 ```bash
+./scripts/setup-factory.sh    # Includes Slack bot setup
+# Or standalone:
 ./scripts/setup-slack.sh
 ```
 
-This wizard guides you through creating a Slack app and configuring secrets.
-
 ### How It Works
 
-The Slack bot is a "meta-agent" that sits on top of your GitHub-based workflow:
-
-1. You chat with Claude in Slack (like Claude Code, but in Slack)
-2. When you need an agent to take action, dispatch to GitHub: `dispatch code <task>`
-3. The bot creates a GitHub issue with appropriate labels
-4. Agent workflows run on GitHub (as usual)
+1. You message the bot in Slack with a diagnostic command or question
+2. For diagnostics (`factory status`, `failures`, etc.) → Bot queries GitHub API and reports
+3. For dispatch (`dispatch code <task>`) → Bot creates a GitHub issue with appropriate labels
+4. Agent workflows run on GitHub Actions (as usual)
 5. Status updates post back to your Slack thread
 
-> **Note**: The agents themselves still work via GitHub Actions. The Slack bot is your collaboration layer, not a replacement for the GitHub workflow.
+> **Note**: The agents themselves run via GitHub Actions. The Factory Manager is your monitoring and dispatch layer, not a replacement for the GitHub workflow.
 
 See [`services/slack-bot/README.md`](./services/slack-bot/README.md) for full documentation.
 
@@ -198,6 +230,8 @@ See [`services/slack-bot/README.md`](./services/slack-bot/README.md) for full do
 │  • Auto-merges on success                                       │
 │  • Retries up to 3x on failure                                  │
 │  • Escalates to PE if stuck                                     │
+│  • Reaction polling: detects emoji responses (every 5 min)      │
+│  • Continue mode: resumes work when humans respond              │
 └─────────────────────────────────────────────────────────────────┘
                               │
               (on 3x failure or timeout)
@@ -254,12 +288,20 @@ Background Agents (scheduled):
 
 **Comment-driven interaction:** Comment `@claude` on any issue with `ai-ready` label.
 
+**Reaction-based responses:** When an agent asks a question (with `status:awaiting-human`), you can respond with:
+- A comment mentioning `@claude`
+- An emoji reaction on the agent's comment (polls every 5 minutes)
+
+The agent automatically detects either and continues work.
+
 **Status labels:**
 | Label | Meaning | Who Acts |
 |-------|---------|----------|
 | `status:bot-working` | Agent is working | Wait |
-| `status:awaiting-human` | Agent needs input | You respond |
-| `status:awaiting-bot` | You commented | Wait |
+| `status:awaiting-human` | Agent needs input | You respond (comment or react) |
+| `status:awaiting-bot` | You responded | Agent will continue automatically |
+
+**Continue mode:** When you respond to `status:awaiting-human`, the agent enters "continue mode"—it reads your response, updates its understanding, and continues from where it left off rather than starting over.
 
 ---
 
@@ -279,27 +321,44 @@ Background Agents (scheduled):
 
 ### Deploy to Railway
 
-1. Create Railway project with backend + frontend services
-2. Add `RAILWAY_TOKEN_SW_FACTORY` secret
-3. Uncomment deploy steps in `ci.yml`
+> **Note**: The CI workflow includes a deploy job, but it's a **placeholder** by default. You need to configure it for your deployment platform.
 
-**Backend service configuration:**
-```bash
-# Build command
-cd backend && pip install uv && uv sync
+**To enable Railway deployment:**
 
-# Start command
-cd backend && uv run uvicorn app.main:app --host 0.0.0.0 --port $PORT
+1. Create a Railway project at [railway.app](https://railway.app)
+2. Add backend + frontend services pointing to this repo
+3. Create a Railway API token and add as `RAILWAY_TOKEN_SW_FACTORY` secret in GitHub
+4. Uncomment the deploy commands in `.github/workflows/ci.yml`:
+
+```yaml
+# In ci.yml deploy job, uncomment:
+- name: Redeploy Backend
+  env:
+    RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN_SW_FACTORY }}
+  run: railway redeploy --service backend --yes
 ```
 
-**Frontend service configuration:**
+**Backend service configuration (Railway):**
 ```bash
+# Root directory: /backend
 # Build command
-cd frontend && npm ci && npm run build
+pip install uv && uv sync
 
 # Start command
-cd frontend && npm start
+uv run uvicorn app.main:app --host 0.0.0.0 --port $PORT
 ```
+
+**Frontend service configuration (Railway):**
+```bash
+# Root directory: /frontend
+# Build command
+npm ci && npm run build
+
+# Start command
+npm start
+```
+
+**Alternative platforms**: Modify the deploy job for Vercel, Fly.io, AWS, or your preferred platform.
 
 ---
 
