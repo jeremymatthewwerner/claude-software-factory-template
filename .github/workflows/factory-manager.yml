@@ -58,26 +58,26 @@ jobs:
           THRESHOLD=$(date -u -d '30 minutes ago' '+%Y-%m-%dT%H:%M:%SZ')
 
           # Find issues that:
-          # 1. Have ai-ready label
-          # 2. Have bug OR enhancement label
-          # 3. Don't have factory-meta label
-          # 4. Don't have needs-human label
+          # 1. Have bug OR enhancement label (triaged)
+          # 2. Have a @code mention in comments (agent was triggered)
+          # 3. Don't have factory-meta or needs-human labels
+          # 4. Don't have status:bot-working (agent not currently active)
           # 5. Haven't been updated in 30 min
           # 6. Are open
 
           STUCK_ISSUES=$(gh issue list \
             --repo ${{ github.repository }} \
-            --label "ai-ready" \
             --state open \
-            --json number,title,labels,updatedAt \
+            --json number,title,labels,updatedAt,comments \
             --jq --arg threshold "$THRESHOLD" '
               [.[] | select(
                 (.labels | map(.name) | (contains(["bug"]) or contains(["enhancement"]))) and
                 (.labels | map(.name) | contains(["factory-meta"]) | not) and
                 (.labels | map(.name) | contains(["needs-human"]) | not) and
                 (.labels | map(.name) | contains(["status:bot-working"]) | not) and
+                (.comments | map(.body) | join(" ") | test("@code|@Code|@claude|@Claude")) and
                 (.updatedAt < $threshold)
-              )]
+              ) | {number, title, updatedAt}]
             ' 2>/dev/null || echo "[]")
 
           STUCK_COUNT=$(echo "$STUCK_ISSUES" | jq 'length')
@@ -152,6 +152,176 @@ jobs:
             echo "EOF" >> $GITHUB_OUTPUT
           else
             echo "has_failed=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Check for stuck PRs
+        id: stuck_prs
+        env:
+          GH_TOKEN: ${{ secrets.PAT_WITH_WORKFLOW_ACCESS }}
+        run: |
+          echo "Checking for stuck PRs..."
+
+          # Get current time minus 30 minutes
+          THRESHOLD=$(date -u -d '30 minutes ago' '+%Y-%m-%dT%H:%M:%SZ')
+
+          # Find open PRs with failing CI or no activity
+          STUCK_PRS=$(gh pr list \
+            --repo ${{ github.repository }} \
+            --state open \
+            --json number,title,headRefName,updatedAt,statusCheckRollup,author \
+            --jq --arg threshold "$THRESHOLD" '
+              [.[] | select(
+                (.updatedAt < $threshold) and
+                (
+                  (.statusCheckRollup | length > 0) and
+                  (.statusCheckRollup | any(.conclusion == "FAILURE"))
+                )
+              ) | {number, title, branch: .headRefName, author: .author.login, updatedAt}]
+            ' 2>/dev/null || echo "[]")
+
+          COUNT=$(echo "$STUCK_PRS" | jq 'length')
+          echo "Found $COUNT stuck PRs with failing CI"
+
+          if [ "$COUNT" -gt 0 ]; then
+            echo "has_stuck_prs=true" >> $GITHUB_OUTPUT
+            echo "stuck_prs<<EOF" >> $GITHUB_OUTPUT
+            echo "$STUCK_PRS" >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+          else
+            echo "has_stuck_prs=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Check for long-running CI
+        id: longrunning_ci
+        env:
+          GH_TOKEN: ${{ secrets.PAT_WITH_WORKFLOW_ACCESS }}
+        run: |
+          echo "Checking for PRs with long-running CI (>10 min)..."
+
+          # Check in_progress CI runs and look at specific E2E job duration
+          # Normal E2E tests take ~6-7 min, so 10+ min is suspicious
+          LONGRUNNING_RUNS="[]"
+
+          # Get all in_progress CI/CD runs
+          IN_PROGRESS_RUNS=$(gh run list \
+            --repo ${{ github.repository }} \
+            --status in_progress \
+            --limit 20 \
+            --json databaseId,name,headBranch,createdAt \
+            --jq '[.[] | select(.name == "CI/CD")]' 2>/dev/null || echo "[]")
+
+          # For each run, check if E2E Tests job has been running >10 min
+          THRESHOLD_SECS=600  # 10 minutes
+          NOW_SECS=$(date +%s)
+
+          STUCK_RUNS=$(echo "$IN_PROGRESS_RUNS" | jq -c '.[]' | while read -r run; do
+            RUN_ID=$(echo "$run" | jq -r '.databaseId')
+            BRANCH=$(echo "$run" | jq -r '.headBranch')
+
+            # Get E2E Tests job status
+            E2E_JOB=$(gh api repos/${{ github.repository }}/actions/runs/$RUN_ID/jobs \
+              --jq '.jobs[] | select(.name == "E2E Tests") | {status, started_at, steps: [.steps[] | select(.name == "Run E2E tests") | {status, started_at}]}' 2>/dev/null || echo "{}")
+
+            E2E_STATUS=$(echo "$E2E_JOB" | jq -r '.status // "unknown"')
+            E2E_STEP_STARTED=$(echo "$E2E_JOB" | jq -r '.steps[0].started_at // ""')
+            E2E_STEP_STATUS=$(echo "$E2E_JOB" | jq -r '.steps[0].status // "unknown"')
+
+            # Only check if E2E step is actually in_progress
+            if [ "$E2E_STEP_STATUS" = "in_progress" ] && [ -n "$E2E_STEP_STARTED" ]; then
+              STEP_START_SECS=$(date -d "$E2E_STEP_STARTED" +%s 2>/dev/null || echo 0)
+              if [ "$STEP_START_SECS" -gt 0 ]; then
+                RUNNING_SECS=$((NOW_SECS - STEP_START_SECS))
+                if [ "$RUNNING_SECS" -gt "$THRESHOLD_SECS" ]; then
+                  RUNNING_MINS=$((RUNNING_SECS / 60))
+                  echo "{\"runId\": $RUN_ID, \"branch\": \"$BRANCH\", \"runningMins\": $RUNNING_MINS}"
+                fi
+              fi
+            fi
+          done | jq -s '.' 2>/dev/null || echo "[]")
+
+          LONGRUNNING_RUNS="$STUCK_RUNS"
+
+          COUNT=$(echo "$LONGRUNNING_RUNS" | jq 'length')
+          echo "Found $COUNT long-running CI runs"
+
+          if [ "$COUNT" -gt 0 ]; then
+            echo "has_longrunning_ci=true" >> $GITHUB_OUTPUT
+            echo "longrunning_runs<<EOF" >> $GITHUB_OUTPUT
+            echo "$LONGRUNNING_RUNS" >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+          else
+            echo "has_longrunning_ci=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Check for untriggered issues
+        id: untriggered
+        env:
+          GH_TOKEN: ${{ secrets.PAT_WITH_WORKFLOW_ACCESS }}
+        run: |
+          echo "Checking for triaged issues with no @code mention..."
+
+          THRESHOLD=$(date -u -d '15 minutes ago' '+%Y-%m-%dT%H:%M:%SZ')
+
+          # Find issues that have been triaged (bug or enhancement label) but no @code mention
+          # This is @mention based - labels are for categorization only
+          UNTRIGGERED=$(gh issue list \
+            --repo ${{ github.repository }} \
+            --state open \
+            --json number,title,labels,createdAt,comments \
+            --jq --arg threshold "$THRESHOLD" '
+              [.[] | select(
+                (.createdAt < $threshold) and
+                (.labels | map(.name) | (contains(["bug"]) or contains(["enhancement"]))) and
+                (.labels | map(.name) | contains(["factory-meta"]) | not) and
+                (.labels | map(.name) | contains(["needs-human"]) | not) and
+                (.labels | map(.name) | contains(["status:bot-working"]) | not) and
+                ((.comments | length == 0) or (.comments | map(.body) | join(" ") | test("@code|@Code|@claude|@Claude") | not))
+              ) | {number, title}]
+            ' 2>/dev/null || echo "[]")
+
+          COUNT=$(echo "$UNTRIGGERED" | jq 'length')
+          echo "Found $COUNT triaged issues needing Code Agent trigger"
+
+          if [ "$COUNT" -gt 0 ]; then
+            echo "has_untriggered=true" >> $GITHUB_OUTPUT
+            echo "untriggered_issues<<EOF" >> $GITHUB_OUTPUT
+            echo "$UNTRIGGERED" >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+          else
+            echo "has_untriggered=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Check for unlabeled issues (failed triage)
+        id: unlabeled
+        env:
+          GH_TOKEN: ${{ secrets.PAT_WITH_WORKFLOW_ACCESS }}
+        run: |
+          echo "Checking for unlabeled issues (triage may have failed)..."
+
+          THRESHOLD=$(date -u -d '15 minutes ago' '+%Y-%m-%dT%H:%M:%SZ')
+
+          # Find issues older than 15 min with NO labels at all (triage probably failed)
+          UNLABELED=$(gh issue list \
+            --repo ${{ github.repository }} \
+            --state open \
+            --json number,title,labels,createdAt \
+            --jq --arg threshold "$THRESHOLD" '
+              [.[] | select(
+                (.createdAt < $threshold) and
+                ((.labels | length) == 0)
+              ) | {number, title, createdAt}]
+            ' 2>/dev/null || echo "[]")
+
+          COUNT=$(echo "$UNLABELED" | jq 'length')
+          echo "Found $COUNT unlabeled issues (possible failed triage)"
+
+          if [ "$COUNT" -gt 0 ]; then
+            echo "has_unlabeled=true" >> $GITHUB_OUTPUT
+            echo "unlabeled_issues<<EOF" >> $GITHUB_OUTPUT
+            echo "$UNLABELED" >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+          else
+            echo "has_unlabeled=false" >> $GITHUB_OUTPUT
           fi
 
       - name: Re-trigger stuck issues
@@ -236,7 +406,7 @@ jobs:
 
               Recommended action: Check workflow runs for this issue.
 
-              @jeremymatthewwerner - This may need manual investigation."
+              @your-github-username - This may need manual investigation."
               gh issue comment "$ISSUE_NUM" \
                 --repo ${{ github.repository }} \
                 --body "$LONGRUN_BODY"
@@ -249,17 +419,367 @@ jobs:
             fi
           done
 
+      - name: Handle stuck PRs
+        if: steps.stuck_prs.outputs.has_stuck_prs == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.PAT_WITH_WORKFLOW_ACCESS }}
+          STUCK_PRS: ${{ steps.stuck_prs.outputs.stuck_prs }}
+        run: |
+          echo "Handling stuck PRs with failing CI..."
+
+          HANDLED_COUNT=0
+          MAX_HANDLE=3
+
+          echo "$STUCK_PRS" | jq -c '.[]' | head -$MAX_HANDLE | while read -r pr; do
+            PR_NUM=$(echo "$pr" | jq -r '.number')
+            PR_TITLE=$(echo "$pr" | jq -r '.title')
+            PR_BRANCH=$(echo "$pr" | jq -r '.branch')
+            PR_AUTHOR=$(echo "$pr" | jq -r '.author')
+
+            echo "Checking PR #$PR_NUM: $PR_TITLE"
+
+            # Check if Factory Manager already commented recently
+            RECENT_FM_COMMENT=$(gh api repos/${{ github.repository }}/pulls/$PR_NUM/comments \
+              --jq '[.[] | select(
+                (.body | contains("[Factory Manager]")) and
+                ((.created_at | fromdateiso8601) > (now - 3600))
+              )] | length' 2>/dev/null || echo "0")
+
+            if [ "$RECENT_FM_COMMENT" -gt 0 ]; then
+              echo "  Already commented recently, skipping"
+              continue
+            fi
+
+            # Get the failed checks
+            FAILED_CHECKS=$(gh pr view "$PR_NUM" --repo ${{ github.repository }} \
+              --json statusCheckRollup \
+              --jq '[.statusCheckRollup[] | select(.conclusion == "FAILURE") | .name] | join(", ")' 2>/dev/null || echo "unknown")
+
+            # Find related issue from branch name (claude/fix-XXX-*)
+            RELATED_ISSUE=""
+            if [[ "$PR_BRANCH" =~ fix-([0-9]+) ]] || [[ "$PR_BRANCH" =~ feat-([0-9]+) ]]; then
+              RELATED_ISSUE="${BASH_REMATCH[1]}"
+            fi
+
+            # Post comment on PR
+            COMMENT_FILE=$(mktemp)
+            {
+              echo "## [Factory Manager] PR Stuck with Failing CI"
+              echo ""
+              echo "This PR has had failing CI for over 30 minutes."
+              echo ""
+              echo "**Failed checks:** $FAILED_CHECKS"
+              echo ""
+              echo "**Recommended actions:**"
+              echo "1. Review the CI logs: [View workflow runs](https://github.com/${{ github.repository }}/actions?query=branch%3A$PR_BRANCH)"
+              echo "2. Fix the failing tests/checks"
+              echo "3. Push updated code"
+              echo ""
+              echo "_If this PR was created by an agent, consider re-triggering with \\\`@code please fix the CI failures\\\`_"
+            } > "$COMMENT_FILE"
+
+            gh pr comment "$PR_NUM" --repo ${{ github.repository }} --body-file "$COMMENT_FILE"
+            rm -f "$COMMENT_FILE"
+
+            # If there's a related issue, also notify there
+            if [ -n "$RELATED_ISSUE" ]; then
+              ISSUE_FILE=$(mktemp)
+              {
+                echo "[Factory Manager] PR #$PR_NUM has been stuck with failing CI for over 30 minutes."
+                echo ""
+                echo "Failed checks: $FAILED_CHECKS"
+                echo ""
+                echo "@code please investigate and fix the CI failures in PR #$PR_NUM."
+              } > "$ISSUE_FILE"
+              gh issue comment "$RELATED_ISSUE" --repo ${{ github.repository }} --body-file "$ISSUE_FILE" 2>/dev/null || true
+              rm -f "$ISSUE_FILE"
+            fi
+
+            HANDLED_COUNT=$((HANDLED_COUNT + 1))
+          done
+
+          echo "Handled $HANDLED_COUNT stuck PRs"
+
+      - name: Handle long-running CI
+        if: steps.longrunning_ci.outputs.has_longrunning_ci == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.PAT_WITH_WORKFLOW_ACCESS }}
+          LONGRUNNING_RUNS: ${{ steps.longrunning_ci.outputs.longrunning_runs }}
+        run: |
+          echo "Checking long-running CI runs..."
+
+          echo "$LONGRUNNING_RUNS" | jq -c '.[]' | head -3 | while read -r run; do
+            RUN_ID=$(echo "$run" | jq -r '.runId')
+            RUN_BRANCH=$(echo "$run" | jq -r '.branch')
+
+            echo "Checking run $RUN_ID on branch $RUN_BRANCH..."
+
+            # Get the specific job that's taking long
+            SLOW_JOBS=$(gh api repos/${{ github.repository }}/actions/runs/$RUN_ID/jobs \
+              --jq '[.jobs[] | select(.status == "in_progress") | .name] | join(", ")' 2>/dev/null || echo "unknown")
+
+            # Find PR number for this branch
+            PR_NUM=$(gh pr list --repo ${{ github.repository }} \
+              --head "$RUN_BRANCH" --json number --jq '.[0].number' 2>/dev/null || echo "")
+
+            if [ -z "$PR_NUM" ]; then
+              echo "  No PR found for branch $RUN_BRANCH, skipping"
+              continue
+            fi
+
+            # Check if we already commented about cancelling
+            RECENT_FM_COMMENT=$(gh api repos/${{ github.repository }}/issues/$PR_NUM/comments \
+              --jq '[.[] | select(
+                (.body | contains("[Factory Manager]")) and
+                (.body | contains("cancelled")) and
+                ((.created_at | fromdateiso8601) > (now - 3600))
+              )] | length' 2>/dev/null || echo "0")
+
+            if [ "$RECENT_FM_COMMENT" -gt 0 ]; then
+              echo "  Already handled this run, skipping"
+              continue
+            fi
+
+            # Extract issue number from branch
+            RELATED_ISSUE=""
+            if [[ "$RUN_BRANCH" =~ -([0-9]+)$ ]] || [[ "$RUN_BRANCH" =~ /([0-9]+)- ]]; then
+              RELATED_ISSUE="${BASH_REMATCH[1]}"
+            fi
+
+            # Get running time from the run data
+            RUNNING_MINS=$(echo "$run" | jq -r '.runningMins // "10+"')
+
+            # CANCEL the stuck run
+            echo "  Cancelling stuck run $RUN_ID (running $RUNNING_MINS min)..."
+            if gh run cancel "$RUN_ID" --repo ${{ github.repository }} 2>/dev/null; then
+              CANCEL_STATUS="cancelled"
+            else
+              CANCEL_STATUS="cancel failed"
+            fi
+
+            # Post notification on PR
+            COMMENT_FILE=$(mktemp)
+            {
+              echo "## [Factory Manager] Stuck CI Cancelled"
+              echo ""
+              echo "The E2E Tests step was running for **$RUNNING_MINS minutes** (normal: ~6-7 min) and appeared stuck."
+              echo ""
+              echo "**Action taken:** Run $CANCEL_STATUS"
+              echo "**Slow job(s):** $SLOW_JOBS"
+              echo "**Run:** [View logs](https://github.com/${{ github.repository }}/actions/runs/$RUN_ID)"
+              echo ""
+              echo "**Next steps:**"
+              echo "1. Check if there's a test hanging or infinite loop"
+              echo "2. Push a fix and CI will re-run automatically"
+              echo "3. Or manually re-run: \`gh run rerun $RUN_ID\`"
+            } > "$COMMENT_FILE"
+
+            gh pr comment "$PR_NUM" --repo ${{ github.repository }} --body-file "$COMMENT_FILE"
+            rm -f "$COMMENT_FILE"
+
+            # Trigger Code Agent to investigate and fix
+            if [ -n "$RELATED_ISSUE" ]; then
+              ISSUE_FILE=$(mktemp)
+              {
+                echo "[Factory Manager] PR #$PR_NUM E2E tests were stuck ($RUNNING_MINS min) and have been cancelled."
+                echo ""
+                echo "**Slow job(s):** $SLOW_JOBS"
+                echo "**Run logs:** https://github.com/${{ github.repository }}/actions/runs/$RUN_ID"
+                echo ""
+                echo "@code Please investigate why E2E tests got stuck and fix it. Check:"
+                echo "1. The test logs for hanging tests or infinite loops"
+                echo "2. Backend logs for errors or slow responses"
+                echo "3. Any recent changes that might cause timeouts"
+              } > "$ISSUE_FILE"
+              gh issue comment "$RELATED_ISSUE" --repo ${{ github.repository }} --body-file "$ISSUE_FILE" 2>/dev/null || true
+              rm -f "$ISSUE_FILE"
+            else
+              # No related issue - create one and then comment to trigger Code Agent
+              # (Code Agent triggers on comments, not issue body @mentions)
+              ISSUE_FILE=$(mktemp)
+              {
+                echo "## E2E Tests Stuck and Cancelled"
+                echo ""
+                echo "PR #$PR_NUM had E2E tests running for $RUNNING_MINS min (normal: ~6-7 min)."
+                echo "The run was automatically cancelled by Factory Manager."
+                echo ""
+                echo "**Branch:** $RUN_BRANCH"
+                echo "**Slow job(s):** $SLOW_JOBS"
+                echo "**Run logs:** https://github.com/${{ github.repository }}/actions/runs/$RUN_ID"
+              } > "$ISSUE_FILE"
+              NEW_ISSUE_URL=$(gh issue create --repo ${{ github.repository }} \
+                --title "E2E tests stuck on PR #$PR_NUM" \
+                --label "bug,priority-high,ci-failure" \
+                --body-file "$ISSUE_FILE" 2>/dev/null || echo "")
+              rm -f "$ISSUE_FILE"
+
+              # Post comment to trigger Code Agent
+              if [ -n "$NEW_ISSUE_URL" ]; then
+                NEW_ISSUE_NUM=$(echo "$NEW_ISSUE_URL" | grep -oE '[0-9]+$')
+                if [ -n "$NEW_ISSUE_NUM" ]; then
+                  gh issue comment "$NEW_ISSUE_NUM" --repo ${{ github.repository }} \
+                    --body "@code Please investigate why E2E tests got stuck and fix it." 2>/dev/null || true
+                fi
+              fi
+            fi
+          done
+
+      - name: Handle failed workflows (create issues)
+        if: steps.failed.outputs.has_failed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.PAT_WITH_WORKFLOW_ACCESS }}
+          FAILED_RUNS: ${{ steps.failed.outputs.failed_runs }}
+        run: |
+          echo "Checking if failed workflows need issues..."
+
+          # Only create issues for main branch failures that don't already have issues
+          echo "$FAILED_RUNS" | jq -c '.[] | select(.headBranch == "main")' | head -3 | while read -r run; do
+            RUN_ID=$(echo "$run" | jq -r '.databaseId')
+            RUN_NAME=$(echo "$run" | jq -r '.name')
+
+            echo "Checking failed run $RUN_ID ($RUN_NAME) on main..."
+
+            # Check if an issue already exists for this run ID
+            # NOTE: Don't use --search (has indexing delays), check body content directly
+            EXISTING_ISSUE=$(gh issue list \
+              --repo ${{ github.repository }} \
+              --label "ci-failure" \
+              --state all \
+              --limit 50 \
+              --json number,body \
+              --jq --arg run_id "$RUN_ID" '[.[] | select(.body | contains($run_id))] | length' 2>/dev/null || echo "0")
+
+            if [ "$EXISTING_ISSUE" -gt 0 ]; then
+              echo "  Issue already exists for run $RUN_ID"
+              continue
+            fi
+
+            echo "  Creating issue for failed $RUN_NAME workflow..."
+
+            ISSUE_FILE=$(mktemp)
+            {
+              echo "## CI Failure on main branch"
+              echo ""
+              echo "**Workflow:** $RUN_NAME"
+              echo "**Run ID:** $RUN_ID"
+              echo "**Branch:** main"
+              echo ""
+              echo "[View failed run](https://github.com/${{ github.repository }}/actions/runs/$RUN_ID)"
+              echo ""
+              echo "---"
+              echo "_Auto-created by Factory Manager. CI Monitor may have missed this._"
+            } > "$ISSUE_FILE"
+
+            NEW_ISSUE_URL=$(gh issue create \
+              --repo ${{ github.repository }} \
+              --title "CI Failure: $RUN_NAME on main" \
+              --label "bug,priority-high,ci-failure" \
+              --body-file "$ISSUE_FILE" 2>/dev/null || echo "")
+            rm -f "$ISSUE_FILE"
+
+            # Post comment to trigger Code Agent (body @code doesn't trigger, comments do)
+            if [ -n "$NEW_ISSUE_URL" ]; then
+              NEW_ISSUE_NUM=$(echo "$NEW_ISSUE_URL" | grep -oE '[0-9]+$')
+              if [ -n "$NEW_ISSUE_NUM" ]; then
+                gh issue comment "$NEW_ISSUE_NUM" --repo ${{ github.repository }} \
+                  --body "@code please investigate this CI failure and fix it." 2>/dev/null || true
+              fi
+            fi
+          done
+
+      - name: Trigger Code Agent on untriggered issues
+        if: steps.untriggered.outputs.has_untriggered == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.PAT_WITH_WORKFLOW_ACCESS }}
+          UNTRIGGERED_ISSUES: ${{ steps.untriggered.outputs.untriggered_issues }}
+        run: |
+          echo "Triggering Code Agent on issues that need it..."
+
+          TRIGGERED_COUNT=0
+          MAX_TRIGGER=3
+
+          echo "$UNTRIGGERED_ISSUES" | jq -c '.[]' | head -$MAX_TRIGGER | while read -r issue; do
+            ISSUE_NUM=$(echo "$issue" | jq -r '.number')
+            ISSUE_TITLE=$(echo "$issue" | jq -r '.title')
+
+            echo "Triggering Code Agent on issue #$ISSUE_NUM: $ISSUE_TITLE"
+
+            TRIGGER_FILE=$(mktemp)
+            {
+              echo "@code [Factory Manager] This issue has been triaged but no agent has started work. Please investigate and implement."
+              echo ""
+              echo "_Auto-triggered by Factory Manager because no @code mention was found after 15 minutes._"
+            } > "$TRIGGER_FILE"
+
+            gh issue comment "$ISSUE_NUM" --repo ${{ github.repository }} --body-file "$TRIGGER_FILE"
+            rm -f "$TRIGGER_FILE"
+            TRIGGERED_COUNT=$((TRIGGERED_COUNT + 1))
+          done
+
+          echo "Triggered Code Agent on $TRIGGERED_COUNT issues"
+
+      - name: Re-triage unlabeled issues
+        if: steps.unlabeled.outputs.has_unlabeled == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.PAT_WITH_WORKFLOW_ACCESS }}
+          UNLABELED_ISSUES: ${{ steps.unlabeled.outputs.unlabeled_issues }}
+        run: |
+          echo "Re-triggering triage for unlabeled issues..."
+
+          RETRIAGE_COUNT=0
+          MAX_RETRIAGE=3
+
+          echo "$UNLABELED_ISSUES" | jq -c '.[]' | head -$MAX_RETRIAGE | while read -r issue; do
+            ISSUE_NUM=$(echo "$issue" | jq -r '.number')
+            ISSUE_TITLE=$(echo "$issue" | jq -r '.title')
+
+            echo "Re-triggering triage for issue #$ISSUE_NUM: $ISSUE_TITLE"
+
+            # Check if Factory Manager already commented recently
+            RECENT_FM_COMMENT=$(gh api repos/${{ github.repository }}/issues/$ISSUE_NUM/comments \
+              --jq '[.[] | select(
+                (.body | contains("[Factory Manager]")) and
+                ((.created_at | fromdateiso8601) > (now - 3600))
+              )] | length' 2>/dev/null || echo "0")
+
+            if [ "$RECENT_FM_COMMENT" -gt 0 ]; then
+              echo "  Already commented recently, skipping"
+              continue
+            fi
+
+            RETRIAGE_FILE=$(mktemp)
+            {
+              echo "@triage [Factory Manager] This issue has no labels - triage may have failed. Please re-triage."
+              echo ""
+              echo "_Auto-triggered by Factory Manager because issue had no labels after 15 minutes._"
+            } > "$RETRIAGE_FILE"
+
+            gh issue comment "$ISSUE_NUM" --repo ${{ github.repository }} --body-file "$RETRIAGE_FILE"
+            rm -f "$RETRIAGE_FILE"
+            RETRIAGE_COUNT=$((RETRIAGE_COUNT + 1))
+          done
+
+          echo "Re-triggered triage on $RETRIAGE_COUNT issues"
+
       - name: Log health check results
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           STUCK_COUNT: ${{ steps.stuck.outputs.has_stuck == 'true' && '1' || '0' }}
           LONGRUNNING_COUNT: ${{ steps.longrunning.outputs.has_longrunning == 'true' && '1' || '0' }}
           FAILED_COUNT: ${{ steps.failed.outputs.has_failed == 'true' && '1' || '0' }}
+          STUCK_PRS_COUNT: ${{ steps.stuck_prs.outputs.has_stuck_prs == 'true' && '1' || '0' }}
+          LONGRUNNING_CI_COUNT: ${{ steps.longrunning_ci.outputs.has_longrunning_ci == 'true' && '1' || '0' }}
+          UNTRIGGERED_COUNT: ${{ steps.untriggered.outputs.has_untriggered == 'true' && '1' || '0' }}
+          UNLABELED_COUNT: ${{ steps.unlabeled.outputs.has_unlabeled == 'true' && '1' || '0' }}
         run: |
           echo "=== Factory Health Check Complete ==="
           echo "Stuck issues found: $STUCK_COUNT"
           echo "Long-running issues found: $LONGRUNNING_COUNT"
           echo "Failed workflows found: $FAILED_COUNT"
+          echo "Stuck PRs with failing CI: $STUCK_PRS_COUNT"
+          echo "Long-running E2E tests (>10 min): $LONGRUNNING_CI_COUNT"
+          echo "Untriggered triaged issues: $UNTRIGGERED_COUNT"
+          echo "Unlabeled issues (failed triage): $UNLABELED_COUNT"
           echo ""
           echo "Next check in 5 minutes"
 
