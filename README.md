@@ -15,6 +15,8 @@ This template sets up a complete **autonomous development workflow** where AI ag
 - **Manage dependencies** and security updates
 - **Update documentation** on releases
 
+Plus a **Factory Manager** that monitors factory health, detects stuck agents, and auto-repairs common failure modes.
+
 **Human intervention becomes the exception, not the rule.**
 
 ### Key Features
@@ -22,6 +24,7 @@ This template sets up a complete **autonomous development workflow** where AI ag
 | Feature | Description |
 |---------|-------------|
 | **8 Specialized Agents** | Triage, Code, Principal Engineer, QA, Release, DevOps, Marketing, CI Monitor |
+| **Factory Manager** | Meta-agent that monitors factory health, detects stuck issues, auto-repairs failures |
 | **Opus Model** | Code Agent and PE use Claude Opus for superior reasoning |
 | **Self-Healing** | CI failures auto-create issues, agents auto-fix them |
 | **Log Analysis** | Agents analyze actual logs before implementing fixes |
@@ -244,11 +247,14 @@ Background Agents (scheduled):
 | **Triage** | Issue opened | Classify, dedupe, prioritize, label | `triage.yml` |
 | **Code** | `ai-ready` label | Fix bugs, implement features | `bug-fix.yml` |
 | **Principal Engineer** | `needs-principal-engineer` label | Holistic debugging when Code Agent stuck | `principal-engineer.yml` |
+| **Factory Manager** | Every 30 min | Monitor factory health, auto-repair failures | `factory-manager.yml` |
 | **CI Monitor** | CI failure on main | Auto-create `ai-ready` issues | `ci-failure-monitor.yml` |
 | **DevOps** | Every 5 minutes | Production health checks | `devops.yml` |
 | **QA** | 2am UTC daily | Improve test coverage | `qa.yml` |
 | **Release Eng** | 3am UTC daily | Security audits, dependencies | `release-eng.yml` |
 | **Marketing** | On release | Update changelog, docs | `marketing.yml` |
+
+> **Factory Manager Details:** See [docs/FACTORY_MANAGER.md](./docs/FACTORY_MANAGER.md) for the full design and responsibilities.
 
 ### Interacting with Agents
 
