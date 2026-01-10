@@ -61,7 +61,7 @@ Create these labels (or run: `gh label create <name> --color <color>`):
 Ensure these secrets are set in **Settings → Secrets and variables → Actions**:
 - `ANTHROPIC_API_KEY` - For Claude API access
 - `GITHUB_TOKEN` - Auto-provided, but verify workflow permissions
-- `PAT_WITH_WORKFLOW_ACCESS` - Personal Access Token with `workflow` scope (for Code Agent to modify workflows)
+- `PAT_WITH_WORKFLOW_ACCESS` - Personal Access Token with `repo` + `workflow` scopes (for agents to modify workflows and comment on issues)
 - `RAILWAY_TOKEN_SW_FACTORY` - Railway **Project Token** (for CI deploys via `railway redeploy`)
 - `RAILWAY_WORKSPACE_TOKEN` - Railway **Workspace Token** (for DevOps GraphQL log fetching)
 - `RAILWAY_WORKSPACE_ID` - Railway workspace ID (UUID from Railway dashboard URL)
