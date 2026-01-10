@@ -31,7 +31,6 @@ jobs:
       - name: Set up Python
         run: uv python install 3.11
 
-      # TODO: Customize for your project structure
       - name: Install frontend dependencies
         working-directory: frontend
         run: npm ci || true
