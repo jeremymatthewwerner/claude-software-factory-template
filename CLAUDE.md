@@ -353,6 +353,35 @@ uv run mypy .           # Type check Python code
 - One logical change per commit
 - Always reference GitHub issues in commits (with `Relates to #N`)
 
+### Multi-Phase Work (Roadmap Issues)
+
+When an issue represents a **multi-phase roadmap** (e.g., iOS Native App with 5 phases), special handling is required:
+
+**Issue Structure:**
+- Use `### Phase N: Title` markdown headers for each phase
+- Include "phase" mentions in the body (e.g., "This is Phase 1 of 5")
+- The CI `close-issues` job will detect this pattern and skip auto-closure
+
+**Workflow for Multi-Phase Issues:**
+1. Create the roadmap issue with all phases documented
+2. Work on Phase 1, create PR with `Relates to #N`
+3. **Issue will NOT auto-close** after Phase 1 PR merges (detected as multi-phase)
+4. Create separate tracking issues for remaining phases (e.g., "iOS Phase 2: Core Infrastructure")
+5. Reference the original roadmap issue in each phase issue
+6. **Manually close** the roadmap issue when ALL phases are complete
+
+**Why:**
+- Multi-phase work requires multiple PRs across different sessions
+- Auto-closing after first PR loses visibility into remaining work
+- Separate tracking issues provide better audit trail for each phase
+
+**Detection Pattern (in CI):**
+```bash
+# Issue body must contain BOTH:
+# 1. Case-insensitive "phase [0-9]" (e.g., "Phase 1", "phase 2")
+# 2. Markdown header "### Phase [0-9]" (e.g., "### Phase 1: Setup")
+```
+
 ## Commit Format
 
 `<type>(<scope>): <description>` where type is feat|fix|docs|test|chore|ci
@@ -427,6 +456,8 @@ Code Agent stuck → posts "@pe please investigate" → Principal Engineer inves
                                                            ↓
                                        Downloads E2E artifacts, reads backend logs
                                                            ↓
+                                       Documents approach and solution strategy
+                                                           ↓
                                        Fixes issue AND updates factory to prevent recurrence
                                                            ↓
                                        If truly stuck → adds needs-human → Human reviews
@@ -437,6 +468,16 @@ Code Agent stuck → posts "@pe please investigate" → Principal Engineer inves
 - Download and analyze E2E artifacts (`gh run download`)
 - Can modify workflows, CLAUDE.md, agent prompts
 - Document learnings to prevent similar issues
+
+**PE Approach Documentation (NEW):**
+
+Before implementing, PE must post detailed approach documentation:
+- Root cause analysis with category
+- E2E/CI log excerpts
+- Solution strategy (immediate + factory improvement)
+- Impact assessment and rationale
+
+This provides visibility without blocking autonomous operation.
 
 ### DevOps Agent - Railway Infrastructure Management
 
