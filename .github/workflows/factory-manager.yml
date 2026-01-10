@@ -920,7 +920,7 @@ jobs:
 
       - name: Log health check results
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.PAT_WITH_WORKFLOW_ACCESS }}
           STUCK_COUNT: ${{ steps.stuck.outputs.has_stuck == 'true' && '1' || '0' }}
           LONGRUNNING_COUNT: ${{ steps.longrunning.outputs.has_longrunning == 'true' && '1' || '0' }}
           FAILED_COUNT: ${{ steps.failed.outputs.has_failed == 'true' && '1' || '0' }}
@@ -1335,7 +1335,7 @@ jobs:
 
       - name: Acknowledge
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.PAT_WITH_WORKFLOW_ACCESS }}
         run: |
           {
             echo "## Factory Manager Responding"
@@ -1447,7 +1447,7 @@ jobs:
       - name: Ensure response was posted
         if: always()
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.PAT_WITH_WORKFLOW_ACCESS }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
         run: |
           # Check if Factory Manager posted a substantive comment (not just "Analyzing...")
