@@ -679,22 +679,86 @@ The QA agent performs **periodic reflection and enhancement** of the test suite:
 - Agents update `AGENT_STATE.md` with their progress
 - Escalation to @your-github-username when stuck >30min or after 3 CI failures
 
-### Workflow File Changes
+### Workflow File Changes (CRITICAL - READ THIS!)
 
-**Code Agent CAN modify `.github/workflows/` files** when the checkout uses `PAT_WITH_WORKFLOW_ACCESS`:
+**GitHub restricts workflow file modifications.** Only PATs with the `workflows` scope can push to `.github/workflows/`. The `claude-code-action` used by most agents does NOT inherit PAT permissions for workflow pushes, even when PAT_WITH_WORKFLOW_ACCESS is configured in the workflow.
 
-```yaml
-- uses: actions/checkout@v4
-  with:
-    token: ${{ secrets.PAT_WITH_WORKFLOW_ACCESS }}
+#### Who Can Push Workflow Files?
+
+| Agent | Can Push Workflows? | Notes |
+|-------|---------------------|-------|
+| **Factory Manager** | ✅ YES | Has direct git config with PAT |
+| **Code Agent** | ❌ NO | claude-code-action overrides token |
+| **Principal Engineer** | ❌ NO | claude-code-action overrides token |
+| **iOS Agent** | ❌ NO | claude-code-action overrides token |
+| **DevOps Agent** | ❌ NO | Only infrastructure operations |
+
+#### Delegation Pattern for Workflow Changes
+
+**If you need to modify `.github/workflows/` files, delegate to Factory Manager:**
+
+```
+# Option 1: Post a comment to trigger Factory Manager
+@factory-manager Please create/modify the workflow file [filename].
+Include the full content or describe what's needed.
+
+# Option 2: Create a factory-meta issue for Factory Manager to pick up
+gh issue create --label "factory-meta" \
+  --title "Create [workflow-name].yml workflow" \
+  --body "## Workflow Needed
+[Describe the workflow needed]
+
+## Content
+[Include the YAML content]"
 ```
 
-The bug-fix.yml workflow is already configured this way. If you need to modify workflow files:
-1. Make your changes to `.github/workflows/*.yml`
-2. Commit and push normally - the PAT token enables this
-3. Create PR as usual
+#### Why This Matters
 
-**Do NOT assume you can't push workflow files** - this was a past limitation that has been fixed.
+Previous agents got stuck in loops trying to push workflow files and claiming "permission denied" without understanding the delegation pattern. This wastes time and creates user frustration.
+
+**DO NOT:**
+- Spend time trying different git configurations to push workflow files
+- Ask the human to run `gh auth login --scopes workflow`
+- Claim you need human intervention for workflow file pushes
+
+**DO:**
+- Immediately delegate to Factory Manager with full context
+- Continue working on other parts of the task
+- Document in your progress comment that you've delegated the workflow change
+
+### Workflow Concurrency Pattern
+
+Agent workflows use **issue-specific concurrency groups** to prevent duplicate runs while allowing parallel work on different issues.
+
+**Pattern:**
+```yaml
+concurrency:
+  group: agent-name-${{ github.event.issue.number || 'global' }}
+  cancel-in-progress: true  # For monitoring agents (Factory Manager, DevOps)
+  # OR
+  cancel-in-progress: false  # For work agents (Code Agent, PE)
+```
+
+**Why issue-specific groups:**
+- **Prevents duplicate comments** - If a scheduled run and issue_comment trigger overlap, only one runs
+- **Allows parallel work** - Different issues can be worked on simultaneously
+- **Reduces cancelled notifications** - Previously, a single global group caused many cancellations
+
+**Current agent concurrency:**
+| Agent | Concurrency Group | Cancel In Progress |
+|-------|-------------------|-------------------|
+| Code Agent | `code-agent-issue-${{ issue_number }}` | `false` (let work finish) |
+| Principal Engineer | `principal-engineer-${{ issue_number }}` | `false` |
+| iOS Native | `ios-agent-issue-${{ issue_number }}` | `false` (let work finish) |
+| Factory Manager | `factory-manager-${{ issue_number \|\| 'global' }}` | `true` (use latest) |
+
+**When to use `cancel-in-progress: true`:**
+- Monitoring/health check agents that should always use the latest trigger
+- Agents where duplicate work is wasteful and the latest trigger has more context
+
+**When to use `cancel-in-progress: false`:**
+- Work agents (Code Agent, PE) that should complete their current task
+- Agents where interrupting mid-work could leave issues in bad state
 
 ## Default Policies (for autonomous decisions)
 
