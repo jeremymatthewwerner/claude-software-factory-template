@@ -123,7 +123,9 @@ export async function executeWithClaudeCode(
     };
   }
 
-  const workingDir = options.workingDirectory || config.repo.basePath || process.cwd();
+  // Use process.cwd() as default - config.repo.basePath (/repos) may not exist in Railway containers
+  // which causes spawn to fail with ENOENT (confusingly reported as "node" not found)
+  const workingDir = options.workingDirectory || process.cwd();
   const session = getSession(threadKey, workingDir);
   const toolsUsed: string[] = [];
 
