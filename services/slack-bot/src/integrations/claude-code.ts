@@ -172,7 +172,15 @@ export async function executeWithClaudeCode(
         // Use absolute paths to avoid ENOENT errors in containers
         pathToClaudeCodeExecutable: claudeCodeCliPath,
         executable: 'node',
-        // Don't pass env - let SDK use default {...process.env} which includes our modified PATH
+        // Capture stderr for debugging
+        stderr: (data: string) => {
+          logger.error('Claude Code stderr', { stderr: data });
+        },
+        // Enable debug mode to see what's happening
+        env: {
+          ...process.env,
+          DEBUG: '1',
+        },
       },
     })) {
       // Handle different message types
