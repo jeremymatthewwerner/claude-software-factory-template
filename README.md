@@ -21,7 +21,7 @@ This template sets up a complete **autonomous development workflow** where AI ag
 
 | Feature | Description |
 |---------|-------------|
-| **8 Specialized Agents** | Triage, Code, Principal Engineer, QA, Release, DevOps, Marketing, CI Monitor |
+| **58 Specialized Agents** | Triage, Code, Principal Engineer, QA, Release, DevOps, Marketing, CI Monitor |
 | **Opus Model** | Code Agent and PE use Claude Opus for superior reasoning |
 | **Self-Healing** | CI failures auto-create issues, agents auto-fix them |
 | **Log Analysis** | Agents analyze actual logs before implementing fixes |
