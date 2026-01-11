@@ -30,9 +30,9 @@ class SessionManager {
       session = {
         channelId,
         threadTs,
-        workingDirectory: config.repo.defaultRepo
-          ? `${config.repo.basePath}/${config.repo.defaultRepo}`
-          : config.repo.basePath,
+        // Use process.cwd() as default - config.repo.basePath (/repos) may not exist
+        // in Railway containers, causing spawn ENOENT errors
+        workingDirectory: process.cwd(),
         claudeSessionId: uuidv4(),
         status: 'active',
         createdAt: new Date().toISOString(),
