@@ -148,6 +148,7 @@ export async function executeWithClaudeCode(
 
     // Execute with Claude Code SDK
     // Note: We explicitly set executable to 'node' and provide the path for Railway containers
+    // The SDK defaults env to {...process.env}, which will include our modified PATH
     for await (const message of query({
       prompt,
       options: {
@@ -169,12 +170,7 @@ export async function executeWithClaudeCode(
         // Use absolute paths to avoid ENOENT errors in containers
         pathToClaudeCodeExecutable: claudeCodeCliPath,
         executable: 'node',
-        env: {
-          ...process.env,
-          NODE_ENV: 'production',
-          // Use absolute path to node in PATH to ensure child processes can find it
-          PATH: `${dirname(nodeExecutablePath)}:${process.env.PATH || '/usr/local/bin:/usr/bin:/bin'}`,
-        },
+        // Don't pass env - let SDK use default {...process.env} which includes our modified PATH
       },
     })) {
       // Handle different message types
