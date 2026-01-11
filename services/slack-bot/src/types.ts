@@ -49,18 +49,11 @@ export interface AgentStatusPayload {
 }
 
 // Intent detection for message routing
+// Simplified: everything goes to Claude Code except explicit dispatch
 export type IntentType =
-  | 'conversation'
-  | 'dispatch'
-  | 'status'
-  | 'help'
-  | 'factory-status'
-  | 'factory-analyze'
-  | 'factory-failures'
-  | 'factory-agents'
-  | 'factory-workflows'
-  | 'enable-code-mode'
-  | 'disable-code-mode';
+  | 'conversation'  // Default - goes to Claude Code
+  | 'dispatch'      // Create GitHub issue for agent
+  | 'help';         // Show help message
 
 export interface MessageIntent {
   type: IntentType;
