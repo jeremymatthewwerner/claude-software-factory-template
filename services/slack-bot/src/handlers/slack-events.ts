@@ -14,7 +14,7 @@ import { config } from '../config.js';
  * Register all Slack event handlers
  */
 export function registerEventHandlers(app: App): void {
-  // Handle direct messages
+  // Handle direct messages and thread replies where bot is participating
   app.message(async ({ message, client, say }) => {
     const msg = message as MessageEvent & { text?: string; user?: string; thread_ts?: string; bot_id?: string; channel_type?: string };
 
@@ -28,21 +28,41 @@ export function registerEventHandlers(app: App): void {
       return;
     }
 
-    // Ignore @mentions in channels - those are handled by app_mention event
-    // Only process DMs (channel_type === 'im') or non-mention messages
-    if (msg.channel_type !== 'im' && msg.text.includes('<@')) {
+    // DMs - always respond
+    if (msg.channel_type === 'im') {
+      await handleMessage(
+        msg.text,
+        msg.user,
+        msg.channel,
+        msg.thread_ts || msg.ts,
+        msg.ts,
+        client,
+        say
+      );
       return;
     }
 
-    await handleMessage(
-      msg.text,
-      msg.user,
-      msg.channel,
-      msg.thread_ts || msg.ts,
-      msg.ts,
-      client,
-      say
-    );
+    // In channels: Only respond in threads where bot is already participating
+    // (i.e., there's an existing session for this thread)
+    if (msg.thread_ts) {
+      const existingSession = sessionManager.get(msg.channel, msg.thread_ts);
+      if (existingSession) {
+        // Bot is participating in this thread - respond automatically
+        await handleMessage(
+          msg.text,
+          msg.user,
+          msg.channel,
+          msg.thread_ts,
+          msg.ts,
+          client,
+          say
+        );
+        return;
+      }
+    }
+
+    // In channels without a thread, or in threads where bot isn't participating:
+    // Don't respond - require @mention (handled by app_mention event)
   });
 
   // Handle @mentions in channels
