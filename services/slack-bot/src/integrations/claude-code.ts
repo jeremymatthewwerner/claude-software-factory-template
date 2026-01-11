@@ -12,9 +12,19 @@
  */
 
 import { query, type SDKMessage } from '@anthropic-ai/claude-code';
+import { execSync } from 'child_process';
 import { config } from '../config.js';
 import logger from '../utils/logger.js';
 import { rateLimiter } from '../utils/rate-limiter.js';
+
+// Find node executable path at startup for Railway compatibility
+let nodePath = 'node';
+try {
+  nodePath = execSync('which node', { encoding: 'utf-8' }).trim();
+  logger.info('Found node executable', { nodePath });
+} catch {
+  logger.warn('Could not find node via "which", using default "node"');
+}
 
 /**
  * Session state for multi-turn conversations
@@ -124,6 +134,7 @@ export async function executeWithClaudeCode(
     let fullContent = '';
 
     // Execute with Claude Code SDK
+    // Note: We explicitly set executable to 'node' and provide the path for Railway containers
     for await (const message of query({
       prompt,
       options: {
@@ -142,6 +153,14 @@ export async function executeWithClaudeCode(
         appendSystemPrompt: SYSTEM_PROMPT,
         maxTurns: 50, // Reasonable limit for Slack interactions
         permissionMode: 'bypassPermissions', // Auto-approve tools in Slack context
+        executable: 'node', // Use node runtime
+        executableArgs: [], // No extra args needed
+        env: {
+          ...process.env, // Pass through environment including PATH
+          NODE_ENV: 'production',
+          // Ensure node is findable via PATH
+          PATH: process.env.PATH || '/usr/local/bin:/usr/bin:/bin',
+        },
       },
     })) {
       // Handle different message types
