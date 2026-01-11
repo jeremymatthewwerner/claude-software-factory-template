@@ -168,7 +168,9 @@ export async function executeWithClaudeCode(
         cwd: workingDir,
         appendSystemPrompt: SYSTEM_PROMPT,
         maxTurns: 50, // Reasonable limit for Slack interactions
-        permissionMode: 'bypassPermissions', // Auto-approve tools in Slack context
+        // Note: 'bypassPermissions' can't be used when running as root (Railway)
+        // 'acceptEdits' auto-accepts file edits
+        permissionMode: 'acceptEdits',
         // Use absolute paths to avoid ENOENT errors in containers
         pathToClaudeCodeExecutable: claudeCodeCliPath,
         executable: 'node',
