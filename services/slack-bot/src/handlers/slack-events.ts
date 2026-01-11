@@ -231,7 +231,9 @@ async function handleMessage(
         unfurl_media: false,
       });
 
-      // Track the response in session
+      // Track both user message and assistant response in session history
+      // This maintains conversation context for subsequent turns
+      sessionManager.addMessage(channelId, threadTs, 'user', text, messageTs);
       sessionManager.addMessage(channelId, threadTs, 'assistant', result.response, response.ts);
 
       // If an agent was dispatched, track it

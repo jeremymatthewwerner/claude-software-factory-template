@@ -107,6 +107,7 @@ export async function executeWithClaudeCode(
     workingDirectory?: string;
     onProgress?: (text: string) => void;
     onToolUse?: (tool: string, input: string) => void;
+    conversationHistory?: Array<{ role: 'user' | 'assistant'; content: string }>;
   } = {}
 ): Promise<{
   content: string;
@@ -137,11 +138,33 @@ export async function executeWithClaudeCode(
   process.env.PATH = `${nodeBinDir}:${originalPath || '/usr/local/bin:/usr/bin:/bin'}`;
 
   try {
+    // Build conversation context by prepending history to the prompt
+    // The SDK only accepts a single prompt string, not a messages array
+    const history = options.conversationHistory || [];
+    let fullPrompt = prompt;
+
+    if (history.length > 0) {
+      // Build context from previous conversation turns
+      const contextParts = ['<conversation_history>'];
+      for (const msg of history) {
+        const role = msg.role === 'user' ? 'Human' : 'Assistant';
+        contextParts.push(`${role}: ${msg.content}`);
+      }
+      contextParts.push('</conversation_history>');
+      contextParts.push('');
+      contextParts.push('Continue the conversation. Here is the latest message from the user:');
+      contextParts.push('');
+      contextParts.push(prompt);
+      fullPrompt = contextParts.join('\n');
+    }
+
     logger.info('Executing Claude Code query', {
       userId,
       threadKey,
       workingDirectory: workingDir,
       promptLength: prompt.length,
+      historyLength: history.length,
+      fullPromptLength: fullPrompt.length,
       nodeBinDir,
       modifiedPath: process.env.PATH,
     });
@@ -152,7 +175,7 @@ export async function executeWithClaudeCode(
     // Note: We explicitly set executable to 'node' and provide the path for Railway containers
     // The SDK defaults env to {...process.env}, which will include our modified PATH
     for await (const message of query({
-      prompt,
+      prompt: fullPrompt,
       options: {
         model: config.anthropic.model || 'claude-sonnet-4-20250514',
         allowedTools: [

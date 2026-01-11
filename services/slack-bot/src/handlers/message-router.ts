@@ -153,6 +153,17 @@ async function handleClaudeCodeConversation(
 }> {
   const threadKey = `${session.channelId}:${session.threadTs}`;
 
+  // Get conversation history for context
+  const conversationHistory = sessionManager.getHistoryForClaude(
+    session.channelId,
+    session.threadTs
+  );
+
+  logger.debug('Fetched conversation history', {
+    threadKey,
+    historyLength: conversationHistory.length,
+  });
+
   try {
     const result = await executeWithClaudeCode(
       message,
@@ -161,6 +172,7 @@ async function handleClaudeCodeConversation(
       {
         workingDirectory: session.workingDirectory,
         onProgress: onChunk,
+        conversationHistory, // Pass history for multi-turn context
       }
     );
 
