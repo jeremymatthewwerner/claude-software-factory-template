@@ -21,6 +21,7 @@ import express from 'express';
 import { config, validateConfig } from './config.js';
 import { registerEventHandlers } from './handlers/slack-events.js';
 import { createWebhookRouter } from './handlers/webhook-handler.js';
+import { executeWithClaudeCode } from './integrations/claude-code.js';
 import logger from './utils/logger.js';
 import sessionManager from './state/session-manager.js';
 
@@ -71,6 +72,44 @@ async function main(): Promise<void> {
   };
   expressApp.get('/', healthResponse);
   expressApp.get('/health', healthResponse);
+
+  // Test endpoint for Claude Code SDK debugging
+  // POST /test-claude-code { "prompt": "list files" }
+  // Protected by a simple secret check
+  expressApp.post('/test-claude-code', async (req, res) => {
+    const testSecret = req.headers['x-test-secret'];
+    if (testSecret !== config.slack.webhookSecret) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
+    const { prompt } = req.body;
+    if (!prompt) {
+      res.status(400).json({ error: 'Missing prompt' });
+      return;
+    }
+
+    logger.info('Test endpoint called', { prompt: prompt.substring(0, 50) });
+
+    try {
+      const result = await executeWithClaudeCode(
+        prompt,
+        'test-user',
+        'test-thread',
+        { workingDirectory: process.cwd() }
+      );
+      res.json({
+        success: !result.error,
+        content: result.content,
+        toolsUsed: result.toolsUsed,
+        error: result.error,
+      });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      logger.error('Test endpoint error', { error: errorMessage });
+      res.status(500).json({ error: errorMessage });
+    }
+  });
 
   // Start webhook server - use PORT from Railway, fallback to webhookPort
   const port = process.env.PORT || config.server.webhookPort;
