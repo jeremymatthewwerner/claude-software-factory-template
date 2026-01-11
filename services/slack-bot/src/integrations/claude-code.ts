@@ -127,12 +127,21 @@ export async function executeWithClaudeCode(
   const session = getSession(threadKey, workingDir);
   const toolsUsed: string[] = [];
 
+  // CRITICAL: Modify parent process PATH so spawn() can find node
+  // The env option only affects the child process AFTER spawn, not the spawn lookup itself
+  // Declare outside try so it's accessible in catch for cleanup
+  const originalPath = process.env.PATH;
+  const nodeBinDir = dirname(nodeExecutablePath);
+  process.env.PATH = `${nodeBinDir}:${originalPath || '/usr/local/bin:/usr/bin:/bin'}`;
+
   try {
     logger.info('Executing Claude Code query', {
       userId,
       threadKey,
       workingDirectory: workingDir,
       promptLength: prompt.length,
+      nodeBinDir,
+      modifiedPath: process.env.PATH,
     });
 
     let fullContent = '';
@@ -209,6 +218,9 @@ export async function executeWithClaudeCode(
       }
     }
 
+    // Restore original PATH
+    process.env.PATH = originalPath;
+
     // Track approximate token usage (we don't get exact counts from query())
     rateLimiter.addTokens(userId, Math.ceil(fullContent.length / 4));
 
@@ -217,6 +229,9 @@ export async function executeWithClaudeCode(
       toolsUsed,
     };
   } catch (error) {
+    // Restore original PATH even on error
+    process.env.PATH = originalPath;
+
     logger.error('Error executing Claude Code', { error, userId, threadKey });
 
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
