@@ -58,7 +58,9 @@ export type IntentType =
   | 'factory-analyze'
   | 'factory-failures'
   | 'factory-agents'
-  | 'factory-workflows';
+  | 'factory-workflows'
+  | 'enable-code-mode'
+  | 'disable-code-mode';
 
 export interface MessageIntent {
   type: IntentType;

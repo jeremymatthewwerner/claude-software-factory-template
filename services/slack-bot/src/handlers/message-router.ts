@@ -1,16 +1,18 @@
 /**
  * Message router - parses intent and routes to appropriate handler
  *
- * IMPORTANT: This bot's job is NOT to unblock specific issues, PRs, or actions.
- * Its job is to help engineers identify patterns, diagnose systemic issues,
- * and improve the factory workflows to be more robust, autonomous, and general.
+ * This bot provides TWO modes:
+ * 1. Factory Commands: Quick status checks and agent dispatch
+ * 2. Claude Code Mode: Full Claude Code capabilities (read, write, bash, git)
  *
- * The factory should fix issues. This bot helps fix the factory.
+ * Use "code mode" or "claude code" to enable full capabilities.
+ * Use "factory mode" to return to quick commands.
  */
 
 import type { AgentType, SlackSession, MessageIntent, IntentType } from '../types.js';
 import { dispatchToAgent } from '../integrations/github-dispatcher.js';
 import { chat, streamChat } from '../integrations/claude-sdk.js';
+import { executeWithClaudeCode, isClaudeCodeAvailable } from '../integrations/claude-code.js';
 import {
   getFactoryStatus,
   analyzeIssue,
@@ -20,6 +22,9 @@ import {
 } from './factory-commands.js';
 import sessionManager from '../state/session-manager.js';
 import logger from '../utils/logger.js';
+
+// Track which threads are in "code mode" (full Claude Code capabilities)
+const codeModeSessions = new Set<string>();
 
 /**
  * Keywords that suggest agent dispatch
@@ -45,10 +50,57 @@ const FACTORY_COMMANDS = {
 };
 
 /**
+ * Check if a thread is in code mode
+ */
+export function isCodeMode(threadKey: string): boolean {
+  return codeModeSessions.has(threadKey);
+}
+
+/**
+ * Enable code mode for a thread
+ */
+export function enableCodeMode(threadKey: string): void {
+  codeModeSessions.add(threadKey);
+  logger.info('Code mode enabled', { threadKey });
+}
+
+/**
+ * Disable code mode for a thread
+ */
+export function disableCodeMode(threadKey: string): void {
+  codeModeSessions.delete(threadKey);
+  logger.info('Code mode disabled', { threadKey });
+}
+
+/**
  * Parse message to determine intent
  */
 export function parseIntent(message: string): MessageIntent {
   const lowerMessage = message.toLowerCase();
+
+  // Check for mode switching commands
+  if (
+    lowerMessage === 'code mode' ||
+    lowerMessage === 'claude code' ||
+    lowerMessage === 'enable code mode' ||
+    lowerMessage.includes('switch to code mode')
+  ) {
+    return {
+      type: 'enable-code-mode' as IntentType,
+      confidence: 1.0,
+    };
+  }
+
+  if (
+    lowerMessage === 'factory mode' ||
+    lowerMessage === 'disable code mode' ||
+    lowerMessage.includes('switch to factory mode')
+  ) {
+    return {
+      type: 'disable-code-mode' as IntentType,
+      confidence: 1.0,
+    };
+  }
 
   // Check for factory commands first (these are the primary purpose)
   // Factory status
@@ -167,12 +219,66 @@ export async function routeMessage(
   issueUrl?: string;
 }> {
   const intent = parseIntent(message);
+  const threadKey = `${session.channelId}:${session.threadTs}`;
 
   logger.info('Routing message', {
     intentType: intent.type,
     confidence: intent.confidence,
     suggestedAgent: intent.suggestedAgent,
+    codeMode: isCodeMode(threadKey),
   });
+
+  // Handle mode switching first
+  switch (intent.type) {
+    case 'enable-code-mode':
+      if (!isClaudeCodeAvailable()) {
+        return {
+          response: '❌ Claude Code SDK is not available. Please check the installation.',
+        };
+      }
+      enableCodeMode(threadKey);
+      return {
+        response: `🚀 *Code Mode Enabled*
+
+You now have full Claude Code capabilities:
+• Read, Write, Edit files
+• Run bash/terminal commands
+• Git operations (status, diff, commit, push)
+• Search code with Glob/Grep
+
+Just tell me what you want to do. I'll use the same tools as the Claude Code CLI.
+
+Say \`factory mode\` to return to quick commands.`,
+      };
+
+    case 'disable-code-mode':
+      disableCodeMode(threadKey);
+      return {
+        response: `🏭 *Factory Mode Enabled*
+
+Back to quick factory commands:
+• \`factory status\` - Health overview
+• \`failures\` - CI failure patterns
+• \`dispatch code <task>\` - Send to Code Agent
+
+Say \`code mode\` to get full Claude Code capabilities.`,
+      };
+  }
+
+  // If in code mode, route ALL messages to Claude Code (except explicit factory commands)
+  if (isCodeMode(threadKey)) {
+    // Still allow factory commands in code mode
+    if (intent.type.startsWith('factory-')) {
+      // Fall through to handle factory commands
+    } else if (intent.type === 'dispatch') {
+      return handleDispatch(intent.agent!, intent.extractedTask || message, session);
+    } else if (intent.type === 'help') {
+      return { response: getCodeModeHelpMessage() };
+    } else {
+      // Execute with full Claude Code capabilities
+      return handleClaudeCodeConversation(message, session, onChunk);
+    }
+  }
 
   switch (intent.type) {
     // Factory improvement commands (primary purpose)
@@ -331,37 +437,98 @@ async function handleConversation(
 }
 
 /**
- * Get help message
+ * Handle conversation with full Claude Code capabilities
+ */
+async function handleClaudeCodeConversation(
+  message: string,
+  session: SlackSession,
+  onChunk?: (chunk: string) => void
+): Promise<{
+  response: string;
+}> {
+  const threadKey = `${session.channelId}:${session.threadTs}`;
+
+  try {
+    const result = await executeWithClaudeCode(
+      message,
+      session.userId,
+      threadKey,
+      {
+        workingDirectory: session.workingDirectory,
+        onProgress: onChunk,
+      }
+    );
+
+    if (result.error) {
+      logger.error('Claude Code execution error', { error: result.error, threadKey });
+    }
+
+    return { response: result.content };
+  } catch (error) {
+    logger.error('Error in Claude Code conversation', { error, threadKey });
+    return {
+      response: '❌ Error executing Claude Code. Please try again.',
+    };
+  }
+}
+
+/**
+ * Get help message for factory mode
  */
 function getHelpMessage(): string {
-  return `*🏭 Factory Improvement Bot*
+  return `*🏭 Factory Bot - Two Modes*
 
-My job is to help you *improve the factory*, not fix individual issues.
-The factory should fix issues. I help you fix the factory.
+*Current: Factory Mode* (quick commands)
 
-*Factory Diagnostics (my primary purpose):*
-- \`factory status\` - Overall factory health & autonomy metrics
-- \`failures\` - CI/workflow failure patterns (what's brittle?)
-- \`agent performance\` - Which agents need improvement?
-- \`workflows\` - Check workflow configuration
-- \`analyze #123\` - Learn from an issue (why did it escalate?)
+*Factory Diagnostics:*
+• \`factory status\` - Overall factory health
+• \`failures\` - CI/workflow failure patterns
+• \`agent performance\` - Agent metrics
+• \`analyze #123\` - Learn from an issue
 
-*Dispatch Work (create issues for agents):*
-- \`dispatch code <task>\` - Code Agent
-- \`dispatch qa <task>\` - QA Agent
-- \`dispatch devops <task>\` - DevOps Agent
+*Dispatch to Agents:*
+• \`dispatch code <task>\` - Code Agent
+• \`dispatch qa <task>\` - QA Agent
+• \`dispatch devops <task>\` - DevOps Agent
 
-*Philosophy:*
-• Each escalation = factory bug. Find the pattern, fix the workflow.
-• Don't unblock issues—make the factory handle them autonomously.
-• Low autonomy rate? Improve agent prompts/workflows.
-• High failure rate? Harden the brittle workflows.
+*Switch Modes:*
+• \`code mode\` - Enable full Claude Code capabilities (files, git, bash)
+• \`factory mode\` - Return to quick commands (current)
 
-*For direct code work:* Use claude.ai/code or the CLI.
-I'm your factory control panel, not an IDE.`;
+_Say \`code mode\` to get Claude Code capabilities directly in Slack!_`;
+}
+
+/**
+ * Get help message for code mode
+ */
+function getCodeModeHelpMessage(): string {
+  return `*🚀 Code Mode Active*
+
+You have full Claude Code capabilities:
+• *Files:* Read, Write, Edit any file
+• *Search:* Glob patterns, Grep content
+• *Terminal:* Run bash commands
+• *Git:* status, diff, commit, push, branch
+• *Web:* Search and fetch
+
+*Examples:*
+• "Show me the main config file"
+• "What's in the latest commit?"
+• "Run the tests"
+• "Create a new feature branch"
+• "Search for TODO comments"
+
+*Factory commands still work:*
+• \`factory status\`, \`failures\`, \`dispatch code <task>\`
+
+*Switch back:*
+• \`factory mode\` - Return to quick commands`;
 }
 
 export default {
   parseIntent,
   routeMessage,
+  isCodeMode,
+  enableCodeMode,
+  disableCodeMode,
 };

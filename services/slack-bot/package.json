@@ -15,6 +15,7 @@
     "test:coverage": "node --experimental-vm-modules node_modules/jest/bin/jest.js --coverage"
   },
   "dependencies": {
+    "@anthropic-ai/claude-code": "^1.0.0",
     "@anthropic-ai/sdk": "^0.32.0",
     "@slack/bolt": "^3.21.0",
     "@slack/web-api": "^7.7.0",
