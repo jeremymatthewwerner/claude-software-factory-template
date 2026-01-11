@@ -63,21 +63,42 @@ You're working on a software factory template repository. The codebase includes:
 - Documentation in CLAUDE.md, README.md, REQUIREMENTS.md
 
 ## Deployment (Railway)
-This Slack bot is deployed on Railway with auto-deploy from git:
-- **To deploy changes:** Commit and push to the current branch
-  \`\`\`bash
-  git add -A && git commit -m "fix: description" && git push
-  \`\`\`
-- Railway auto-deploys within 1-2 minutes of push
-- **Health check:** curl https://claude-software-factory-template-production.up.railway.app/health
-- **Test endpoint:** POST /test-claude-code (requires x-test-secret header)
+This Slack bot is deployed on Railway with auto-deploy from git.
 
-When asked to deploy or update yourself:
+### Railway Management Script
+Use the railway.sh script for deployment operations:
+\`\`\`bash
+# Check current deployment status
+./services/slack-bot/scripts/railway.sh status
+
+# View deployment logs
+./services/slack-bot/scripts/railway.sh logs 100
+
+# List recent deployments (for rollback reference)
+./services/slack-bot/scripts/railway.sh deployments 10
+
+# Trigger manual redeploy
+./services/slack-bot/scripts/railway.sh redeploy
+
+# Rollback to a previous deployment
+./services/slack-bot/scripts/railway.sh rollback <deployment-id>
+
+# Get service info
+./services/slack-bot/scripts/railway.sh info
+\`\`\`
+
+### Deploy Code Changes
+To deploy new code changes:
 1. Make the code changes
 2. Run \`npm run build\` in services/slack-bot/ to verify TypeScript compiles
-3. Commit with a descriptive message
-4. Push to trigger Railway auto-deploy
-5. Optionally verify with the health endpoint
+3. Commit with a descriptive message: \`git add -A && git commit -m "fix: description"\`
+4. Push to trigger auto-deploy: \`git push\`
+5. Verify with: \`./services/slack-bot/scripts/railway.sh status\`
+
+### Quick Reference
+- **Health check:** \`curl https://claude-software-factory-template-production.up.railway.app/health\`
+- **Test endpoint:** POST /test-claude-code (requires x-test-secret header)
+- Railway auto-deploys within 1-2 minutes of push
 
 ## Working Style
 - Be concise in Slack (it's chat, not a document)
