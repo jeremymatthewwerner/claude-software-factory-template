@@ -13,18 +13,22 @@
 
 import { query, type SDKMessage } from '@anthropic-ai/claude-code';
 import { execSync } from 'child_process';
+import { dirname, join } from 'path';
+import { fileURLToPath } from 'url';
 import { config } from '../config.js';
 import logger from '../utils/logger.js';
 import { rateLimiter } from '../utils/rate-limiter.js';
 
-// Find node executable path at startup for Railway compatibility
-let nodePath = 'node';
-try {
-  nodePath = execSync('which node', { encoding: 'utf-8' }).trim();
-  logger.info('Found node executable', { nodePath });
-} catch {
-  logger.warn('Could not find node via "which", using default "node"');
-}
+// Get absolute path to node executable - critical for Railway containers
+const nodeExecutablePath = process.execPath;
+logger.info('Node executable path', { nodeExecutablePath });
+
+// Find the Claude Code CLI path
+const claudeCodeCliPath = join(
+  dirname(fileURLToPath(import.meta.resolve('@anthropic-ai/claude-code'))),
+  'cli.js'
+);
+logger.info('Claude Code CLI path', { claudeCodeCliPath });
 
 /**
  * Session state for multi-turn conversations
@@ -153,13 +157,14 @@ export async function executeWithClaudeCode(
         appendSystemPrompt: SYSTEM_PROMPT,
         maxTurns: 50, // Reasonable limit for Slack interactions
         permissionMode: 'bypassPermissions', // Auto-approve tools in Slack context
-        executable: 'node', // Use node runtime
-        executableArgs: [], // No extra args needed
+        // Use absolute paths to avoid ENOENT errors in containers
+        pathToClaudeCodeExecutable: claudeCodeCliPath,
+        executable: 'node',
         env: {
-          ...process.env, // Pass through environment including PATH
+          ...process.env,
           NODE_ENV: 'production',
-          // Ensure node is findable via PATH
-          PATH: process.env.PATH || '/usr/local/bin:/usr/bin:/bin',
+          // Use absolute path to node in PATH to ensure child processes can find it
+          PATH: `${dirname(nodeExecutablePath)}:${process.env.PATH || '/usr/local/bin:/usr/bin:/bin'}`,
         },
       },
     })) {
