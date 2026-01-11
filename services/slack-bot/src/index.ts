@@ -78,7 +78,7 @@ async function main(): Promise<void> {
   // Protected by a simple secret check
   expressApp.post('/test-claude-code', async (req, res) => {
     const testSecret = req.headers['x-test-secret'];
-    if (testSecret !== config.slack.webhookSecret) {
+    if (testSecret !== config.server.webhookSecret) {
       res.status(401).json({ error: 'Unauthorized' });
       return;
     }
