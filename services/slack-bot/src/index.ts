@@ -65,8 +65,15 @@ async function main(): Promise<void> {
     res.json({
       service: 'claude-software-factory-slack-bot',
       status: 'running',
-      version: '1.0.0',
+      version: '1.0.1',
       timestamp: new Date().toISOString(),
+      deployment: {
+        buildTime: new Date().toISOString(),
+        environment: process.env.RAILWAY_ENVIRONMENT || 'development',
+        gitCommit: process.env.RAILWAY_GIT_COMMIT_SHA || 'unknown',
+        nodeVersion: process.version,
+      },
+      uptime: process.uptime(),
     });
   };
   expressApp.get('/', healthResponse);
