@@ -137,10 +137,21 @@ export function registerEventHandlers(app: App): void {
     }
 
     // Default: start conversation in thread
-    await respond({
-      response_type: 'in_channel',
-      text: `<@${user_id}> asked: ${text}\n\n_Starting conversation..._`,
-    });
+    // Use the same dynamic status system as regular messages
+    await handleMessage(
+      text,
+      user_id,
+      channel_id,
+      trigger_id, // Use trigger_id as thread_ts for slash commands
+      trigger_id, // Use trigger_id as message_ts for slash commands
+      app.client,
+      async (response: any) => {
+        await respond({
+          response_type: 'in_channel',
+          ...response
+        });
+      }
+    );
   });
 
   logger.info('Slack event handlers registered');
