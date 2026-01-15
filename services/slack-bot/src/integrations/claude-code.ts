@@ -331,10 +331,34 @@ export async function executeWithClaudeCode(
 
     logger.error('Error executing Claude Code', { error, userId, threadKey });
 
-    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    // Extract detailed error info
+    let errorMessage = 'Unknown error';
+    let errorDetails = '';
+
+    if (error instanceof Error) {
+      errorMessage = error.message;
+      // Check for common issues
+      if (error.message.includes('exited with code 1')) {
+        errorDetails = '\n\nPossible causes:\n' +
+          '• ANTHROPIC_API_KEY not set or invalid\n' +
+          '• Missing required environment variables\n' +
+          '• Claude Code CLI initialization failed';
+
+        // Log environment for debugging (without sensitive values)
+        logger.error('Claude Code env check', {
+          hasAnthropicKey: !!process.env.ANTHROPIC_API_KEY,
+          anthropicKeyPrefix: process.env.ANTHROPIC_API_KEY?.substring(0, 10) + '...',
+          cwd: workingDir,
+          nodeExecutable: nodeExecutablePath,
+        });
+      }
+      if (error.stack) {
+        logger.error('Claude Code stack trace', { stack: error.stack });
+      }
+    }
 
     return {
-      content: `❌ Error: ${errorMessage}`,
+      content: `❌ Error: ${errorMessage}${errorDetails}`,
       toolsUsed,
       error: errorMessage,
     };
