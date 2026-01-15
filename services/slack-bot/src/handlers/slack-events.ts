@@ -36,6 +36,12 @@ export function registerEventHandlers(app: App): void {
       return;
     }
 
+    // Skip messages with @mentions - let app_mention handler deal with those
+    // This prevents duplicate responses when bot is mentioned in a thread it's already in
+    if (msg.text.includes('<@') && msg.channel_type !== 'im') {
+      return;
+    }
+
     // DMs - always respond
     if (msg.channel_type === 'im') {
       await handleMessage(
