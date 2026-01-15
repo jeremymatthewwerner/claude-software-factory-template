@@ -8,6 +8,8 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "dev": "tsx watch src/index.ts",
+    "mcp": "node dist/mcp/index.js",
+    "mcp:dev": "tsx src/mcp/index.ts",
     "lint": "eslint src --ext .ts",
     "typecheck": "tsc --noEmit",
     "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
@@ -17,12 +19,13 @@
   "dependencies": {
     "@anthropic-ai/claude-code": "^1.0.0",
     "@anthropic-ai/sdk": "^0.32.0",
+    "@modelcontextprotocol/sdk": "^1.25.2",
     "@slack/bolt": "^3.21.0",
     "@slack/web-api": "^7.7.0",
     "dotenv": "^16.4.0",
     "express": "^4.21.0",
-    "winston": "^3.15.0",
-    "uuid": "^10.0.0"
+    "uuid": "^10.0.0",
+    "winston": "^3.15.0"
   },
   "devDependencies": {
     "@types/express": "^5.0.0",
