@@ -217,6 +217,8 @@ async function handleMessage(
       // Process the message
       let fullResponse = '';
 
+      const startTime = Date.now();
+
       const result = await routeMessage(text, session, (chunk) => {
         fullResponse += chunk;
         // For streaming, we'd update the message here
@@ -225,6 +227,18 @@ async function handleMessage(
 
       // Convert markdown to Slack format
       const slackMessage = markdownToSlack(result.response);
+
+      // Ensure animation runs for at least 3 seconds to be visible
+      const elapsedTime = Date.now() - startTime;
+      const minDisplayTime = 3000; // 3 seconds minimum
+
+      if (elapsedTime < minDisplayTime) {
+        logger.debug('Waiting to ensure animation is visible', {
+          elapsedTime,
+          waitTime: minDisplayTime - elapsedTime
+        });
+        await new Promise(resolve => setTimeout(resolve, minDisplayTime - elapsedTime));
+      }
 
       // Complete the status animation with the final response
       await StatusAnimator.complete(statusKey, slackMessage, client, channelId);
