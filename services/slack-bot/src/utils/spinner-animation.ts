@@ -46,7 +46,7 @@ export class SpinnerAnimation {
  */
 export class LiveStatusProtocol {
   private static readonly MAX_SILENT_OPERATIONS = 2;
-  private static readonly UPDATE_INTERVAL_MS = 1500; // 1.5 seconds
+  private static readonly UPDATE_INTERVAL_MS = 500; // 0.5 seconds
 
   private operationCount = 0;
   private lastUpdateTime = Date.now();

@@ -73,7 +73,7 @@ export class StatusAnimator {
   };
 
   static async start(config: StatusAnimatorConfig): Promise<string> {
-    const { channel, threadTs, client, phases, animationInterval = 1500 } = config;
+    const { channel, threadTs, client, phases, animationInterval = 500 } = config;
     const key = `${channel}-${threadTs}`;
 
     // Stop any existing animator for this thread
