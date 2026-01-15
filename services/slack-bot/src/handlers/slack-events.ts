@@ -181,6 +181,7 @@ export function registerEventHandlers(app: App): void {
 
 /**
  * Create a streaming message updater that throttles updates to avoid Slack rate limits
+ * Includes a heartbeat animation to show progress during tool execution
  */
 function createStreamingUpdater(
   client: any,
@@ -191,16 +192,31 @@ function createStreamingUpdater(
   let accumulatedContent = '';
   let lastUpdateTime = 0;
   let updateTimeout: NodeJS.Timeout | null = null;
+  let heartbeatInterval: NodeJS.Timeout | null = null;
   let isUpdating = false;
+  let animationFrame = 0;
+
+  // Animation frames for the working indicator
+  const workingFrames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
   const doUpdate = async (content: string, isFinal: boolean = false) => {
     if (isUpdating && !isFinal) return;
     isUpdating = true;
 
     try {
-      const displayContent = isFinal
-        ? content
-        : content + '\n\n_...working..._';
+      let displayContent: string;
+
+      if (isFinal) {
+        displayContent = content;
+      } else if (content) {
+        // Has content - show it with working indicator
+        const frame = workingFrames[animationFrame % workingFrames.length];
+        displayContent = content + `\n\n${frame} _working..._`;
+      } else {
+        // No content yet - show animated thinking
+        const frame = workingFrames[animationFrame % workingFrames.length];
+        displayContent = `${frame} _thinking..._`;
+      }
 
       await client.chat.update({
         channel: channelId,
@@ -208,12 +224,21 @@ function createStreamingUpdater(
         text: markdownToSlack(displayContent),
       });
       lastUpdateTime = Date.now();
+      animationFrame++;
     } catch (error) {
       logger.warn('Failed to update streaming message', { error });
     } finally {
       isUpdating = false;
     }
   };
+
+  // Start heartbeat to show animation even when no content is streaming
+  heartbeatInterval = setInterval(() => {
+    doUpdate(accumulatedContent);
+  }, updateIntervalMs);
+
+  // Do initial update immediately
+  doUpdate(accumulatedContent);
 
   return {
     /**
@@ -251,6 +276,11 @@ function createStreamingUpdater(
      * Finalize the message with the complete content
      */
     finalize: async (finalContent?: string) => {
+      // Stop heartbeat
+      if (heartbeatInterval) {
+        clearInterval(heartbeatInterval);
+        heartbeatInterval = null;
+      }
       if (updateTimeout) {
         clearTimeout(updateTimeout);
         updateTimeout = null;
@@ -264,6 +294,10 @@ function createStreamingUpdater(
      * Cancel any pending updates
      */
     cancel: () => {
+      if (heartbeatInterval) {
+        clearInterval(heartbeatInterval);
+        heartbeatInterval = null;
+      }
       if (updateTimeout) {
         clearTimeout(updateTimeout);
         updateTimeout = null;
@@ -334,11 +368,11 @@ async function handleMessage(
       truncated: threadHistory.truncated,
     });
 
-    // Post initial message that will be updated as content streams
+    // Post initial placeholder message (will be immediately updated by streamer)
     const initialMsg = await client.chat.postMessage({
       channel: channelId,
       thread_ts: threadTs,
-      text: '_Starting..._',
+      text: '⠋ _thinking..._',
     });
 
     // Create streaming updater
