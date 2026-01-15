@@ -8,6 +8,7 @@ export interface StatusPhase {
   name: string;
   emoji: string;
   message: string;
+  animationType?: 'thinking' | 'analyzing' | 'working' | 'creating' | 'processing';
   estimatedDuration?: number; // milliseconds
 }
 
@@ -31,33 +32,39 @@ export interface ActiveStatusTracker {
 export class StatusAnimator {
   private static instances = new Map<string, ActiveStatusTracker>();
 
-  // Spinner frames for animation
-  private static readonly SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+  // Cool emoji animation frames
+  private static readonly ANIMATION_FRAMES = {
+    thinking: ['🤔', '💭', '🧠', '⚡', '✨', '🎯'],
+    analyzing: ['🔍', '📊', '📈', '🔎', '🧮', '📋'],
+    working: ['⚙️', '🔧', '⚡', '🛠️', '💫', '🎪'],
+    creating: ['📝', '✏️', '📄', '📋', '✍️', '📃'],
+    processing: ['🔄', '⚡', '🚀', '💫', '⭐', '🎯']
+  };
 
   // Default phases for different operations
   static readonly DEFAULT_PHASES: Record<string, StatusPhase[]> = {
     conversation: [
-      { name: 'analyzing', emoji: '🧠', message: 'Analyzing your message', estimatedDuration: 2000 },
-      { name: 'thinking', emoji: '💭', message: 'Thinking through the problem', estimatedDuration: 3000 },
-      { name: 'formulating', emoji: '📝', message: 'Formulating response', estimatedDuration: 2000 },
-      { name: 'finalizing', emoji: '✨', message: 'Finalizing answer', estimatedDuration: 1000 }
+      { name: 'analyzing', emoji: '🧠', message: 'Analyzing your message', animationType: 'analyzing', estimatedDuration: 3000 },
+      { name: 'thinking', emoji: '💭', message: 'Thinking through the problem', animationType: 'thinking', estimatedDuration: 4000 },
+      { name: 'formulating', emoji: '📝', message: 'Formulating response', animationType: 'creating', estimatedDuration: 3000 },
+      { name: 'finalizing', emoji: '✨', message: 'Finalizing answer', animationType: 'processing', estimatedDuration: 2000 }
     ],
     dispatch: [
-      { name: 'parsing', emoji: '🔍', message: 'Parsing dispatch request', estimatedDuration: 1500 },
-      { name: 'routing', emoji: '🎯', message: 'Routing to appropriate agent', estimatedDuration: 2000 },
-      { name: 'creating', emoji: '📋', message: 'Creating GitHub issue', estimatedDuration: 3000 },
-      { name: 'confirming', emoji: '✅', message: 'Confirming agent assignment', estimatedDuration: 1000 }
+      { name: 'parsing', emoji: '🔍', message: 'Parsing dispatch request', animationType: 'analyzing', estimatedDuration: 2000 },
+      { name: 'routing', emoji: '🎯', message: 'Routing to appropriate agent', animationType: 'processing', estimatedDuration: 3000 },
+      { name: 'creating', emoji: '📋', message: 'Creating GitHub issue', animationType: 'creating', estimatedDuration: 4000 },
+      { name: 'confirming', emoji: '✅', message: 'Confirming agent assignment', animationType: 'working', estimatedDuration: 2000 }
     ],
     factory_analysis: [
-      { name: 'collecting', emoji: '📊', message: 'Collecting factory data', estimatedDuration: 2500 },
-      { name: 'analyzing', emoji: '🔍', message: 'Analyzing patterns', estimatedDuration: 4000 },
-      { name: 'correlating', emoji: '🧮', message: 'Correlating metrics', estimatedDuration: 2000 },
-      { name: 'summarizing', emoji: '📋', message: 'Preparing summary', estimatedDuration: 1500 }
+      { name: 'collecting', emoji: '📊', message: 'Collecting factory data', animationType: 'working', estimatedDuration: 3500 },
+      { name: 'analyzing', emoji: '🔍', message: 'Analyzing patterns', animationType: 'analyzing', estimatedDuration: 5000 },
+      { name: 'correlating', emoji: '🧮', message: 'Correlating metrics', animationType: 'processing', estimatedDuration: 3000 },
+      { name: 'summarizing', emoji: '📋', message: 'Preparing summary', animationType: 'creating', estimatedDuration: 2000 }
     ]
   };
 
   static async start(config: StatusAnimatorConfig): Promise<string> {
-    const { channel, threadTs, client, phases, animationInterval = 500 } = config;
+    const { channel, threadTs, client, phases, animationInterval = 1500 } = config;
     const key = `${channel}-${threadTs}`;
 
     // Stop any existing animator for this thread
@@ -68,7 +75,7 @@ export class StatusAnimator {
       const response = await client.chat.postMessage({
         channel,
         thread_ts: threadTs,
-        text: this.formatStatusMessage(phases[0], 0, 0),
+        text: this.formatStatusMessage(phases[0], 0, 0, phases.length),
       });
 
       const tracker: ActiveStatusTracker = {
@@ -83,8 +90,8 @@ export class StatusAnimator {
       this.instances.set(key, tracker);
 
       // Start animation loop
-      tracker.intervalId = setInterval(() => {
-        this.updateAnimation(key, client, channel, phases);
+      tracker.intervalId = setInterval(async () => {
+        await this.updateAnimation(key, client, channel, phases);
       }, animationInterval);
 
       // Schedule phase transitions
@@ -110,7 +117,7 @@ export class StatusAnimator {
       await client.chat.update({
         channel,
         ts: tracker.messageTs,
-        text: this.formatStatusMessage(phases[tracker.currentPhase], tracker.currentPhase, tracker.animationFrame),
+        text: this.formatStatusMessage(phases[tracker.currentPhase], tracker.currentPhase, tracker.animationFrame, phases.length),
       });
 
       // Schedule next phase transition if not at the end
@@ -181,21 +188,36 @@ export class StatusAnimator {
     logger.debug('Status animator stopped', { key });
   }
 
-  private static updateAnimation(key: string, client: any, channel: string, phases: StatusPhase[]): void {
+  private static async updateAnimation(key: string, client: any, channel: string, phases: StatusPhase[]): Promise<void> {
     const tracker = this.instances.get(key);
     if (!tracker || tracker.isCompleted) return;
 
-    // Advance animation frame
-    tracker.animationFrame = (tracker.animationFrame + 1) % this.SPINNER_FRAMES.length;
+    const currentPhase = phases[tracker.currentPhase];
+    const animationType = currentPhase.animationType || 'thinking';
+    const animationFrames = this.ANIMATION_FRAMES[animationType];
 
-    // Update message with new animation frame
-    client.chat.update({
-      channel,
-      ts: tracker.messageTs,
-      text: this.formatStatusMessage(phases[tracker.currentPhase], tracker.currentPhase, tracker.animationFrame),
-    }).catch((error: any) => {
-      logger.error('Failed to update animation frame', { error, key });
-    });
+    // Advance animation frame
+    tracker.animationFrame = (tracker.animationFrame + 1) % animationFrames.length;
+
+    try {
+      // Update message with new animation frame
+      await client.chat.update({
+        channel,
+        ts: tracker.messageTs,
+        text: this.formatStatusMessage(phases[tracker.currentPhase], tracker.currentPhase, tracker.animationFrame, phases.length),
+      });
+
+      logger.debug('Animation frame updated', { key, phase: tracker.currentPhase, frame: tracker.animationFrame });
+    } catch (error) {
+      logger.error('Failed to update animation frame', { error, key, phase: tracker.currentPhase });
+
+      // If we get a rate limit error, slow down
+      if (error && typeof error === 'object' && 'data' in error &&
+          (error as any).data?.error === 'rate_limited') {
+        logger.warn('Rate limited - stopping animation for this thread', { key });
+        this.stop(key);
+      }
+    }
   }
 
   private static schedulePhaseTransition(key: string, client: any, channel: string, phases: StatusPhase[]): void {
@@ -218,11 +240,13 @@ export class StatusAnimator {
     }
   }
 
-  private static formatStatusMessage(phase: StatusPhase, phaseIndex: number, animationFrame: number): string {
-    const spinner = this.SPINNER_FRAMES[animationFrame];
-    const progress = `[${phaseIndex + 1}/${4}]`; // Assuming most operations have ~4 phases
+  private static formatStatusMessage(phase: StatusPhase, phaseIndex: number, animationFrame: number, totalPhases: number): string {
+    const animationType = phase.animationType || 'thinking';
+    const animationFrames = this.ANIMATION_FRAMES[animationType];
+    const animatedEmoji = animationFrames[animationFrame % animationFrames.length];
+    const progress = `[${phaseIndex + 1}/${totalPhases}]`;
 
-    return `${spinner} ${phase.emoji} ${phase.message} ${progress}`;
+    return `${animatedEmoji} ${phase.message} ${progress}`;
   }
 
   // Utility method to get default phases for an operation type
