@@ -8,7 +8,7 @@ export interface StatusPhase {
   name: string;
   emoji: string;
   message: string;
-  animationType?: 'thinking' | 'analyzing' | 'working' | 'creating' | 'processing';
+  animationType?: 'thinking' | 'analyzing' | 'working' | 'creating' | 'processing' | 'reasoning' | 'researching' | 'optimizing';
   estimatedDuration?: number; // milliseconds
 }
 
@@ -32,43 +32,88 @@ export interface ActiveStatusTracker {
 export class StatusAnimator {
   private static instances = new Map<string, ActiveStatusTracker>();
 
-  // Cool emoji animation frames
+  // Diverse emoji animation frames inspired by modern AI tools
   private static readonly ANIMATION_FRAMES = {
-    thinking: ['🤔', '💭', '🧠', '⚡', '✨', '🎯'],
-    analyzing: ['🔍', '📊', '📈', '🔎', '🧮', '📋'],
-    working: ['⚙️', '🔧', '⚡', '🛠️', '💫', '🎪'],
-    creating: ['📝', '✏️', '📄', '📋', '✍️', '📃'],
-    processing: ['🔄', '⚡', '🚀', '💫', '⭐', '🎯']
+    thinking: ['🤔', '💭', '🧠', '⚡', '✨', '🎯', '💡', '🌟', '🔮', '🎨', '🧩', '⭐'],
+    analyzing: ['🔍', '📊', '📈', '🔎', '🧮', '📋', '🎯', '🔬', '📉', '🎪', '🔍', '📝'],
+    working: ['⚙️', '🔧', '⚡', '🛠️', '💫', '🎪', '🚀', '⚗️', '🎭', '🎯', '🔩', '⚖️'],
+    creating: ['📝', '✏️', '📄', '📋', '✍️', '📃', '🎨', '🖊️', '📐', '🎪', '📓', '🖼️'],
+    processing: ['🔄', '⚡', '🚀', '💫', '⭐', '🎯', '⚗️', '🎪', '🌊', '🔋', '📡', '⚡'],
+    reasoning: ['🧠', '💭', '🤔', '💡', '🎯', '✨', '🔮', '🧩', '⚖️', '🎪', '🌟', '🎨'],
+    researching: ['🔍', '🕵️', '📚', '🔎', '📊', '🗂️', '🔬', '🎯', '🧭', '📡', '🎪', '🗃️'],
+    optimizing: ['⚡', '🚀', '⚗️', '🔧', '⚙️', '🎯', '💫', '🎪', '🔋', '📈', '🌟', '⭐']
   };
 
-  // Claude Code-style dynamic verbs that rotate with animation frames
+  // Comprehensive dynamic verbs inspired by Claude Code, ChatGPT, and Gemini
   private static readonly CLAUDE_VERBS = {
-    thinking: ['cogitating', 'pondering', 'contemplating', 'ruminating', 'deliberating', 'reflecting'],
-    analyzing: ['examining', 'scrutinizing', 'investigating', 'parsing', 'dissecting', 'evaluating'],
-    working: ['processing', 'computing', 'calculating', 'synthesizing', 'organizing', 'structuring'],
-    creating: ['composing', 'crafting', 'generating', 'formulating', 'constructing', 'building'],
-    processing: ['orchestrating', 'coordinating', 'executing', 'performing', 'operating', 'finalizing']
+    thinking: [
+      'cogitating', 'pondering', 'contemplating', 'ruminating', 'deliberating', 'reflecting',
+      'reasoning', 'mulling', 'meditating', 'considering', 'introspecting', 'philosophizing',
+      'brainstorming', 'conceptualizing', 'theorizing', 'strategizing', 'envisioning', 'imagining'
+    ],
+    analyzing: [
+      'examining', 'scrutinizing', 'investigating', 'parsing', 'dissecting', 'evaluating',
+      'inspecting', 'auditing', 'diagnosing', 'profiling', 'surveying', 'assessing',
+      'reviewing', 'studying', 'exploring', 'decoding', 'deciphering', 'interpreting'
+    ],
+    working: [
+      'processing', 'computing', 'calculating', 'synthesizing', 'organizing', 'structuring',
+      'optimizing', 'refining', 'transforming', 'assembling', 'orchestrating', 'coordinating',
+      'implementing', 'executing', 'compiling', 'configuring', 'calibrating', 'fine-tuning'
+    ],
+    creating: [
+      'composing', 'crafting', 'generating', 'formulating', 'constructing', 'building',
+      'designing', 'architecting', 'developing', 'producing', 'fabricating', 'manufacturing',
+      'authoring', 'drafting', 'sketching', 'modeling', 'prototyping', 'innovating'
+    ],
+    processing: [
+      'orchestrating', 'coordinating', 'executing', 'performing', 'operating', 'finalizing',
+      'compiling', 'rendering', 'encoding', 'transforming', 'streaming', 'buffering',
+      'indexing', 'sorting', 'filtering', 'aggregating', 'consolidating', 'reconciling'
+    ],
+    reasoning: [
+      'deducing', 'inferring', 'concluding', 'deriving', 'extrapolating', 'correlating',
+      'connecting', 'linking', 'associating', 'synthesizing', 'integrating', 'consolidating',
+      'cross-referencing', 'triangulating', 'validating', 'verifying', 'confirming', 'substantiating'
+    ],
+    researching: [
+      'investigating', 'exploring', 'discovering', 'uncovering', 'mining', 'extracting',
+      'gathering', 'collecting', 'sourcing', 'retrieving', 'indexing', 'cataloging',
+      'curating', 'surveying', 'mapping', 'documenting', 'chronicling', 'archiving'
+    ],
+    optimizing: [
+      'refining', 'enhancing', 'improving', 'streamlining', 'perfecting', 'polishing',
+      'tuning', 'calibrating', 'adjusting', 'tweaking', 'fine-tuning', 'balancing',
+      'harmonizing', 'stabilizing', 'maximizing', 'minimizing', 'accelerating', 'upgrading'
+    ]
   };
 
   // Default phases for different operations
   static readonly DEFAULT_PHASES: Record<string, StatusPhase[]> = {
     conversation: [
-      { name: 'analyzing', emoji: '🧠', message: 'Analyzing your message', animationType: 'analyzing', estimatedDuration: 3000 },
-      { name: 'thinking', emoji: '💭', message: 'Thinking through the problem', animationType: 'thinking', estimatedDuration: 4000 },
-      { name: 'formulating', emoji: '📝', message: 'Formulating response', animationType: 'creating', estimatedDuration: 3000 },
-      { name: 'finalizing', emoji: '✨', message: 'Finalizing answer', animationType: 'processing', estimatedDuration: 2000 }
+      { name: 'analyzing', emoji: '🔍', message: 'Analyzing your message for context and intent', animationType: 'analyzing', estimatedDuration: 3000 },
+      { name: 'reasoning', emoji: '🧠', message: 'Reasoning through the problem space', animationType: 'reasoning', estimatedDuration: 4000 },
+      { name: 'researching', emoji: '🕵️', message: 'Researching relevant information', animationType: 'researching', estimatedDuration: 3500 },
+      { name: 'creating', emoji: '📝', message: 'Crafting comprehensive response', animationType: 'creating', estimatedDuration: 3000 },
+      { name: 'optimizing', emoji: '⚡', message: 'Optimizing for clarity and accuracy', animationType: 'optimizing', estimatedDuration: 2000 }
     ],
     dispatch: [
-      { name: 'parsing', emoji: '🔍', message: 'Parsing dispatch request', animationType: 'analyzing', estimatedDuration: 2000 },
-      { name: 'routing', emoji: '🎯', message: 'Routing to appropriate agent', animationType: 'processing', estimatedDuration: 3000 },
-      { name: 'creating', emoji: '📋', message: 'Creating GitHub issue', animationType: 'creating', estimatedDuration: 4000 },
-      { name: 'confirming', emoji: '✅', message: 'Confirming agent assignment', animationType: 'working', estimatedDuration: 2000 }
+      { name: 'parsing', emoji: '🔍', message: 'Parsing dispatch request and requirements', animationType: 'analyzing', estimatedDuration: 2000 },
+      { name: 'reasoning', emoji: '🧩', message: 'Reasoning about best agent assignment', animationType: 'reasoning', estimatedDuration: 3000 },
+      { name: 'creating', emoji: '📋', message: 'Creating GitHub issue with full context', animationType: 'creating', estimatedDuration: 4000 },
+      { name: 'optimizing', emoji: '🎯', message: 'Optimizing agent workflow setup', animationType: 'optimizing', estimatedDuration: 2000 }
     ],
     factory_analysis: [
-      { name: 'collecting', emoji: '📊', message: 'Collecting factory data', animationType: 'working', estimatedDuration: 3500 },
-      { name: 'analyzing', emoji: '🔍', message: 'Analyzing patterns', animationType: 'analyzing', estimatedDuration: 5000 },
-      { name: 'correlating', emoji: '🧮', message: 'Correlating metrics', animationType: 'processing', estimatedDuration: 3000 },
-      { name: 'summarizing', emoji: '📋', message: 'Preparing summary', animationType: 'creating', estimatedDuration: 2000 }
+      { name: 'researching', emoji: '📊', message: 'Researching factory metrics and patterns', animationType: 'researching', estimatedDuration: 3500 },
+      { name: 'analyzing', emoji: '🔬', message: 'Analyzing system health indicators', animationType: 'analyzing', estimatedDuration: 5000 },
+      { name: 'reasoning', emoji: '🧠', message: 'Reasoning about correlations and trends', animationType: 'reasoning', estimatedDuration: 3000 },
+      { name: 'creating', emoji: '📋', message: 'Creating comprehensive status report', animationType: 'creating', estimatedDuration: 2000 }
+    ],
+    code_analysis: [
+      { name: 'researching', emoji: '🕵️', message: 'Researching codebase structure and patterns', animationType: 'researching', estimatedDuration: 4000 },
+      { name: 'analyzing', emoji: '🔬', message: 'Analyzing code quality and architecture', animationType: 'analyzing', estimatedDuration: 5000 },
+      { name: 'reasoning', emoji: '🧩', message: 'Reasoning about optimal solutions', animationType: 'reasoning', estimatedDuration: 3500 },
+      { name: 'creating', emoji: '🛠️', message: 'Creating implementation plan', animationType: 'creating', estimatedDuration: 3000 }
     ]
   };
 
@@ -286,8 +331,27 @@ export class StatusAnimator {
 
     const progress = `[${phaseIndex + 1}/${totalPhases}]`;
 
-    // Format like Claude Code: "cogitating... ◐"
-    return `${dynamicVerb}... ${animatedEmoji} ${progress}`;
+    // Progress bar (like Claude Code)
+    const progressBar = this.createProgressBar(phaseIndex, totalPhases);
+
+    // Format like Claude Code with structured output
+    return `${animatedEmoji} *${dynamicVerb}...* ${progress}
+
+${progressBar}
+
+_${phase.message}_`;
+  }
+
+  private static createProgressBar(current: number, total: number): string {
+    const width = 20;
+    const filled = Math.floor((current / total) * width);
+    const empty = width - filled;
+
+    const filledBar = '█'.repeat(filled);
+    const emptyBar = '░'.repeat(empty);
+    const percentage = Math.round(((current + 1) / total) * 100);
+
+    return `\`${filledBar}${emptyBar}\` ${percentage}%`;
   }
 
   // Utility method to get default phases for an operation type
