@@ -6,6 +6,7 @@ import { v4 as uuidv4 } from 'uuid';
 import type { SlackSession, ConversationMessage } from '../types.js';
 import logger from '../utils/logger.js';
 import { config } from '../config.js';
+import { getRepoPath } from '../utils/repo-manager.js';
 
 class SessionManager {
   private sessions: Map<string, SlackSession> = new Map();
@@ -30,9 +31,8 @@ class SessionManager {
       session = {
         channelId,
         threadTs,
-        // Use process.cwd() as default - config.repo.basePath (/repos) may not exist
-        // in Railway containers, causing spawn ENOENT errors
-        workingDirectory: process.cwd(),
+        // Use the cloned repository path if available, otherwise fall back to cwd
+        workingDirectory: getRepoPath(),
         claudeSessionId: uuidv4(),
         status: 'active',
         createdAt: new Date().toISOString(),

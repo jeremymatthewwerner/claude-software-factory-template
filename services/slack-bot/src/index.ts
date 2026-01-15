@@ -24,12 +24,32 @@ import { createWebhookRouter } from './handlers/webhook-handler.js';
 import { executeWithClaudeCode } from './integrations/claude-code.js';
 import logger from './utils/logger.js';
 import sessionManager from './state/session-manager.js';
+import { setupRepository, getRepoPath } from './utils/repo-manager.js';
+
+// Store repo path globally for use in sessions
+let repoPath = process.cwd();
+
+/**
+ * Get the repository path for Claude Code sessions
+ */
+export function getWorkingDirectory(): string {
+  return repoPath;
+}
 
 /**
  * Initialize and start the Slack bot
  */
 async function main(): Promise<void> {
   logger.info('Starting Claude Software Factory Slack Bot...');
+
+  // Clone/update the repository for git operations
+  const repoSetup = await setupRepository();
+  if (repoSetup.success) {
+    repoPath = repoSetup.path;
+    logger.info('Repository ready for git operations', { path: repoPath });
+  } else {
+    logger.warn('Repository not available - git operations limited', { error: repoSetup.error });
+  }
 
   // Validate configuration
   const configErrors = validateConfig();
