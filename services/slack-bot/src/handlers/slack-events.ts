@@ -9,6 +9,7 @@ import { markdownToSlack } from '../utils/markdown-to-slack.js';
 import { rateLimiter } from '../utils/rate-limiter.js';
 import logger from '../utils/logger.js';
 import { config } from '../config.js';
+import StatusAnimator from '../utils/status-animator.js';
 
 /**
  * Register all Slack event handlers
@@ -146,6 +147,28 @@ export function registerEventHandlers(app: App): void {
 }
 
 /**
+ * Determine operation type based on message content
+ */
+function getOperationType(text: string): keyof typeof StatusAnimator.DEFAULT_PHASES {
+  const lowerText = text.toLowerCase();
+
+  // Check for dispatch commands
+  if (lowerText.includes('dispatch ') || lowerText.startsWith('/dispatch')) {
+    return 'dispatch';
+  }
+
+  // Check for factory commands
+  if (lowerText.includes('factory') || lowerText.includes('failures') ||
+      lowerText.includes('agent performance') || lowerText.includes('workflows') ||
+      lowerText.includes('analyze #')) {
+    return 'factory_analysis';
+  }
+
+  // Default to conversation
+  return 'conversation';
+}
+
+/**
  * Handle an incoming message
  */
 async function handleMessage(
@@ -177,12 +200,20 @@ async function handleMessage(
   const session = sessionManager.getOrCreate(channelId, threadTs, userId);
 
   try {
-    // Add typing indicator
-    await client.chat.postMessage({
+    // Determine operation type for appropriate status phases
+    const operationType = getOperationType(text);
+    const phases = StatusAnimator.getPhasesForOperation(operationType);
+
+    // Start dynamic status animation
+    const statusKey = `${channelId}-${threadTs}`;
+    await StatusAnimator.start({
       channel: channelId,
-      thread_ts: threadTs,
-      text: '_Thinking..._',
-    }).then(async (typingMsg: { ts: string }) => {
+      threadTs: threadTs,
+      client: client,
+      phases: phases
+    });
+
+    try {
       // Process the message
       let fullResponse = '';
 
@@ -192,27 +223,14 @@ async function handleMessage(
         // But Slack doesn't support true streaming, so we'll send the full response
       });
 
-      // Delete typing indicator and send actual response
-      await client.chat.delete({
-        channel: channelId,
-        ts: typingMsg.ts,
-      }).catch(() => {
-        // Ignore delete errors (might not have permission)
-      });
-
       // Convert markdown to Slack format
       const slackMessage = markdownToSlack(result.response);
 
-      // Send the response
-      const response = await say({
-        text: slackMessage,
-        thread_ts: threadTs,
-        unfurl_links: false,
-        unfurl_media: false,
-      });
+      // Complete the status animation with the final response
+      await StatusAnimator.complete(statusKey, slackMessage, client, channelId);
 
       // Track the response in session
-      sessionManager.addMessage(channelId, threadTs, 'assistant', result.response, response.ts);
+      sessionManager.addMessage(channelId, threadTs, 'assistant', result.response, undefined);
 
       // If an agent was dispatched, track it
       if (result.dispatchedAgent && result.issueUrl) {
@@ -227,7 +245,17 @@ async function handleMessage(
         threadTs,
         dispatchedAgent: result.dispatchedAgent,
       });
-    });
+    } catch (processingError) {
+      // If processing fails, stop the status animation and show error
+      StatusAnimator.stop(statusKey);
+
+      await say({
+        text: "I encountered an error processing your message. Please try again.",
+        thread_ts: threadTs,
+      });
+
+      throw processingError;
+    }
   } catch (error) {
     logger.error('Error processing message', { error, channelId, threadTs });
 
