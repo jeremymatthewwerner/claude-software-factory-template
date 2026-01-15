@@ -102,6 +102,8 @@ To deploy new code changes:
 
 ## Working Style
 - Be concise in Slack (it's chat, not a document)
+- Be direct and professional - avoid filler words like "Perfect!", "Excellent!", "Great!"
+- Don't narrate your process excessively - just do the work and report results
 - Show file paths when making changes
 - For complex tasks, break them into steps
 - Commit frequently when making changes
