@@ -9,6 +9,14 @@ import { markdownToSlack } from '../utils/markdown-to-slack.js';
 import { rateLimiter } from '../utils/rate-limiter.js';
 import logger from '../utils/logger.js';
 import { config } from '../config.js';
+import { fetchThreadHistory, formatHistoryForPrompt } from '../utils/thread-history.js';
+
+// Use a generic type for Slack client to avoid version conflicts between @slack/bolt and @slack/web-api
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type SlackClient = any;
+
+// Cache the bot's user ID for identifying bot messages
+let botUserId: string | undefined;
 
 /**
  * Register all Slack event handlers
@@ -267,8 +275,8 @@ async function handleMessage(
   channelId: string,
   threadTs: string,
   messageTs: string,
-  client: any,
-  say: any
+  client: SlackClient,
+  say: SlackClient
 ): Promise<void> {
   // Rate limiting
   if (!rateLimiter.check(userId)) {
@@ -290,6 +298,36 @@ async function handleMessage(
   const session = sessionManager.getOrCreate(channelId, threadTs, userId);
 
   try {
+    // Get bot's user ID if not cached (needed to identify bot messages in history)
+    if (!botUserId) {
+      try {
+        const authResult = await client.auth.test();
+        botUserId = authResult.user_id as string;
+        logger.info('Cached bot user ID', { botUserId });
+      } catch (error) {
+        logger.warn('Could not get bot user ID', { error });
+      }
+    }
+
+    // Fetch full thread history from Slack (not just in-memory)
+    const threadHistory = await fetchThreadHistory(
+      client,
+      channelId,
+      threadTs,
+      botUserId
+    );
+
+    // Format history for Claude
+    const conversationHistory = formatHistoryForPrompt(threadHistory);
+
+    logger.info('Fetched thread history from Slack', {
+      channelId,
+      threadTs,
+      totalMessages: threadHistory.totalMessages,
+      includedMessages: conversationHistory.length,
+      truncated: threadHistory.truncated,
+    });
+
     // Post initial message that will be updated as content streams
     const initialMsg = await client.chat.postMessage({
       channel: channelId,
@@ -298,20 +336,23 @@ async function handleMessage(
     });
 
     // Create streaming updater
-    const streamer = createStreamingUpdater(client, channelId, initialMsg.ts);
+    const streamer = createStreamingUpdater(client as any, channelId, initialMsg.ts as string);
 
-    // Process the message with streaming updates
-    const result = await routeMessage(text, session, (chunk) => {
-      streamer.addChunk(chunk);
+    // Process the message with streaming updates and full thread history
+    const result = await routeMessage(text, session, {
+      onChunk: (chunk) => {
+        streamer.addChunk(chunk);
+      },
+      conversationHistory,
     });
 
     // Finalize with the complete response (in case onChunk wasn't called or missed content)
     await streamer.finalize(result.response);
 
     // Track both user message and assistant response in session history
-    // This maintains conversation context for subsequent turns
+    // (also update in-memory for faster access within same deploy)
     sessionManager.addMessage(channelId, threadTs, 'user', text, messageTs);
-    sessionManager.addMessage(channelId, threadTs, 'assistant', result.response, initialMsg.ts);
+    sessionManager.addMessage(channelId, threadTs, 'assistant', result.response, initialMsg.ts as string);
 
     // If an agent was dispatched, track it
     if (result.dispatchedAgent && result.issueUrl) {

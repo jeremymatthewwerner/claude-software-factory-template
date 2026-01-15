@@ -71,7 +71,10 @@ export function parseIntent(message: string): MessageIntent {
 export async function routeMessage(
   message: string,
   session: SlackSession,
-  onChunk?: (chunk: string) => void
+  options: {
+    onChunk?: (chunk: string) => void;
+    conversationHistory?: Array<{ role: 'user' | 'assistant'; content: string }>;
+  } = {}
 ): Promise<{
   response: string;
   dispatchedAgent?: AgentType;
@@ -83,6 +86,8 @@ export async function routeMessage(
   logger.info('Routing message', {
     intentType: intent.type,
     confidence: intent.confidence,
+    historyProvided: !!options.conversationHistory,
+    historyLength: options.conversationHistory?.length || 0,
   });
 
   // Check Claude Code availability
@@ -103,7 +108,7 @@ export async function routeMessage(
     case 'conversation':
     default:
       // All messages go to Claude Code
-      return handleClaudeCodeConversation(message, session, onChunk);
+      return handleClaudeCodeConversation(message, session, options);
   }
 }
 
@@ -147,21 +152,23 @@ async function handleDispatch(
 async function handleClaudeCodeConversation(
   message: string,
   session: SlackSession,
-  onChunk?: (chunk: string) => void
+  options: {
+    onChunk?: (chunk: string) => void;
+    conversationHistory?: Array<{ role: 'user' | 'assistant'; content: string }>;
+  } = {}
 ): Promise<{
   response: string;
 }> {
   const threadKey = `${session.channelId}:${session.threadTs}`;
 
-  // Get conversation history for context
-  const conversationHistory = sessionManager.getHistoryForClaude(
-    session.channelId,
-    session.threadTs
-  );
+  // Use provided history (from Slack API) or fall back to session manager
+  const conversationHistory = options.conversationHistory ||
+    sessionManager.getHistoryForClaude(session.channelId, session.threadTs);
 
-  logger.debug('Fetched conversation history', {
+  logger.debug('Using conversation history', {
     threadKey,
     historyLength: conversationHistory.length,
+    source: options.conversationHistory ? 'slack-api' : 'session-manager',
   });
 
   try {
@@ -171,7 +178,7 @@ async function handleClaudeCodeConversation(
       threadKey,
       {
         workingDirectory: session.workingDirectory,
-        onProgress: onChunk,
+        onProgress: options.onChunk,
         conversationHistory, // Pass history for multi-turn context
       }
     );
