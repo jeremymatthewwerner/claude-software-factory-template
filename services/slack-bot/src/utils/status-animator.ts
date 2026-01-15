@@ -140,6 +140,31 @@ export class StatusAnimator {
     }
   }
 
+  static async update(key: string, partialMessage: string, client: any, channel: string): Promise<void> {
+    const tracker = this.instances.get(key);
+    if (!tracker || tracker.isCompleted) return;
+
+    try {
+      // Update message with partial content while keeping status animation
+      const currentPhase = tracker.currentPhase;
+      const phases = StatusAnimator.DEFAULT_PHASES.message || [];
+      const phase = phases[Math.min(currentPhase, phases.length - 1)];
+
+      if (phase) {
+        const statusMessage = this.formatStatusMessage(phase, currentPhase, tracker.animationFrame, phases.length);
+        const combinedMessage = `${statusMessage}\n\n${partialMessage}`;
+
+        await client.chat.update({
+          channel: channel,
+          ts: tracker.messageTs,
+          text: combinedMessage
+        });
+      }
+    } catch (error) {
+      logger.warn('Failed to update streaming message', { error: error instanceof Error ? error.message : String(error), key });
+    }
+  }
+
   static async complete(key: string, finalMessage: string, client: any, channel: string): Promise<void> {
     const tracker = this.instances.get(key);
     if (!tracker) return;

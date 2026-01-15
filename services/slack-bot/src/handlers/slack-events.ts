@@ -219,10 +219,15 @@ async function handleMessage(
 
       const startTime = Date.now();
 
-      const result = await routeMessage(text, session, (chunk) => {
+      const result = await routeMessage(text, session, async (chunk) => {
         fullResponse += chunk;
-        // For streaming, we'd update the message here
-        // But Slack doesn't support true streaming, so we'll send the full response
+        // Update the message in real-time for streaming
+        try {
+          const slackMessage = markdownToSlack(fullResponse);
+          await StatusAnimator.update(statusKey, slackMessage, client, channelId);
+        } catch (error) {
+          logger.warn('Failed to update streaming message', { error: error instanceof Error ? error.message : String(error) });
+        }
       });
 
       // Convert markdown to Slack format
