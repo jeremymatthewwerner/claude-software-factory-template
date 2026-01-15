@@ -89,14 +89,23 @@ export async function setupRepository(): Promise<{
       // Ensure parent directory exists
       mkdirSync(REPO_PATH, { recursive: true });
 
-      // Clone with depth 1 for speed
+      // Clone with depth for speed (but enough history for rebasing)
       await execAsync(`git clone --depth 50 ${authUrl} ${REPO_PATH}`);
 
       // Configure git user for commits
       await execAsync(`git config user.email "bot@claude-factory.ai"`, { cwd: REPO_PATH });
       await execAsync(`git config user.name "Claude Factory Bot"`, { cwd: REPO_PATH });
 
-      logger.info('Repository cloned successfully');
+      // Verify the remote URL has auth embedded (for push)
+      const { stdout: remoteUrl } = await execAsync(`git remote get-url origin`, { cwd: REPO_PATH });
+      if (!remoteUrl.includes('x-access-token')) {
+        logger.warn('Remote URL may not have push credentials embedded');
+      }
+
+      logger.info('Repository cloned successfully', {
+        path: REPO_PATH,
+        hasAuth: remoteUrl.includes('x-access-token'),
+      });
     }
 
     return {

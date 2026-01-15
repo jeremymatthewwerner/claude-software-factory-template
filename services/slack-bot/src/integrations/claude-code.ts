@@ -109,6 +109,26 @@ To deploy new code changes:
 - Commit frequently when making changes
 - Always check CI status after pushing
 
+## CRITICAL: Git Operations
+When doing git operations, you MUST:
+1. ALWAYS show the actual output of git commands (git status, git push, etc.)
+2. NEVER claim you pushed code without showing the actual push output
+3. If a git command fails, report the error - don't pretend it succeeded
+4. Verify the working directory is correct before git operations: \`pwd\` and \`git remote -v\`
+5. After pushing, verify with: \`git log origin/main -1 --oneline\` or check GitHub
+
+Example of what NOT to do:
+❌ "I've pushed the changes to main"  (no proof)
+
+Example of what TO do:
+✅ Show actual output:
+\`\`\`
+$ git push origin main
+Enumerating objects: 5, done.
+To https://github.com/owner/repo.git
+   abc123..def456  main -> main
+\`\`\`
+
 ## Factory Philosophy
 - Human intervention = factory bug
 - Fix the factory, not just the symptom
