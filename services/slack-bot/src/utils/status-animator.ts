@@ -41,6 +41,15 @@ export class StatusAnimator {
     processing: ['🔄', '⚡', '🚀', '💫', '⭐', '🎯']
   };
 
+  // Claude Code-style dynamic verbs that rotate with animation frames
+  private static readonly CLAUDE_VERBS = {
+    thinking: ['cogitating', 'pondering', 'contemplating', 'ruminating', 'deliberating', 'reflecting'],
+    analyzing: ['examining', 'scrutinizing', 'investigating', 'parsing', 'dissecting', 'evaluating'],
+    working: ['processing', 'computing', 'calculating', 'synthesizing', 'organizing', 'structuring'],
+    creating: ['composing', 'crafting', 'generating', 'formulating', 'constructing', 'building'],
+    processing: ['orchestrating', 'coordinating', 'executing', 'performing', 'operating', 'finalizing']
+  };
+
   // Default phases for different operations
   static readonly DEFAULT_PHASES: Record<string, StatusPhase[]> = {
     conversation: [
@@ -240,14 +249,6 @@ export class StatusAnimator {
     }
   }
 
-  // Claude-style dynamic verbs that rotate during processing
-  private static readonly CLAUDE_VERBS = {
-    thinking: ['cogitating', 'pondering', 'contemplating', 'ruminating', 'deliberating', 'reflecting'],
-    analyzing: ['examining', 'scrutinizing', 'investigating', 'parsing', 'dissecting', 'evaluating'],
-    processing: ['computing', 'calculating', 'processing', 'synthesizing', 'organizing', 'structuring'],
-    creating: ['composing', 'crafting', 'generating', 'formulating', 'constructing', 'building'],
-    working: ['operating', 'functioning', 'executing', 'performing', 'orchestrating', 'coordinating']
-  };
 
   private static formatStatusMessage(phase: StatusPhase, phaseIndex: number, animationFrame: number, totalPhases: number): string {
     const animationType = phase.animationType || 'thinking';
