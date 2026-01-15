@@ -252,6 +252,12 @@ export async function executeWithClaudeCode(
           // Extract text from assistant message
           for (const block of message.message.content) {
             if ('text' in block && block.text) {
+              // Add newline separator if we already have content
+              // This ensures multi-turn responses are properly formatted
+              if (fullContent && !fullContent.endsWith('\n')) {
+                fullContent += '\n\n';
+                options.onProgress?.('\n\n');
+              }
               fullContent += block.text;
               options.onProgress?.(block.text);
             }
