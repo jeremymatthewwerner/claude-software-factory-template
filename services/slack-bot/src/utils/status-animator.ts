@@ -240,13 +240,28 @@ export class StatusAnimator {
     }
   }
 
+  // Claude-style dynamic verbs that rotate during processing
+  private static readonly CLAUDE_VERBS = {
+    thinking: ['cogitating', 'pondering', 'contemplating', 'ruminating', 'deliberating', 'reflecting'],
+    analyzing: ['examining', 'scrutinizing', 'investigating', 'parsing', 'dissecting', 'evaluating'],
+    processing: ['computing', 'calculating', 'processing', 'synthesizing', 'organizing', 'structuring'],
+    creating: ['composing', 'crafting', 'generating', 'formulating', 'constructing', 'building'],
+    working: ['operating', 'functioning', 'executing', 'performing', 'orchestrating', 'coordinating']
+  };
+
   private static formatStatusMessage(phase: StatusPhase, phaseIndex: number, animationFrame: number, totalPhases: number): string {
     const animationType = phase.animationType || 'thinking';
     const animationFrames = this.ANIMATION_FRAMES[animationType];
     const animatedEmoji = animationFrames[animationFrame % animationFrames.length];
+
+    // Get dynamic Claude-style verb that rotates with animation frame
+    const verbList = this.CLAUDE_VERBS[animationType] || this.CLAUDE_VERBS.thinking;
+    const dynamicVerb = verbList[animationFrame % verbList.length];
+
     const progress = `[${phaseIndex + 1}/${totalPhases}]`;
 
-    return `${animatedEmoji} ${phase.message} ${progress}`;
+    // Format like Claude Code: "cogitating... ◐"
+    return `${dynamicVerb}... ${animatedEmoji} ${progress}`;
   }
 
   // Utility method to get default phases for an operation type
