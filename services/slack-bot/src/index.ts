@@ -38,13 +38,23 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  // Create Slack app
+  // Create Slack app with error handling
   const app = new App({
     token: config.slack.botToken,
     signingSecret: config.slack.signingSecret,
     appToken: config.slack.appToken,
     socketMode: true,
     logLevel: config.logLevel === 'debug' ? LogLevel.DEBUG : LogLevel.INFO,
+  });
+
+  // Handle Slack app errors to prevent crashes
+  app.error(async (error) => {
+    logger.error('Slack app error', {
+      message: error.message,
+      code: (error as any).code,
+      stack: error.stack,
+    });
+    // Don't crash - just log the error
   });
 
   // Create Slack web client for webhook handler
@@ -148,6 +158,27 @@ async function main(): Promise<void> {
   process.on('SIGTERM', shutdown);
   process.on('SIGINT', shutdown);
 }
+
+// Global error handlers to prevent crashes from socket-mode edge cases
+process.on('uncaughtException', (error) => {
+  logger.error('Uncaught exception', {
+    message: error.message,
+    stack: error.stack,
+  });
+  // Don't exit - the socket-mode client will reconnect
+  // Only exit on truly fatal errors
+  if (error.message.includes('EADDRINUSE') || error.message.includes('EACCES')) {
+    process.exit(1);
+  }
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  logger.error('Unhandled rejection', {
+    reason: reason instanceof Error ? reason.message : String(reason),
+    stack: reason instanceof Error ? reason.stack : undefined,
+  });
+  // Don't exit - let the app continue
+});
 
 // Run the bot
 main().catch((error) => {
