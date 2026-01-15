@@ -24,7 +24,7 @@ The iOS Native Agent enables autonomous iOS development without these barriers, 
 
 ### 2. Mirror Existing Architecture
 - Swift models mirror backend Pydantic schemas
-- Network layer connects to existing API endpoints
+- Network layer connects to existing FastAPI endpoints
 - Same authentication flow (JWT) as web app
 - WebSocket integration for real-time features
 
@@ -82,9 +82,9 @@ workflow_dispatch:
 
 ```
 ios/
-├── YourApp/
+├── DiningPhilosophers/
 │   ├── App/
-│   │   ├── YourAppApp.swift
+│   │   ├── DiningPhilosophersApp.swift
 │   │   └── AppDelegate.swift
 │   ├── Features/
 │   │   ├── Auth/
@@ -95,9 +95,20 @@ ios/
 │   │   │   │   └── AuthViewModel.swift
 │   │   │   └── Services/
 │   │   │       └── AuthService.swift
-│   │   ├── Main/
+│   │   ├── Conversations/
 │   │   │   ├── Views/
+│   │   │   │   ├── ConversationListView.swift
+│   │   │   │   └── ConversationRow.swift
 │   │   │   └── ViewModels/
+│   │   │       └── ConversationListViewModel.swift
+│   │   ├── Chat/
+│   │   │   ├── Views/
+│   │   │   │   ├── ChatView.swift
+│   │   │   │   └── MessageBubble.swift
+│   │   │   ├── ViewModels/
+│   │   │   │   └── ChatViewModel.swift
+│   │   │   └── Services/
+│   │   │       └── WebSocketService.swift
 │   │   └── Settings/
 │   │       ├── Views/
 │   │       │   └── SettingsView.swift
@@ -117,19 +128,24 @@ ios/
 │   │       └── View+Extensions.swift
 │   ├── Models/
 │   │   ├── User.swift
-│   │   └── ...
+│   │   ├── Conversation.swift
+│   │   ├── Message.swift
+│   │   ├── Thinker.swift
+│   │   └── WebSocketMessage.swift
 │   └── Resources/
 │       ├── Assets.xcassets
 │       ├── Localizable.strings
 │       └── Info.plist
-├── YourAppTests/
+├── DiningPhilosophersTests/
 │   ├── ViewModels/
-│   │   └── AuthViewModelTests.swift
+│   │   ├── AuthViewModelTests.swift
+│   │   └── ChatViewModelTests.swift
 │   └── Services/
 │       ├── APIClientTests.swift
 │       └── KeychainServiceTests.swift
-├── YourAppUITests/
-│   └── AuthFlowTests.swift
+├── DiningPhilosophersUITests/
+│   ├── AuthFlowTests.swift
+│   └── ChatFlowTests.swift
 └── Package.swift
 ```
 
@@ -146,20 +162,23 @@ interface User {
   username: string;
   display_name: string | null;
   is_admin: boolean;
+  total_spend: number;
   // ...
 }
 
-// Swift (ios/YourApp/Models/User.swift)
+// Swift (ios/DiningPhilosophers/Models/User.swift)
 struct User: Codable, Identifiable, Sendable {
     let id: String
     let username: String
     let displayName: String?
     let isAdmin: Bool
+    let totalSpend: Decimal
 
     enum CodingKeys: String, CodingKey {
         case id, username
         case displayName = "display_name"
         case isAdmin = "is_admin"
+        case totalSpend = "total_spend"
     }
 }
 ```
@@ -170,11 +189,7 @@ struct User: Codable, Identifiable, Sendable {
 // APIClient with async/await
 actor APIClient {
     static let shared = APIClient()
-    private let baseURL: URL
-
-    init(baseURL: URL = URL(string: "https://api.example.com")!) {
-        self.baseURL = baseURL
-    }
+    private let baseURL = URL(string: "https://api.example.com")!
 
     func fetch<T: Decodable>(_ endpoint: Endpoint) async throws -> T {
         var request = URLRequest(url: baseURL.appending(path: endpoint.path))
@@ -199,12 +214,12 @@ actor APIClient {
 ### WebSocket Integration
 
 ```swift
-// WebSocketClient for real-time features
+// WebSocketClient for real-time chat
 actor WebSocketClient {
     private var webSocket: URLSessionWebSocketTask?
 
-    func connect(path: String) async throws {
-        let url = URL(string: "wss://api.example.com/\(path)")!
+    func connect(conversationId: String) async throws {
+        let url = URL(string: "wss://api.example.com/ws/\(conversationId)")!
         var request = URLRequest(url: url)
 
         if let token = await TokenStorage.shared.retrieve() {
@@ -252,12 +267,12 @@ actor WebSocketClient {
 ### Build Commands
 ```bash
 # Build for simulator
-xcodebuild -scheme YourApp \
+xcodebuild -scheme DiningPhilosophers \
   -destination 'platform=iOS Simulator,name=iPhone 15' \
   build
 
 # Run tests
-xcodebuild test -scheme YourApp \
+xcodebuild test -scheme DiningPhilosophers \
   -destination 'platform=iOS Simulator,name=iPhone 15'
 
 # SwiftLint
@@ -308,13 +323,13 @@ ios-build:
 
     - name: Build
       run: |
-        xcodebuild -scheme YourApp \
+        xcodebuild -scheme DiningPhilosophers \
           -destination 'platform=iOS Simulator,name=iPhone 15' \
           build
 
     - name: Test
       run: |
-        xcodebuild test -scheme YourApp \
+        xcodebuild test -scheme DiningPhilosophers \
           -destination 'platform=iOS Simulator,name=iPhone 15'
 ```
 
@@ -328,11 +343,11 @@ The iOS Agent maintains a progress comment:
 - [x] 📖 Reading issue and understanding iOS requirements
 - [x] 🔍 Analyzing backend API for iOS integration
 - [x] 📐 Designing Swift data models and architecture
-- [ ] 🛠️ Implementing iOS code: Creating feature
+- [ ] 🛠️ Implementing iOS code: Creating ChatView
 - [ ] ✅ Running Swift tests and linters
 - [ ] 📝 Creating PR
 
-**Status:** Implementing feature...
+**Status:** Implementing real-time chat with WebSocket...
 **Workflow:** [View logs](...)
 
 ---
@@ -341,22 +356,22 @@ The iOS Agent maintains a progress comment:
 | Time | Event |
 |------|-------|
 | 2026-01-10 12:00 UTC | 🚀 iOS Native Agent started |
-| 2026-01-10 12:02 UTC | 📖 Analyzed issue: Add feature |
-| 2026-01-10 12:05 UTC | 🔍 Reviewed API protocol |
-| 2026-01-10 12:10 UTC | 📐 Designed ViewModel architecture |
-| 2026-01-10 12:20 UTC | 🛠️ Implementing View with SwiftUI |
+| 2026-01-10 12:02 UTC | 📖 Analyzed issue: Add chat feature |
+| 2026-01-10 12:05 UTC | 🔍 Reviewed WebSocket protocol |
+| 2026-01-10 12:10 UTC | 📐 Designed ChatViewModel architecture |
+| 2026-01-10 12:20 UTC | 🛠️ Implementing ChatView with SwiftUI |
 
 ---
 ## 📐 Architecture
 
 ### Components
-- FeatureView: SwiftUI view with list and input
-- FeatureViewModel: @Observable with data loading
-- APIClient: Actor for thread-safe networking
+- ChatView: SwiftUI view with message list and input
+- ChatViewModel: @Observable with WebSocket connection
+- WebSocketClient: Actor for thread-safe WS handling
 
 ### Files
-- `ios/YourApp/Features/Feature/Views/FeatureView.swift`
-- `ios/YourApp/Features/Feature/ViewModels/FeatureViewModel.swift`
+- `ios/DiningPhilosophers/Features/Chat/Views/ChatView.swift`
+- `ios/DiningPhilosophers/Features/Chat/ViewModels/ChatViewModel.swift`
 ```
 
 ## Escalation

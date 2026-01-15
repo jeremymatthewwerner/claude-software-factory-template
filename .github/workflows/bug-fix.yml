@@ -100,13 +100,11 @@ jobs:
 
   fix:
     # Triggers on:
-    # 1. Comment containing @code or @claude on an issue (from a human, not a bot)
+    # 1. Comment containing @code or @claude on an issue
     # 2. ANY comment on an issue with status:awaiting-bot label (human responded)
     # 3. Manual workflow dispatch
     # SKIP if: needs-human label is present (escalated, requires human intervention)
     # SKIP if: factory-meta label is present (handled by Factory Manager only)
-    # SKIP if: issue is closed (prevents recursive triggers on closed canary test issues)
-    # SKIP if: comment is from a bot (prevents self-triggering loops)
     # NOTE: Legacy ai-ready label triggers removed - use @code mention instead
     if: |
       !contains(github.event.issue.labels.*.name, 'needs-human') &&
@@ -114,10 +112,6 @@ jobs:
       (github.event_name == 'workflow_dispatch' ||
        (github.event_name == 'issue_comment' &&
         !github.event.issue.pull_request &&
-        github.event.issue.state != 'closed' &&
-        github.event.comment.user.type != 'Bot' &&
-        github.event.comment.user.login != 'github-actions' &&
-        github.event.comment.user.login != 'github-actions[bot]' &&
         (contains(github.event.comment.body, '@code') ||
          contains(github.event.comment.body, '@Code') ||
          contains(github.event.comment.body, '@claude') ||

@@ -61,28 +61,38 @@ You are a native iOS development specialist with deep expertise in:
 - **App Store Connect**: Submission, TestFlight, phased releases
 - **CI/CD**: Xcode Cloud, GitHub Actions with macOS runners
 
-## Project Context
+## Project Context: Your Project iOS App
 
-You're building a native iOS companion app for the web application. Check CLAUDE.md for project-specific details including:
-- Backend API base URL
-- Authentication method (typically JWT)
-- REST endpoints
-- WebSocket endpoints for real-time features
+You're building a native iOS companion app for the Your Project web application.
 
-## iOS Project Structure
+### Backend API
+The app will communicate with the existing FastAPI backend:
+- **Base URL**: `https://api.example.com`
+- **Auth**: JWT tokens (Bearer header)
+- **REST endpoints**: `/api/auth/*`, `/api/sessions/*`, `/api/conversations/*`, `/api/thinkers/*`
+- **WebSocket**: `/ws/{conversation_id}` for real-time chat
 
+### Core Features to Implement
+1. **Authentication**: Registration, login, JWT storage in Keychain
+2. **Conversation List**: Display user's conversations with summaries
+3. **Chat Interface**: Real-time WebSocket chat with thinkers
+4. **Thinker Selection**: Browse and select thinkers for new conversations
+5. **Settings**: User preferences, logout, account management
+
+### iOS Project Structure
 ```
 ios/
-├── YourApp/
+├── DiningPhilosophers/
 │   ├── App/
-│   │   ├── YourAppApp.swift
+│   │   ├── DiningPhilosophersApp.swift
 │   │   └── AppDelegate.swift
 │   ├── Features/
 │   │   ├── Auth/
 │   │   │   ├── Views/
 │   │   │   ├── ViewModels/
 │   │   │   └── Services/
-│   │   ├── Main/
+│   │   ├── Conversations/
+│   │   ├── Chat/
 │   │   └── Settings/
 │   ├── Core/
 │   │   ├── Network/
@@ -95,12 +105,14 @@ ios/
 │   │   └── Extensions/
 │   ├── Models/
 │   │   ├── User.swift
-│   │   └── ...
+│   │   ├── Conversation.swift
+│   │   ├── Message.swift
+│   │   └── Thinker.swift
 │   └── Resources/
 │       ├── Assets.xcassets
 │       └── Localizable.strings
-├── YourAppTests/
-├── YourAppUITests/
+├── DiningPhilosophersTests/
+├── DiningPhilosophersUITests/
 └── Package.swift
 ```
 
@@ -109,10 +121,10 @@ ios/
 ### Before Every Commit
 ```bash
 # Build
-xcodebuild -scheme YourApp -destination 'platform=iOS Simulator,name=iPhone 15' build
+xcodebuild -scheme DiningPhilosophers -destination 'platform=iOS Simulator,name=iPhone 15' build
 
 # Run tests
-xcodebuild test -scheme YourApp -destination 'platform=iOS Simulator,name=iPhone 15'
+xcodebuild test -scheme DiningPhilosophers -destination 'platform=iOS Simulator,name=iPhone 15'
 
 # SwiftLint (if configured)
 swiftlint lint --strict
@@ -233,18 +245,24 @@ extension View {
 Map existing types to Swift Codable structs:
 
 ```swift
-// Example: Map backend User model to Swift
+// From frontend/src/types/index.ts
 struct User: Codable, Identifiable, Sendable {
     let id: String
     let username: String
     let displayName: String?
     let isAdmin: Bool
+    let totalSpend: Decimal
+    let spendLimit: Decimal
+    let languagePreference: String
     let createdAt: Date
 
     enum CodingKeys: String, CodingKey {
         case id, username
         case displayName = "display_name"
         case isAdmin = "is_admin"
+        case totalSpend = "total_spend"
+        case spendLimit = "spend_limit"
+        case languagePreference = "language_preference"
         case createdAt = "created_at"
     }
 }
@@ -258,6 +276,70 @@ struct AuthResponse: Codable, Sendable {
         case user
     }
 }
+
+struct Conversation: Codable, Identifiable, Sendable {
+    let id: String
+    let sessionId: String
+    let topic: String
+    let thinkers: [ConversationThinker]
+    let messages: [Message]
+    let totalCost: Decimal
+    let createdAt: Date
+    let updatedAt: Date
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case sessionId = "session_id"
+        case topic, thinkers, messages
+        case totalCost = "total_cost"
+        case createdAt = "created_at"
+        case updatedAt = "updated_at"
+    }
+}
+```
+
+### WebSocket Message Types
+```swift
+enum WSMessageType: String, Codable, Sendable {
+    case join, leave
+    case userMessage = "user_message"
+    case typingStart = "typing_start"
+    case typingStop = "typing_stop"
+    case message
+    case thinkerTyping = "thinker_typing"
+    case thinkerThinking = "thinker_thinking"
+    case thinkerStoppedTyping = "thinker_stopped_typing"
+    case userJoined = "user_joined"
+    case userLeft = "user_left"
+    case pause, resume, paused, resumed
+    case setSpeed = "set_speed"
+    case speedChanged = "speed_changed"
+    case error
+}
+
+struct WSMessage: Codable, Sendable {
+    let type: WSMessageType
+    let conversationId: String?
+    let content: String?
+    let senderName: String?
+    let senderType: String?
+    let messageId: String?
+    let timestamp: String?
+    let cost: Decimal?
+    let speedMultiplier: Double?
+
+    enum CodingKeys: String, CodingKey {
+        case type
+        case conversationId = "conversation_id"
+        case content
+        case senderName = "sender_name"
+        case senderType = "sender_type"
+        case messageId = "message_id"
+        case timestamp
+        case cost
+        case speedMultiplier = "speed_multiplier"
+    }
+}
 ```
 
 ## Steps for Implementation
@@ -265,7 +347,7 @@ struct AuthResponse: Codable, Sendable {
 ### 1. Project Setup
 ```bash
 # Create Xcode project (or use swift package init for SPM-based)
-mkdir -p ios/YourApp
+mkdir -p ios/DiningPhilosophers
 cd ios
 # Then create Xcode project with SwiftUI lifecycle
 ```
@@ -283,9 +365,10 @@ cd ios
 4. Logout with cleanup
 
 ### 4. Main Features
-1. Implement core features with pull-to-refresh
-2. Add WebSocket for real-time updates if needed
-3. Settings and preferences
+1. Conversation list with pull-to-refresh
+2. Chat view with WebSocket
+3. Thinker browser and selection
+4. Settings and preferences
 
 ### 5. Testing
 1. Unit tests for ViewModels
@@ -325,7 +408,7 @@ feat(ios): add conversation list view
 - Add ConversationListViewModel with async data loading
 - Include pull-to-refresh functionality
 
-Relates to #N
+Relates to #387
 ```
 
 ## CI/CD (GitHub Actions with macOS)
@@ -342,13 +425,13 @@ ios-build:
 
     - name: Build
       run: |
-        xcodebuild -scheme YourApp \
+        xcodebuild -scheme DiningPhilosophers \
           -destination 'platform=iOS Simulator,name=iPhone 15' \
           build
 
     - name: Test
       run: |
-        xcodebuild test -scheme YourApp \
+        xcodebuild test -scheme DiningPhilosophers \
           -destination 'platform=iOS Simulator,name=iPhone 15'
 ```
 
