@@ -166,6 +166,99 @@ export function registerEventHandlers(app: App): void {
 }
 
 /**
+ * Create a streaming message updater that throttles updates to avoid Slack rate limits
+ */
+function createStreamingUpdater(
+  client: any,
+  channelId: string,
+  messageTs: string,
+  updateIntervalMs: number = 2500  // Update every 2.5 seconds
+) {
+  let accumulatedContent = '';
+  let lastUpdateTime = 0;
+  let updateTimeout: NodeJS.Timeout | null = null;
+  let isUpdating = false;
+
+  const doUpdate = async (content: string, isFinal: boolean = false) => {
+    if (isUpdating && !isFinal) return;
+    isUpdating = true;
+
+    try {
+      const displayContent = isFinal
+        ? content
+        : content + '\n\n_...working..._';
+
+      await client.chat.update({
+        channel: channelId,
+        ts: messageTs,
+        text: markdownToSlack(displayContent),
+      });
+      lastUpdateTime = Date.now();
+    } catch (error) {
+      logger.warn('Failed to update streaming message', { error });
+    } finally {
+      isUpdating = false;
+    }
+  };
+
+  return {
+    /**
+     * Add a chunk of content to the stream
+     */
+    addChunk: (chunk: string) => {
+      accumulatedContent += chunk;
+
+      const now = Date.now();
+      const timeSinceLastUpdate = now - lastUpdateTime;
+
+      // Clear any pending update
+      if (updateTimeout) {
+        clearTimeout(updateTimeout);
+        updateTimeout = null;
+      }
+
+      // If enough time has passed, update immediately
+      if (timeSinceLastUpdate >= updateIntervalMs) {
+        doUpdate(accumulatedContent);
+      } else {
+        // Schedule an update for later
+        updateTimeout = setTimeout(() => {
+          doUpdate(accumulatedContent);
+        }, updateIntervalMs - timeSinceLastUpdate);
+      }
+    },
+
+    /**
+     * Get the accumulated content so far
+     */
+    getContent: () => accumulatedContent,
+
+    /**
+     * Finalize the message with the complete content
+     */
+    finalize: async (finalContent?: string) => {
+      if (updateTimeout) {
+        clearTimeout(updateTimeout);
+        updateTimeout = null;
+      }
+
+      const content = finalContent ?? accumulatedContent;
+      await doUpdate(content, true);
+    },
+
+    /**
+     * Cancel any pending updates
+     */
+    cancel: () => {
+      if (updateTimeout) {
+        clearTimeout(updateTimeout);
+        updateTimeout = null;
+      }
+    },
+  };
+}
+
+/**
  * Handle an incoming message
  */
 async function handleMessage(
@@ -197,58 +290,41 @@ async function handleMessage(
   const session = sessionManager.getOrCreate(channelId, threadTs, userId);
 
   try {
-    // Add typing indicator
-    await client.chat.postMessage({
+    // Post initial message that will be updated as content streams
+    const initialMsg = await client.chat.postMessage({
       channel: channelId,
       thread_ts: threadTs,
-      text: '_Thinking..._',
-    }).then(async (typingMsg: { ts: string }) => {
-      // Process the message
-      let fullResponse = '';
+      text: '_Starting..._',
+    });
 
-      const result = await routeMessage(text, session, (chunk) => {
-        fullResponse += chunk;
-        // For streaming, we'd update the message here
-        // But Slack doesn't support true streaming, so we'll send the full response
-      });
+    // Create streaming updater
+    const streamer = createStreamingUpdater(client, channelId, initialMsg.ts);
 
-      // Delete typing indicator and send actual response
-      await client.chat.delete({
-        channel: channelId,
-        ts: typingMsg.ts,
-      }).catch(() => {
-        // Ignore delete errors (might not have permission)
-      });
+    // Process the message with streaming updates
+    const result = await routeMessage(text, session, (chunk) => {
+      streamer.addChunk(chunk);
+    });
 
-      // Convert markdown to Slack format
-      const slackMessage = markdownToSlack(result.response);
+    // Finalize with the complete response (in case onChunk wasn't called or missed content)
+    await streamer.finalize(result.response);
 
-      // Send the response
-      const response = await say({
-        text: slackMessage,
-        thread_ts: threadTs,
-        unfurl_links: false,
-        unfurl_media: false,
-      });
+    // Track both user message and assistant response in session history
+    // This maintains conversation context for subsequent turns
+    sessionManager.addMessage(channelId, threadTs, 'user', text, messageTs);
+    sessionManager.addMessage(channelId, threadTs, 'assistant', result.response, initialMsg.ts);
 
-      // Track both user message and assistant response in session history
-      // This maintains conversation context for subsequent turns
-      sessionManager.addMessage(channelId, threadTs, 'user', text, messageTs);
-      sessionManager.addMessage(channelId, threadTs, 'assistant', result.response, response.ts);
-
-      // If an agent was dispatched, track it
-      if (result.dispatchedAgent && result.issueUrl) {
-        const issueNumber = parseInt(result.issueUrl.split('/').pop() || '0');
-        if (issueNumber) {
-          sessionManager.linkIssue(channelId, threadTs, issueNumber);
-        }
+    // If an agent was dispatched, track it
+    if (result.dispatchedAgent && result.issueUrl) {
+      const issueNumber = parseInt(result.issueUrl.split('/').pop() || '0');
+      if (issueNumber) {
+        sessionManager.linkIssue(channelId, threadTs, issueNumber);
       }
+    }
 
-      logger.info('Message processed successfully', {
-        channelId,
-        threadTs,
-        dispatchedAgent: result.dispatchedAgent,
-      });
+    logger.info('Message processed successfully', {
+      channelId,
+      threadTs,
+      dispatchedAgent: result.dispatchedAgent,
     });
   } catch (error) {
     logger.error('Error processing message', { error, channelId, threadTs });
