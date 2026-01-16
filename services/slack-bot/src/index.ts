@@ -65,7 +65,7 @@ async function main(): Promise<void> {
     res.json({
       service: 'claude-software-factory-slack-bot',
       status: 'running',
-      version: '1.0.1',
+      version: '1.0.2',
       timestamp: new Date().toISOString(),
       deployment: {
         buildTime: new Date().toISOString(),
