@@ -21,7 +21,7 @@ import express from 'express';
 import { config, validateConfig } from './config.js';
 import { registerEventHandlers } from './handlers/slack-events.js';
 import { createWebhookRouter } from './handlers/webhook-handler.js';
-import { executeWithClaudeCode } from './integrations/claude-code.js';
+import { executeWithClaudeCode, validateApiKey } from './integrations/claude-code.js';
 import logger from './utils/logger.js';
 import sessionManager from './state/session-manager.js';
 import { setupRepository, getRepoPath } from './utils/repo-manager.js';
@@ -56,6 +56,22 @@ async function main(): Promise<void> {
   if (configErrors.length > 0) {
     logger.error('Configuration errors:', { errors: configErrors });
     process.exit(1);
+  }
+
+  // Validate ANTHROPIC_API_KEY on startup
+  // This helps catch invalid/expired keys early with clear error messages
+  logger.info('Validating ANTHROPIC_API_KEY...');
+  const apiKeyValidation = await validateApiKey();
+  if (!apiKeyValidation.valid) {
+    logger.error('ANTHROPIC_API_KEY validation failed at startup', {
+      error: apiKeyValidation.error,
+      keyPrefix: apiKeyValidation.keyPrefix,
+    });
+    // Continue running but log the warning prominently
+    // This allows the bot to still handle non-Claude-Code features
+    logger.warn('⚠️ Claude Code features will be unavailable until API key is fixed');
+  } else {
+    logger.info('✅ ANTHROPIC_API_KEY is valid', { keyPrefix: apiKeyValidation.keyPrefix });
   }
 
   // Create Slack app with error handling

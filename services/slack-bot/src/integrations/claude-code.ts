@@ -197,6 +197,9 @@ export async function executeWithClaudeCode(
   const nodeBinDir = dirname(nodeExecutablePath);
   process.env.PATH = `${nodeBinDir}:${originalPath || '/usr/local/bin:/usr/bin:/bin'}`;
 
+  // Collect stderr for error reporting
+  let stderrOutput = '';
+
   try {
     // Build conversation context by prepending history to the prompt
     // The SDK only accepts a single prompt string, not a messages array
@@ -257,8 +260,9 @@ export async function executeWithClaudeCode(
         // Use absolute paths to avoid ENOENT errors in containers
         pathToClaudeCodeExecutable: claudeCodeCliPath,
         executable: 'node',
-        // Capture stderr for debugging
+        // Capture stderr for debugging and error reporting
         stderr: (data: string) => {
+          stderrOutput += data;
           logger.error('Claude Code stderr', { stderr: data });
         },
         // Enable debug mode to see what's happening
@@ -339,10 +343,14 @@ export async function executeWithClaudeCode(
       errorMessage = error.message;
       // Check for common issues
       if (error.message.includes('exited with code 1')) {
+        // Include stderr output if available for more context
+        const stderrInfo = stderrOutput ? `\n\nStderr output:\n${stderrOutput.slice(-500)}` : '';
+
         errorDetails = '\n\nPossible causes:\n' +
           '• ANTHROPIC_API_KEY not set or invalid\n' +
           '• Missing required environment variables\n' +
-          '• Claude Code CLI initialization failed';
+          '• Claude Code CLI initialization failed' +
+          stderrInfo;
 
         // Log environment for debugging (without sensitive values)
         logger.error('Claude Code env check', {
@@ -350,6 +358,7 @@ export async function executeWithClaudeCode(
           anthropicKeyPrefix: process.env.ANTHROPIC_API_KEY?.substring(0, 10) + '...',
           cwd: workingDir,
           nodeExecutable: nodeExecutablePath,
+          stderrOutput: stderrOutput.slice(-1000),
         });
       }
       if (error.stack) {
@@ -378,6 +387,73 @@ export function isClaudeCodeAvailable(): boolean {
 }
 
 /**
+ * Validate the ANTHROPIC_API_KEY by making a test API call
+ * Call this at startup to fail fast if the key is invalid
+ */
+export async function validateApiKey(): Promise<{
+  valid: boolean;
+  error?: string;
+  keyPrefix?: string;
+}> {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+
+  if (!apiKey) {
+    return {
+      valid: false,
+      error: 'ANTHROPIC_API_KEY environment variable is not set',
+    };
+  }
+
+  const keyPrefix = apiKey.substring(0, 10) + '...';
+
+  try {
+    // Make a minimal API call to validate the key
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 1,
+        messages: [{ role: 'user', content: 'Hi' }],
+      }),
+    });
+
+    if (response.ok) {
+      logger.info('ANTHROPIC_API_KEY validated successfully', { keyPrefix });
+      return { valid: true, keyPrefix };
+    }
+
+    const errorData = await response.json().catch(() => ({})) as { error?: { message?: string } };
+    const errorMessage = errorData.error?.message || `HTTP ${response.status}`;
+
+    logger.error('ANTHROPIC_API_KEY validation failed', {
+      keyPrefix,
+      status: response.status,
+      error: errorMessage
+    });
+
+    return {
+      valid: false,
+      error: `API key validation failed: ${errorMessage}`,
+      keyPrefix,
+    };
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    logger.error('ANTHROPIC_API_KEY validation error', { keyPrefix, error: errorMessage });
+
+    return {
+      valid: false,
+      error: `Failed to validate API key: ${errorMessage}`,
+      keyPrefix,
+    };
+  }
+}
+
+/**
  * Cleanup old sessions (call periodically)
  */
 export function cleanupSessions(maxAgeMs: number = 3600000): void {
@@ -400,5 +476,6 @@ export function cleanupSessions(maxAgeMs: number = 3600000): void {
 export default {
   executeWithClaudeCode,
   isClaudeCodeAvailable,
+  validateApiKey,
   cleanupSessions,
 };
