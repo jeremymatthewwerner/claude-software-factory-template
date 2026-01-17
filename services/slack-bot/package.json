@@ -1,7 +1,7 @@
 {
   "name": "claude-software-factory-slack-bot",
-  "version": "0.1.8",
-  "description": "Slack bot for Claude Software Factory",
+  "version": "0.1.9",
+  "description": "Slack bot for Claude Software Factory with enhanced monitoring",
   "type": "module",
   "main": "dist/index.js",
   "scripts": {
@@ -16,12 +16,15 @@
     "@octokit/rest": "^21.0.2",
     "@slack/bolt": "^3.21.4",
     "@slack/web-api": "^7.6.0",
+    "dotenv": "^17.2.3",
     "express": "^4.21.2",
+    "uuid": "^13.0.0",
     "winston": "^3.17.0"
   },
   "devDependencies": {
     "@types/express": "^5.0.0",
     "@types/node": "^22.10.5",
+    "@types/uuid": "^10.0.0",
     "typescript": "^5.7.2"
   }
 }

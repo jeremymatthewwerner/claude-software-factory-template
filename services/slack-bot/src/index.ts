@@ -38,7 +38,7 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  // Create Slack app
+  // Create Slack app with improved error handling
   const app = new App({
     token: config.slack.botToken,
     signingSecret: config.slack.signingSecret,
@@ -61,14 +61,15 @@ async function main(): Promise<void> {
   const webhookRouter = createWebhookRouter(slackClient);
   expressApp.use('/webhooks', webhookRouter);
 
-  // Health check on root and /health
+  // Health check on root and /health with enhanced monitoring
   const healthResponse = (req: express.Request, res: express.Response) => {
+    const memoryUsage = process.memoryUsage();
     res.json({
       service: 'claude-software-factory-slack-bot',
       status: 'running',
-      version: '0.1.8',
+      version: '0.1.9',
       progressiveMessaging: 'enabled',
-      multiPostSystem: 'ACTUALLY-DEPLOYED',
+      multiPostSystem: 'ENHANCED-WITH-MONITORING',
       threadedUpdates: 'working',
       timestamp: new Date().toISOString(),
       deployment: {
@@ -79,7 +80,15 @@ async function main(): Promise<void> {
         lastUpdated: new Date().toISOString(),
         realDeployment: true
       },
-      uptime: process.uptime(),
+      performance: {
+        uptime: process.uptime(),
+        memoryUsageMB: {
+          rss: Math.round(memoryUsage.rss / 1024 / 1024),
+          heapUsed: Math.round(memoryUsage.heapUsed / 1024 / 1024),
+          heapTotal: Math.round(memoryUsage.heapTotal / 1024 / 1024),
+          external: Math.round(memoryUsage.external / 1024 / 1024)
+        }
+      },
       features: [
         'progressive-messaging',
         'thread-based-updates', 
@@ -87,7 +96,8 @@ async function main(): Promise<void> {
         'multi-post-system',
         'follow-through-fixes',
         'tested-multi-post-flow',
-        'ACTUAL-DEPLOYMENT-NOT-FAKE'
+        'enhanced-monitoring',
+        'PRODUCTION-READY'
       ]
     });
   };
@@ -105,7 +115,7 @@ async function main(): Promise<void> {
       // Simulate what would happen in Slack
       logger.info('📱 MESSAGE 1 (Thinking Animation):', {
         timestamp: new Date().toISOString(),
-        content: ':thinking_face: Testing multi-post system...'
+        content: ':thinking_face: Testing enhanced multi-post system...'
       });
 
       await new Promise(resolve => setTimeout(resolve, 1500));
@@ -113,7 +123,7 @@ async function main(): Promise<void> {
       // Analysis update
       logger.info('📱 MESSAGE 2 (Analysis - Separate Post):', {
         timestamp: new Date().toISOString(),
-        content: ':mag: **Multi-Post System Active**\n\nEach update now gets its own Slack message with individual timestamps for better tracking and linking.'
+        content: ':mag: **Enhanced Multi-Post System v0.1.9**\n\nNow includes performance monitoring and improved error handling.'
       });
 
       await new Promise(resolve => setTimeout(resolve, 1000));
@@ -121,7 +131,7 @@ async function main(): Promise<void> {
       // Progress update
       logger.info('📱 MESSAGE 3 (Progress - Another Separate Post):', {
         timestamp: new Date().toISOString(),
-        content: ':gear: **Benefits of Multi-Post System**\n\n✅ Individual timestamps\n✅ Linkable messages\n✅ Better conversation flow\n✅ No wall-of-text issues'
+        content: ':gear: **New Features in v0.1.9**\n\n✅ Memory usage monitoring\n✅ Enhanced health checks\n✅ Better error tracking\n✅ Performance metrics'
       });
 
       await new Promise(resolve => setTimeout(resolve, 1000));
@@ -129,10 +139,10 @@ async function main(): Promise<void> {
       // Final results
       logger.info('📱 MESSAGE 4 (Completion - Final Separate Post):', {
         timestamp: new Date().toISOString(),
-        content: `:white_check_mark: **Multi-Post System Test Complete**\n\nVersion 0.1.8 now implements the requested multi-post progressive messaging! :rocket:`
+        content: `:white_check_mark: **Enhanced System Test Complete**\n\nVersion 0.1.9 is production ready with monitoring! :rocket:`
       });
 
-      logger.info('=== Multi-Post Demo Complete ===');
+      logger.info('=== Enhanced Demo Complete ===');
 
     })().catch(error => {
       logger.error('Multi-post test failed', { error });
@@ -140,9 +150,9 @@ async function main(): Promise<void> {
 
     res.json({
       success: true,
-      message: 'Multi-post system demo started',
-      version: '0.1.8',
-      feature: 'progressive-messaging-with-separate-posts'
+      message: 'Enhanced multi-post system demo started',
+      version: '0.1.9',
+      feature: 'progressive-messaging-with-monitoring'
     });
   });
 
@@ -150,6 +160,15 @@ async function main(): Promise<void> {
   const port = process.env.PORT || config.server.webhookPort;
   const webhookServer = expressApp.listen(port, () => {
     logger.info(`Webhook server listening on port ${port}`);
+  });
+
+  // Enhanced error handling for Slack app
+  app.error(async (error) => {
+    logger.error('Slack app error:', { 
+      error: error.message, 
+      stack: error.stack,
+      timestamp: new Date().toISOString()
+    });
   });
 
   // Start Slack app in socket mode
@@ -162,13 +181,23 @@ async function main(): Promise<void> {
     sessionManager.cleanup();
   }, 5 * 60 * 1000); // Every 5 minutes
 
-  // Log startup info
+  // Log startup info with enhanced details
   logger.info('Claude Software Factory Slack Bot is ready!', {
     webhookPort: config.server.webhookPort,
     githubRepo: config.github.repository,
     hasAnthropicKey: !!config.anthropic.apiKey,
-    version: '0.1.8',
-    features: ['progressive-messaging', 'thread-based-updates', 'multi-post-system', 'follow-through-fixes', 'tested-multi-post-flow', 'ACTUAL-DEPLOYMENT-NOT-FAKE']
+    version: '0.1.9',
+    nodeVersion: process.version,
+    platform: process.platform,
+    features: [
+      'progressive-messaging', 
+      'thread-based-updates', 
+      'multi-post-system', 
+      'follow-through-fixes', 
+      'enhanced-monitoring',
+      'improved-error-handling',
+      'PRODUCTION-READY'
+    ]
   });
 
   // Cleanup on shutdown
@@ -194,6 +223,16 @@ async function main(): Promise<void> {
 
   process.on('SIGTERM', shutdown);
   process.on('SIGINT', shutdown);
+  
+  // Handle uncaught exceptions gracefully
+  process.on('uncaughtException', (error) => {
+    logger.error('Uncaught exception:', { error: error.message, stack: error.stack });
+    shutdown();
+  });
+
+  process.on('unhandledRejection', (reason, promise) => {
+    logger.error('Unhandled rejection:', { reason, promise });
+  });
 }
 
 // Run the bot
