@@ -180,8 +180,8 @@ export function registerEventHandlers(app: App): void {
 }
 
 /**
- * Create a progressive messenger that posts separate messages for each update
- * This gives users timestamps, links, and the ability to forward individual updates
+ * Create a progressive messenger that posts SEPARATE messages for each update
+ * Each update becomes its own Slack message with timestamp
  */
 function createProgressiveMessenger(
   client: any,
@@ -189,24 +189,29 @@ function createProgressiveMessenger(
   threadTs: string,
 ) {
   let thinkingTs: string | null = null;
-  let lastPostTime = 0;
-  let pendingContent = '';
   let animationFrame = 0;
   let animationInterval: NodeJS.Timeout | null = null;
-  const minPostInterval = 3000; // Minimum 3 seconds between posts to avoid spam
+  const postedMessages: string[] = []; // Track all posted message timestamps
 
   // Animation frames for the thinking indicator
   const thinkingFrames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
-  // Start the thinking animation
+  // Start the thinking animation as a NEW message
   const startThinking = async () => {
+    // Stop any existing animation first
+    if (animationInterval) {
+      clearInterval(animationInterval);
+      animationInterval = null;
+    }
+
     const frame = thinkingFrames[0];
     const result = await client.chat.postMessage({
       channel: channelId,
       thread_ts: threadTs,
-      text: `${frame} _thinking..._`,
+      text: `${frame} _working..._`,
     });
     thinkingTs = result.ts;
+    animationFrame = 0;
 
     // Animate the thinking indicator
     animationInterval = setInterval(async () => {
@@ -222,11 +227,40 @@ function createProgressiveMessenger(
       } catch (e) {
         // Ignore update errors
       }
-    }, 500);
+    }, 400);
   };
 
-  // Stop the thinking animation and delete the thinking message
-  const stopThinking = async () => {
+  // Update the thinking message with content, then it becomes a permanent post
+  const convertThinkingToPost = async (content: string) => {
+    if (animationInterval) {
+      clearInterval(animationInterval);
+      animationInterval = null;
+    }
+
+    if (thinkingTs && content.trim()) {
+      try {
+        await client.chat.update({
+          channel: channelId,
+          ts: thinkingTs,
+          text: markdownToSlack(content),
+        });
+        postedMessages.push(thinkingTs);
+        thinkingTs = null;
+      } catch (e) {
+        // If update fails, try posting new message
+        logger.warn('Failed to update thinking message, posting new', { error: e });
+        await client.chat.postMessage({
+          channel: channelId,
+          thread_ts: threadTs,
+          text: markdownToSlack(content),
+        });
+        thinkingTs = null;
+      }
+    }
+  };
+
+  // Delete the thinking message without converting
+  const deleteThinking = async () => {
     if (animationInterval) {
       clearInterval(animationInterval);
       animationInterval = null;
@@ -238,58 +272,43 @@ function createProgressiveMessenger(
           ts: thinkingTs,
         });
       } catch (e) {
-        // If we can't delete, just update it to be minimal
-        try {
-          await client.chat.update({
-            channel: channelId,
-            ts: thinkingTs,
-            text: '✓',
-          });
-        } catch (e2) {
-          // Ignore
-        }
+        // Ignore delete errors
       }
       thinkingTs = null;
     }
   };
 
-  // Post a new message with content
-  const postUpdate = async (content: string) => {
-    if (!content.trim()) return;
-
-    await stopThinking();
-
-    await client.chat.postMessage({
-      channel: channelId,
-      thread_ts: threadTs,
-      text: markdownToSlack(content),
-    });
-    lastPostTime = Date.now();
-  };
-
-  // Initialize
+  // Initialize with thinking message
   startThinking();
+
+  // Queue for processing updates sequentially
+  let updateQueue: Promise<void> = Promise.resolve();
+  let pendingContent = '';
 
   return {
     /**
-     * Add content - will be batched and posted as separate messages
+     * Add content - queues for posting as separate message
      */
     addChunk: (chunk: string) => {
       pendingContent += chunk;
 
-      // Check if we have enough content and enough time has passed
-      const now = Date.now();
-      const timeSinceLastPost = now - lastPostTime;
-
-      // Look for natural break points (double newline, end of sentence after 200+ chars)
+      // Check for natural break points to create separate messages
       const hasBreakPoint = pendingContent.includes('\n\n') ||
-        (pendingContent.length > 200 && /[.!?]\s*$/.test(pendingContent));
+        pendingContent.length > 300;
 
-      if (hasBreakPoint && timeSinceLastPost >= minPostInterval && pendingContent.length > 50) {
+      if (hasBreakPoint && pendingContent.trim().length > 30) {
         const content = pendingContent;
         pendingContent = '';
-        postUpdate(content);
-        startThinking(); // Show thinking again while waiting for more
+
+        // Queue the update to ensure sequential processing
+        updateQueue = updateQueue.then(async () => {
+          // Convert current thinking message to this content
+          await convertThinkingToPost(content);
+          // Start new thinking message for next update
+          await startThinking();
+        }).catch(err => {
+          logger.error('Error posting update', { error: err });
+        });
       }
     },
 
@@ -299,18 +318,20 @@ function createProgressiveMessenger(
     getContent: () => pendingContent,
 
     /**
-     * Finalize - post any remaining content and clean up
+     * Finalize - post any remaining content
      */
     finalize: async (finalContent?: string) => {
-      await stopThinking();
+      // Wait for any pending updates
+      await updateQueue;
 
       const content = finalContent ?? pendingContent;
+
       if (content.trim()) {
-        await client.chat.postMessage({
-          channel: channelId,
-          thread_ts: threadTs,
-          text: markdownToSlack(content),
-        });
+        // Convert thinking to final content
+        await convertThinkingToPost(content);
+      } else {
+        // No content, just delete thinking
+        await deleteThinking();
       }
     },
 
@@ -318,7 +339,7 @@ function createProgressiveMessenger(
      * Cancel and clean up
      */
     cancel: async () => {
-      await stopThinking();
+      await deleteThinking();
     },
   };
 }
