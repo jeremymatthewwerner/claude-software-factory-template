@@ -132,16 +132,30 @@ function executeTool(name: string, input: Record<string, unknown>, workingDir: s
           return 'Error: Command blocked for safety reasons';
         }
         try {
-          const output = execSync(command, {
+          // Use stdio: 'pipe' and capture both stdout and stderr
+          const result = execSync(command, {
             cwd: workingDir,
             encoding: 'utf-8',
-            timeout: 60000, // 60 second timeout
+            timeout: 120000, // 2 minute timeout for git operations
             maxBuffer: 1024 * 1024, // 1MB output limit
+            stdio: ['pipe', 'pipe', 'pipe'], // capture stderr separately
           });
-          return output || '(no output)';
+          return result || '(no output)';
         } catch (error: unknown) {
-          const execError = error as { stderr?: string; message?: string };
-          return `Error executing command: ${execError.stderr || execError.message || 'Unknown error'}`;
+          const execError = error as {
+            stdout?: string;
+            stderr?: string;
+            message?: string;
+            status?: number;
+          };
+          // For git commands, stderr often contains useful info even on success
+          // Combine all available output for debugging
+          const parts: string[] = [];
+          if (execError.stdout) parts.push(`stdout: ${execError.stdout}`);
+          if (execError.stderr) parts.push(`stderr: ${execError.stderr}`);
+          if (execError.status !== undefined) parts.push(`exit code: ${execError.status}`);
+          if (parts.length === 0) parts.push(execError.message || 'Unknown error');
+          return `Error executing command:\n${parts.join('\n')}`;
         }
       }
 
@@ -184,20 +198,26 @@ const SYSTEM_PROMPT = `You are Claude, a helpful AI assistant running in a Slack
 
 You have access to tools for file operations and bash commands. Use them to help users with their requests.
 
-Working Directory: The codebase is a software factory template with:
+Working Directory: /tmp/repo (a clone of the GitHub repository)
 - services/slack-bot/ - This Slack bot (TypeScript/Node.js)
 - .github/workflows/ - GitHub Actions for CI/CD
 - CLAUDE.md, README.md - Documentation
 
-When making code changes:
-1. Read files first to understand the current implementation
-2. Make targeted changes
-3. After editing, run: npm run build (in services/slack-bot/) to verify TypeScript compiles
-4. Commit with: git add -A && git commit -m "description"
-5. Push with: git push origin <branch>
-6. Railway auto-deploys from git pushes
+## CRITICAL: Git Operations Verification
 
-IMPORTANT: Always show actual command output to prove operations succeeded. Never claim you did something without showing the proof.
+When making code changes and deploying:
+1. Read files first to understand the current implementation
+2. Make targeted changes using write_file
+3. Run: npm run build (in services/slack-bot/) - SHOW THE OUTPUT
+4. Run: git status - SHOW THE OUTPUT
+5. Run: git add -A && git commit -m "description" - SHOW THE OUTPUT
+6. Run: git push origin <branch> - SHOW THE FULL OUTPUT
+7. VERIFY with: git log -1 --oneline - SHOW THE OUTPUT to confirm push succeeded
+
+**NEVER claim a push succeeded without showing the actual git push output.**
+**If git push fails, report the error - don't pretend it worked.**
+
+The git remote is pre-configured with authentication. If push fails with permission errors, report this clearly.
 
 Be concise in responses - this is Slack chat, not documentation.`;
 
