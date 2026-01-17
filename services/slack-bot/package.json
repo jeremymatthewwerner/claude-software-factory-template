@@ -1,6 +1,6 @@
 {
   "name": "claude-factory-slack-bot",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Slack bot for Claude Software Factory - AI-powered coding assistant",
   "main": "dist/index.js",
   "type": "module",

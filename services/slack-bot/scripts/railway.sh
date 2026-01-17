@@ -14,12 +14,17 @@ fi
 
 # Function to check Railway authentication
 check_auth() {
-    if [[ -z "$RAILWAY_TOKEN" ]]; then
-        echo "❌ RAILWAY_TOKEN environment variable not set"
-        echo "Please set RAILWAY_TOKEN to your Railway project token"
+    # Check for RAILWAY_TOKEN first, then fall back to RAILWAY_TOKEN_SW_FACTORY
+    if [[ -n "$RAILWAY_TOKEN" ]]; then
+        export RAILWAY_TOKEN
+    elif [[ -n "$RAILWAY_TOKEN_SW_FACTORY" ]]; then
+        export RAILWAY_TOKEN="$RAILWAY_TOKEN_SW_FACTORY"
+        echo "ℹ️  Using RAILWAY_TOKEN_SW_FACTORY as RAILWAY_TOKEN"
+    else
+        echo "❌ Neither RAILWAY_TOKEN nor RAILWAY_TOKEN_SW_FACTORY environment variable is set"
+        echo "Please set one of these to your Railway project token"
         return 1
     fi
-    export RAILWAY_TOKEN
 }
 
 # Function to make health check without Railway CLI
