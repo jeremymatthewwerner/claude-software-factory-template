@@ -119,6 +119,25 @@ async function main(): Promise<void> {
   expressApp.get('/', healthResponse);
   expressApp.get('/health', healthResponse);
 
+  // Diagnostics endpoint - validates API key and returns status in real-time
+  expressApp.get('/diagnostics', async (req, res) => {
+    const validation = await validateApiKey();
+    res.json({
+      timestamp: new Date().toISOString(),
+      apiKey: {
+        present: !!process.env.ANTHROPIC_API_KEY,
+        prefix: process.env.ANTHROPIC_API_KEY?.substring(0, 7) + '...',
+        valid: validation.valid,
+        error: validation.error,
+      },
+      env: {
+        nodeVersion: process.version,
+        cwd: process.cwd(),
+        repoPath: repoPath,
+      },
+    });
+  });
+
   // Test endpoint for Claude Code SDK debugging
   // POST /test-claude-code { "prompt": "list files" }
   // Protected by a simple secret check
