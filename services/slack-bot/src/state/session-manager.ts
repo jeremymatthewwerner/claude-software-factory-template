@@ -6,6 +6,7 @@ import { v4 as uuidv4 } from 'uuid';
 import type { SlackSession, ConversationMessage } from '../types.js';
 import logger from '../utils/logger.js';
 import { config } from '../config.js';
+import { updateStatusFromSession, setCustomStatus, repoStatusManager } from '../utils/repo-status-manager.js';
 
 class SessionManager {
   private sessions: Map<string, SlackSession> = new Map();
@@ -42,6 +43,11 @@ class SessionManager {
       };
       this.sessions.set(key, session);
       logger.info('Created new session', { channelId, threadTs, userId });
+
+      // Update bot status to reflect the working directory
+      updateStatusFromSession(session.workingDirectory).catch((error) => {
+        logger.warn('Failed to update bot status for new session', { error, workingDirectory: session?.workingDirectory });
+      });
     }
 
     return session;
@@ -133,9 +139,17 @@ class SessionManager {
   setWorkingDirectory(channelId: string, threadTs: string, directory: string): void {
     const session = this.get(channelId, threadTs);
     if (session) {
+      const oldDirectory = session.workingDirectory;
       session.workingDirectory = directory;
       session.updatedAt = new Date().toISOString();
-      logger.info('Updated working directory', { channelId, threadTs, directory });
+      logger.info('Updated working directory', { channelId, threadTs, directory, oldDirectory });
+
+      // Update bot status to reflect the new working directory
+      if (oldDirectory !== directory) {
+        updateStatusFromSession(directory).catch((error) => {
+          logger.warn('Failed to update bot status for directory change', { error, directory, oldDirectory });
+        });
+      }
     }
   }
 
@@ -202,6 +216,57 @@ class SessionManager {
       active,
       completed,
     };
+  }
+
+  /**
+   * Get current repository status info
+   */
+  getCurrentRepoStatus(): {
+    activeRepos: string[];
+    mostRecentRepo: string | null;
+    statusInfo: any;
+  } {
+    const activeRepos = new Set<string>();
+    let mostRecentSession: SlackSession | null = null;
+
+    for (const session of this.sessions.values()) {
+      if (session.status === 'active') {
+        // Extract repo name from working directory
+        const repoName = session.workingDirectory.split('/').pop() || '';
+        if (repoName) {
+          activeRepos.add(repoName);
+        }
+
+        // Track most recent session
+        if (!mostRecentSession ||
+            new Date(session.updatedAt) > new Date(mostRecentSession.updatedAt)) {
+          mostRecentSession = session;
+        }
+      }
+    }
+
+    return {
+      activeRepos: Array.from(activeRepos),
+      mostRecentRepo: mostRecentSession ?
+        mostRecentSession.workingDirectory.split('/').pop() || null : null,
+      statusInfo: repoStatusManager.getStatusInfo()
+    };
+  }
+
+  /**
+   * Set custom status for factory operations
+   */
+  async setFactoryStatus(operation: string): Promise<boolean> {
+    const statusTexts = {
+      'multi-session': 'Managing multiple repositories',
+      'factory-analysis': 'Analyzing factory metrics',
+      'agent-dispatch': 'Dispatching tasks to agents',
+      'health-check': 'Checking factory health',
+      'idle': 'Factory ready for work'
+    } as const;
+
+    const text = statusTexts[operation as keyof typeof statusTexts] || operation;
+    return setCustomStatus(text, '🏭', 0);
   }
 }
 

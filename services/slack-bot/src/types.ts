@@ -58,7 +58,9 @@ export type IntentType =
   | 'factory-analyze'
   | 'factory-failures'
   | 'factory-agents'
-  | 'factory-workflows';
+  | 'factory-workflows'
+  | 'repo-status'
+  | 'set-status';
 
 export interface MessageIntent {
   type: IntentType;

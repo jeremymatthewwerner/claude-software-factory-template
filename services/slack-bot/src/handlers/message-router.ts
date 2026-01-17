@@ -17,6 +17,8 @@ import {
   getFailurePatterns,
   getAgentPerformance,
   getWorkflowHealth,
+  getRepositoryStatus,
+  setFactoryStatus,
 } from './factory-commands.js';
 import sessionManager from '../state/session-manager.js';
 import logger from '../utils/logger.js';
@@ -42,6 +44,8 @@ const FACTORY_COMMANDS = {
   failures: ['failures', 'failure patterns', 'why is ci failing', 'what\'s failing', 'show failures'],
   agents: ['agent performance', 'how are agents', 'agent stats', 'autonomy rate'],
   workflows: ['workflow health', 'workflows', 'workflow status', 'check workflows'],
+  repos: ['repo status', 'repository status', 'current repo', 'working on', 'bot status'],
+  setStatus: ['set status', 'update status', 'factory status to'],
 };
 
 /**
@@ -90,6 +94,24 @@ export function parseIntent(message: string): MessageIntent {
     return {
       type: 'factory-workflows' as IntentType,
       confidence: 1.0,
+    };
+  }
+
+  // Repository status
+  if (FACTORY_COMMANDS.repos.some(cmd => lowerMessage.includes(cmd))) {
+    return {
+      type: 'repo-status' as IntentType,
+      confidence: 1.0,
+    };
+  }
+
+  // Set status
+  const setStatusMatch = lowerMessage.match(/(?:set status|update status|factory status to)\s+(.+)/i);
+  if (setStatusMatch || FACTORY_COMMANDS.setStatus.some(cmd => lowerMessage.includes(cmd))) {
+    return {
+      type: 'set-status' as IntentType,
+      confidence: 1.0,
+      extractedTask: setStatusMatch ? setStatusMatch[1] : undefined,
     };
   }
 
@@ -190,6 +212,13 @@ export async function routeMessage(
 
     case 'factory-workflows':
       return { response: await getWorkflowHealth() };
+
+    case 'repo-status':
+      return { response: await getRepositoryStatus() };
+
+    case 'set-status':
+      const statusText = intent.extractedTask || 'idle';
+      return { response: await setFactoryStatus(statusText) };
 
     // Dispatch to agents (for creating work, not fixing it yourself)
     case 'dispatch':
@@ -345,6 +374,10 @@ The factory should fix issues. I help you fix the factory.
 - \`agent performance\` - Which agents need improvement?
 - \`workflows\` - Check workflow configuration
 - \`analyze #123\` - Learn from an issue (why did it escalate?)
+
+*Repository & Status Management:*
+- \`repo status\` - Show current working repositories and bot status
+- \`set status <text>\` - Manually update bot status message
 
 *Dispatch Work (create issues for agents):*
 - \`dispatch code <task>\` - Code Agent
