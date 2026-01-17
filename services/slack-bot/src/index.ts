@@ -66,7 +66,7 @@ async function main(): Promise<void> {
       service: 'claude-software-factory-slack-bot',
       testDeployment: 'TESTING-DEPLOYMENT-2026-01-17',
       status: 'running',
-      version: '0.1.1',
+      version: '0.1.2',
       timestamp: new Date().toISOString(),
       deployment: {
         buildTime: new Date().toISOString(),
