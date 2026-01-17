@@ -313,14 +313,40 @@ export async function executeWithDirectSDK(
         logger.info('Executing tool', { tool: toolUse.name, input: toolUse.input });
         toolsUsed.push(toolUse.name);
 
+        // Format tool invocation for display
+        const input = toolUse.input as Record<string, unknown>;
+        let toolDisplay = '';
+        switch (toolUse.name) {
+          case 'run_bash':
+            toolDisplay = `\`$ ${input.command}\``;
+            break;
+          case 'read_file':
+            toolDisplay = `📄 Reading \`${input.path}\``;
+            break;
+          case 'write_file':
+            toolDisplay = `✏️ Writing \`${input.path}\``;
+            break;
+          case 'list_files':
+            toolDisplay = `📁 Listing \`${input.path}\``;
+            break;
+          case 'search_files':
+            toolDisplay = `🔍 Searching for \`${input.pattern}\` in \`${input.path}\``;
+            break;
+          case 'grep':
+            toolDisplay = `🔎 Grep \`${input.pattern}\` in \`${input.path}\``;
+            break;
+          default:
+            toolDisplay = `[${toolUse.name}]`;
+        }
+
+        // Notify progress with useful context
+        options.onProgress?.(`\n${toolDisplay}\n`);
+
         const result = executeTool(
           toolUse.name,
-          toolUse.input as Record<string, unknown>,
+          input,
           workingDir
         );
-
-        // Notify progress
-        options.onProgress?.(`\n[Using ${toolUse.name}...]\n`);
 
         toolResults.push({
           type: 'tool_result',
