@@ -1,3 +1,4 @@
+# Deployment: 2026-01-17 - Fixed health endpoint and version sync
 FROM node:22-slim AS builder
 
 WORKDIR /app
@@ -34,7 +35,7 @@ EXPOSE 3001
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:3001/webhooks/health || exit 1
+    CMD curl -f http://localhost:3001/health || exit 1
 
 # Start the bot
 CMD ["npm", "start"]
