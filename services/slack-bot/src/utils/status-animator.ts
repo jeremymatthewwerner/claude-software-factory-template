@@ -1,0 +1,363 @@
+/**
+ * Dynamic status animator for Slack bot - similar to Claude Code's status updates
+ */
+
+import logger from './logger.js';
+
+export interface StatusPhase {
+  name: string;
+  emoji: string;
+  message: string;
+  animationType?: 'thinking' | 'analyzing' | 'working' | 'creating' | 'processing' | 'reasoning' | 'researching' | 'optimizing';
+  estimatedDuration?: number; // milliseconds
+}
+
+export interface StatusAnimatorConfig {
+  channel: string;
+  threadTs: string;
+  client: any;
+  phases: StatusPhase[];
+  animationInterval?: number; // milliseconds between spinner updates
+}
+
+export interface ActiveStatusTracker {
+  messageTs: string;
+  currentPhase: number;
+  animationFrame: number;
+  intervalId: NodeJS.Timeout | null;
+  phaseTimeoutId: NodeJS.Timeout | null;
+  isCompleted: boolean;
+}
+
+export class StatusAnimator {
+  private static instances = new Map<string, ActiveStatusTracker>();
+
+  // Diverse emoji animation frames inspired by modern AI tools
+  private static readonly ANIMATION_FRAMES = {
+    thinking: ['🤔', '💭', '🧠', '⚡', '✨', '🎯', '💡', '🌟', '🔮', '🎨', '🧩', '⭐'],
+    analyzing: ['🔍', '📊', '📈', '🔎', '🧮', '📋', '🎯', '🔬', '📉', '🎪', '🔍', '📝'],
+    working: ['⚙️', '🔧', '⚡', '🛠️', '💫', '🎪', '🚀', '⚗️', '🎭', '🎯', '🔩', '⚖️'],
+    creating: ['📝', '✏️', '📄', '📋', '✍️', '📃', '🎨', '🖊️', '📐', '🎪', '📓', '🖼️'],
+    processing: ['🔄', '⚡', '🚀', '💫', '⭐', '🎯', '⚗️', '🎪', '🌊', '🔋', '📡', '⚡'],
+    reasoning: ['🧠', '💭', '🤔', '💡', '🎯', '✨', '🔮', '🧩', '⚖️', '🎪', '🌟', '🎨'],
+    researching: ['🔍', '🕵️', '📚', '🔎', '📊', '🗂️', '🔬', '🎯', '🧭', '📡', '🎪', '🗃️'],
+    optimizing: ['⚡', '🚀', '⚗️', '🔧', '⚙️', '🎯', '💫', '🎪', '🔋', '📈', '🌟', '⭐']
+  };
+
+  // Comprehensive dynamic verbs inspired by Claude Code, ChatGPT, and Gemini
+  private static readonly CLAUDE_VERBS = {
+    thinking: [
+      'cogitating', 'pondering', 'contemplating', 'ruminating', 'deliberating', 'reflecting',
+      'reasoning', 'mulling', 'meditating', 'considering', 'introspecting', 'philosophizing',
+      'brainstorming', 'conceptualizing', 'theorizing', 'strategizing', 'envisioning', 'imagining'
+    ],
+    analyzing: [
+      'examining', 'scrutinizing', 'investigating', 'parsing', 'dissecting', 'evaluating',
+      'inspecting', 'auditing', 'diagnosing', 'profiling', 'surveying', 'assessing',
+      'reviewing', 'studying', 'exploring', 'decoding', 'deciphering', 'interpreting'
+    ],
+    working: [
+      'processing', 'computing', 'calculating', 'synthesizing', 'organizing', 'structuring',
+      'optimizing', 'refining', 'transforming', 'assembling', 'orchestrating', 'coordinating',
+      'implementing', 'executing', 'compiling', 'configuring', 'calibrating', 'fine-tuning'
+    ],
+    creating: [
+      'composing', 'crafting', 'generating', 'formulating', 'constructing', 'building',
+      'designing', 'architecting', 'developing', 'producing', 'fabricating', 'manufacturing',
+      'authoring', 'drafting', 'sketching', 'modeling', 'prototyping', 'innovating'
+    ],
+    processing: [
+      'orchestrating', 'coordinating', 'executing', 'performing', 'operating', 'finalizing',
+      'compiling', 'rendering', 'encoding', 'transforming', 'streaming', 'buffering',
+      'indexing', 'sorting', 'filtering', 'aggregating', 'consolidating', 'reconciling'
+    ],
+    reasoning: [
+      'deducing', 'inferring', 'concluding', 'deriving', 'extrapolating', 'correlating',
+      'connecting', 'linking', 'associating', 'synthesizing', 'integrating', 'consolidating',
+      'cross-referencing', 'triangulating', 'validating', 'verifying', 'confirming', 'substantiating'
+    ],
+    researching: [
+      'investigating', 'exploring', 'discovering', 'uncovering', 'mining', 'extracting',
+      'gathering', 'collecting', 'sourcing', 'retrieving', 'indexing', 'cataloging',
+      'curating', 'surveying', 'mapping', 'documenting', 'chronicling', 'archiving'
+    ],
+    optimizing: [
+      'refining', 'enhancing', 'improving', 'streamlining', 'perfecting', 'polishing',
+      'tuning', 'calibrating', 'adjusting', 'tweaking', 'fine-tuning', 'balancing',
+      'harmonizing', 'stabilizing', 'maximizing', 'minimizing', 'accelerating', 'upgrading'
+    ]
+  };
+
+  // Default phases for different operations
+  static readonly DEFAULT_PHASES: Record<string, StatusPhase[]> = {
+    conversation: [
+      { name: 'analyzing', emoji: '🔍', message: 'Analyzing your message for context and intent', animationType: 'analyzing', estimatedDuration: 3000 },
+      { name: 'reasoning', emoji: '🧠', message: 'Reasoning through the problem space', animationType: 'reasoning', estimatedDuration: 4000 },
+      { name: 'researching', emoji: '🕵️', message: 'Researching relevant information', animationType: 'researching', estimatedDuration: 3500 },
+      { name: 'creating', emoji: '📝', message: 'Crafting comprehensive response', animationType: 'creating', estimatedDuration: 3000 },
+      { name: 'optimizing', emoji: '⚡', message: 'Optimizing for clarity and accuracy', animationType: 'optimizing', estimatedDuration: 2000 }
+    ],
+    dispatch: [
+      { name: 'parsing', emoji: '🔍', message: 'Parsing dispatch request and requirements', animationType: 'analyzing', estimatedDuration: 2000 },
+      { name: 'reasoning', emoji: '🧩', message: 'Reasoning about best agent assignment', animationType: 'reasoning', estimatedDuration: 3000 },
+      { name: 'creating', emoji: '📋', message: 'Creating GitHub issue with full context', animationType: 'creating', estimatedDuration: 4000 },
+      { name: 'optimizing', emoji: '🎯', message: 'Optimizing agent workflow setup', animationType: 'optimizing', estimatedDuration: 2000 }
+    ],
+    factory_analysis: [
+      { name: 'researching', emoji: '📊', message: 'Researching factory metrics and patterns', animationType: 'researching', estimatedDuration: 3500 },
+      { name: 'analyzing', emoji: '🔬', message: 'Analyzing system health indicators', animationType: 'analyzing', estimatedDuration: 5000 },
+      { name: 'reasoning', emoji: '🧠', message: 'Reasoning about correlations and trends', animationType: 'reasoning', estimatedDuration: 3000 },
+      { name: 'creating', emoji: '📋', message: 'Creating comprehensive status report', animationType: 'creating', estimatedDuration: 2000 }
+    ],
+    code_analysis: [
+      { name: 'researching', emoji: '🕵️', message: 'Researching codebase structure and patterns', animationType: 'researching', estimatedDuration: 4000 },
+      { name: 'analyzing', emoji: '🔬', message: 'Analyzing code quality and architecture', animationType: 'analyzing', estimatedDuration: 5000 },
+      { name: 'reasoning', emoji: '🧩', message: 'Reasoning about optimal solutions', animationType: 'reasoning', estimatedDuration: 3500 },
+      { name: 'creating', emoji: '🛠️', message: 'Creating implementation plan', animationType: 'creating', estimatedDuration: 3000 }
+    ]
+  };
+
+  static async start(config: StatusAnimatorConfig): Promise<string> {
+    const { channel, threadTs, client, phases, animationInterval = 500 } = config;
+    const key = `${channel}-${threadTs}`;
+
+    // Stop any existing animator for this thread
+    this.stop(key);
+
+    try {
+      // Post initial status message
+      const response = await client.chat.postMessage({
+        channel,
+        thread_ts: threadTs,
+        text: this.formatStatusMessage(phases[0], 0, 0, phases.length),
+      });
+
+      const tracker: ActiveStatusTracker = {
+        messageTs: response.ts,
+        currentPhase: 0,
+        animationFrame: 0,
+        intervalId: null,
+        phaseTimeoutId: null,
+        isCompleted: false,
+      };
+
+      this.instances.set(key, tracker);
+
+      // Start animation loop
+      tracker.intervalId = setInterval(async () => {
+        await this.updateAnimation(key, client, channel, phases);
+      }, animationInterval);
+
+      // Schedule phase transitions
+      this.schedulePhaseTransition(key, client, channel, phases);
+
+      logger.debug('Status animator started', { key, phases: phases.length });
+
+      return response.ts;
+    } catch (error) {
+      logger.error('Failed to start status animator', { error, key });
+      throw error;
+    }
+  }
+
+  static async updatePhase(key: string, phaseIndex: number, client: any, channel: string, phases: StatusPhase[]): Promise<void> {
+    const tracker = this.instances.get(key);
+    if (!tracker || tracker.isCompleted) return;
+
+    tracker.currentPhase = Math.min(phaseIndex, phases.length - 1);
+    tracker.animationFrame = 0; // Reset animation for new phase
+
+    try {
+      await client.chat.update({
+        channel,
+        ts: tracker.messageTs,
+        text: this.formatStatusMessage(phases[tracker.currentPhase], tracker.currentPhase, tracker.animationFrame, phases.length),
+      });
+
+      // Schedule next phase transition if not at the end
+      if (tracker.currentPhase < phases.length - 1) {
+        this.schedulePhaseTransition(key, client, channel, phases);
+      }
+
+      logger.debug('Status phase updated', { key, phase: tracker.currentPhase });
+    } catch (error) {
+      logger.error('Failed to update status phase', { error, key, phaseIndex });
+    }
+  }
+
+  static async update(key: string, partialMessage: string, client: any, channel: string): Promise<void> {
+    const tracker = this.instances.get(key);
+    if (!tracker || tracker.isCompleted) return;
+
+    try {
+      // Update message with partial content while keeping status animation
+      const currentPhase = tracker.currentPhase;
+      const phases = StatusAnimator.DEFAULT_PHASES.message || [];
+      const phase = phases[Math.min(currentPhase, phases.length - 1)];
+
+      if (phase) {
+        const statusMessage = this.formatStatusMessage(phase, currentPhase, tracker.animationFrame, phases.length);
+        const combinedMessage = `${statusMessage}\n\n${partialMessage}`;
+
+        await client.chat.update({
+          channel: channel,
+          ts: tracker.messageTs,
+          text: combinedMessage
+        });
+      }
+    } catch (error) {
+      logger.warn('Failed to update streaming message', { error: error instanceof Error ? error.message : String(error), key });
+    }
+  }
+
+  static async complete(key: string, finalMessage: string, client: any, channel: string): Promise<void> {
+    const tracker = this.instances.get(key);
+    if (!tracker) return;
+
+    tracker.isCompleted = true;
+
+    // Clear intervals
+    if (tracker.intervalId) {
+      clearInterval(tracker.intervalId);
+    }
+    if (tracker.phaseTimeoutId) {
+      clearTimeout(tracker.phaseTimeoutId);
+    }
+
+    try {
+      // Replace status message with final response
+      await client.chat.update({
+        channel,
+        ts: tracker.messageTs,
+        text: finalMessage,
+      });
+
+      logger.debug('Status animator completed', { key });
+    } catch (error) {
+      logger.error('Failed to complete status animator', { error, key });
+      // Fallback: post final message as new message
+      try {
+        await client.chat.postMessage({
+          channel,
+          thread_ts: key.split('-')[1], // Extract threadTs from key
+          text: finalMessage,
+        });
+      } catch (fallbackError) {
+        logger.error('Failed to post fallback message', { fallbackError, key });
+      }
+    } finally {
+      this.instances.delete(key);
+    }
+  }
+
+  static stop(key: string): void {
+    const tracker = this.instances.get(key);
+    if (!tracker) return;
+
+    tracker.isCompleted = true;
+
+    if (tracker.intervalId) {
+      clearInterval(tracker.intervalId);
+    }
+    if (tracker.phaseTimeoutId) {
+      clearTimeout(tracker.phaseTimeoutId);
+    }
+
+    this.instances.delete(key);
+    logger.debug('Status animator stopped', { key });
+  }
+
+  private static async updateAnimation(key: string, client: any, channel: string, phases: StatusPhase[]): Promise<void> {
+    const tracker = this.instances.get(key);
+    if (!tracker || tracker.isCompleted) return;
+
+    const currentPhase = phases[tracker.currentPhase];
+    const animationType = currentPhase.animationType || 'thinking';
+    const animationFrames = this.ANIMATION_FRAMES[animationType];
+
+    // Advance animation frame
+    tracker.animationFrame = (tracker.animationFrame + 1) % animationFrames.length;
+
+    try {
+      // Update message with new animation frame
+      await client.chat.update({
+        channel,
+        ts: tracker.messageTs,
+        text: this.formatStatusMessage(phases[tracker.currentPhase], tracker.currentPhase, tracker.animationFrame, phases.length),
+      });
+
+      logger.debug('Animation frame updated', { key, phase: tracker.currentPhase, frame: tracker.animationFrame });
+    } catch (error) {
+      logger.error('Failed to update animation frame', { error, key, phase: tracker.currentPhase });
+
+      // If we get a rate limit error, slow down
+      if (error && typeof error === 'object' && 'data' in error &&
+          (error as any).data?.error === 'rate_limited') {
+        logger.warn('Rate limited - stopping animation for this thread', { key });
+        this.stop(key);
+      }
+    }
+  }
+
+  private static schedulePhaseTransition(key: string, client: any, channel: string, phases: StatusPhase[]): void {
+    const tracker = this.instances.get(key);
+    if (!tracker || tracker.isCompleted) return;
+
+    const currentPhase = phases[tracker.currentPhase];
+    const duration = currentPhase.estimatedDuration || 3000;
+
+    // Clear existing timeout
+    if (tracker.phaseTimeoutId) {
+      clearTimeout(tracker.phaseTimeoutId);
+    }
+
+    // Schedule next phase transition
+    if (tracker.currentPhase < phases.length - 1) {
+      tracker.phaseTimeoutId = setTimeout(() => {
+        this.updatePhase(key, tracker.currentPhase + 1, client, channel, phases);
+      }, duration);
+    }
+  }
+
+
+  private static formatStatusMessage(phase: StatusPhase, phaseIndex: number, animationFrame: number, totalPhases: number): string {
+    const animationType = phase.animationType || 'thinking';
+    const animationFrames = this.ANIMATION_FRAMES[animationType];
+    const animatedEmoji = animationFrames[animationFrame % animationFrames.length];
+
+    // Get dynamic Claude-style verb that rotates with animation frame
+    const verbList = this.CLAUDE_VERBS[animationType] || this.CLAUDE_VERBS.thinking;
+    const dynamicVerb = verbList[animationFrame % verbList.length];
+
+    const progress = `[${phaseIndex + 1}/${totalPhases}]`;
+
+    // Progress bar (like Claude Code)
+    const progressBar = this.createProgressBar(phaseIndex, totalPhases);
+
+    // Format like Claude Code with structured output
+    return `${animatedEmoji} *${dynamicVerb}...* ${progress}
+
+${progressBar}
+
+_${phase.message}_`;
+  }
+
+  private static createProgressBar(current: number, total: number): string {
+    const width = 20;
+    const filled = Math.floor((current / total) * width);
+    const empty = width - filled;
+
+    const filledBar = '█'.repeat(filled);
+    const emptyBar = '░'.repeat(empty);
+    const percentage = Math.round(((current + 1) / total) * 100);
+
+    return `\`${filledBar}${emptyBar}\` ${percentage}%`;
+  }
+
+  // Utility method to get default phases for an operation type
+  static getPhasesForOperation(operation: keyof typeof StatusAnimator.DEFAULT_PHASES): StatusPhase[] {
+    return this.DEFAULT_PHASES[operation] || this.DEFAULT_PHASES.conversation;
+  }
+}
+
+export default StatusAnimator;

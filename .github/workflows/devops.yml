@@ -56,7 +56,9 @@ jobs:
   # DIAGNOSTIC REQUESTS (triggered by @devops mentions)
   # ===========================================
   diagnostic-request:
+    # SKIP if: factory-meta label is present (handled by Factory Manager only)
     if: |
+      !contains(github.event.issue.labels.*.name, 'factory-meta') &&
       github.event_name == 'issue_comment' &&
       !github.event.issue.pull_request &&
       (contains(github.event.comment.body, '@devops') ||
@@ -90,30 +92,69 @@ jobs:
       - name: Run diagnostic query
         id: diagnostic
         env:
+          # Project token for CLI commands
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN_SW_FACTORY }}
+          # Workspace token for GraphQL API (different from project token!)
+          RAILWAY_WORKSPACE_TOKEN: ${{ secrets.RAILWAY_WORKSPACE_TOKEN }}
+          RAILWAY_WORKSPACE_ID: ${{ secrets.RAILWAY_WORKSPACE_ID }}
           BACKEND_URL: ${{ secrets.PRODUCTION_BACKEND_URL }}
+          TEST_CLEANUP_SECRET: ${{ secrets.TEST_CLEANUP_SECRET }}
+          DEVOPS_API_SECRET: ${{ secrets.DEVOPS_API_SECRET }}
           COMMENT_BODY: ${{ github.event.comment.body }}
         run: |
           echo "Processing diagnostic request..."
 
-          # Check Railway CLI version and token
+          # Check Railway CLI version
           echo "=== Railway CLI Info ===" > /tmp/diagnostic_output.txt
           railway --version >> /tmp/diagnostic_output.txt 2>&1 || echo "Railway CLI not available" >> /tmp/diagnostic_output.txt
 
-          # Get recent backend logs (Railway CLI v3 streams indefinitely, use timeout + tail)
-          echo "" >> /tmp/diagnostic_output.txt
-          echo "=== Recent Backend Logs ===" >> /tmp/diagnostic_output.txt
-          (timeout 30 railway logs --service backend 2>&1 || echo "Unable to fetch backend logs - check RAILWAY_TOKEN or timeout reached") | tail -30 >> /tmp/diagnostic_output.txt
-
           echo "" >> /tmp/diagnostic_output.txt
           echo "=== Service Status ===" >> /tmp/diagnostic_output.txt
-          timeout 15 railway status 2>&1 >> /tmp/diagnostic_output.txt || echo "Unable to get status - token may not be linked to project" >> /tmp/diagnostic_output.txt
+          timeout 15 railway status 2>&1 >> /tmp/diagnostic_output.txt || echo "Unable to get status" >> /tmp/diagnostic_output.txt
 
-          # If the request mentions a specific user, try to find relevant logs
+          # Query Railway API to list projects with environments
+          echo "" >> /tmp/diagnostic_output.txt
+          echo "=== Railway API - Projects & Environments ===" >> /tmp/diagnostic_output.txt
+          PROJECTS_RESPONSE=$(curl -s -X POST https://backboard.railway.app/graphql/v2 \
+            -H "Authorization: Bearer $RAILWAY_WORKSPACE_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "{\"query\": \"query { workspace(workspaceId: \\\"$RAILWAY_WORKSPACE_ID\\\") { projects { edges { node { id name environments { edges { node { id name } } } services { edges { node { id name } } } } } } } }\"}")
+          echo "$PROJECTS_RESPONSE" >> /tmp/diagnostic_output.txt
+
+          # Extract environment ID for thinkers-chat production (or first production env found)
+          # The project name is "thinkers-chat" based on earlier discovery
+          PROD_ENV_ID=$(echo "$PROJECTS_RESPONSE" | jq -r '.data.workspace.projects.edges[] | select(.node.name == "thinkers-chat") | .node.environments.edges[] | select(.node.name == "production") | .node.id' 2>/dev/null | head -1)
+
+          if [ -n "$PROD_ENV_ID" ] && [ "$PROD_ENV_ID" != "null" ]; then
+            echo "" >> /tmp/diagnostic_output.txt
+            echo "=== Environment Logs (production: $PROD_ENV_ID) ===" >> /tmp/diagnostic_output.txt
+
+            # Fetch recent logs using environmentLogs query (200 entries for deeper investigation)
+            LOGS_RESPONSE=$(curl -s -X POST https://backboard.railway.app/graphql/v2 \
+              -H "Authorization: Bearer $RAILWAY_WORKSPACE_TOKEN" \
+              -H "Content-Type: application/json" \
+              -d "{\"query\": \"query { environmentLogs(environmentId: \\\"$PROD_ENV_ID\\\", beforeLimit: 200) { ... on Log { message timestamp severity } } }\"}")
+
+            # Parse and format logs (most recent first, show last 50 by default)
+            LOG_COUNT=$(echo "$LOGS_RESPONSE" | jq -r '.data.environmentLogs | length' 2>/dev/null || echo "0")
+            echo "Found $LOG_COUNT log entries (showing last 50):" >> /tmp/diagnostic_output.txt
+            echo "" >> /tmp/diagnostic_output.txt
+            echo "$LOGS_RESPONSE" | jq -r '.data.environmentLogs[-50:]? | reverse | .[]? | "\(.timestamp) [\(.severity)] \(.message)"' 2>/dev/null >> /tmp/diagnostic_output.txt || echo "Failed to parse logs: $LOGS_RESPONSE" >> /tmp/diagnostic_output.txt
+          else
+            echo "" >> /tmp/diagnostic_output.txt
+            echo "=== Recent Backend Logs ===" >> /tmp/diagnostic_output.txt
+            echo "Could not find production environment ID. Projects response above." >> /tmp/diagnostic_output.txt
+          fi
+
+          # If the request mentions a specific user, try to find relevant logs (filter from already-fetched logs)
           if echo "$COMMENT_BODY" | grep -qi "user\|username"; then
             echo "" >> /tmp/diagnostic_output.txt
             echo "=== User-Related Logs ===" >> /tmp/diagnostic_output.txt
-            (timeout 30 railway logs --service backend 2>&1 || echo "Unable to fetch logs") | grep -i "user\|auth\|login\|register" | tail -20 >> /tmp/diagnostic_output.txt || echo "No user-related logs found" >> /tmp/diagnostic_output.txt
+            if [ -n "$LOGS_RESPONSE" ]; then
+              echo "$LOGS_RESPONSE" | jq -r '.data.environmentLogs[]? | "\(.timestamp) [\(.severity)] \(.message)"' 2>/dev/null | grep -i "user\|auth\|login\|register" | tail -20 >> /tmp/diagnostic_output.txt || echo "No user-related logs found in recent logs" >> /tmp/diagnostic_output.txt
+            else
+              echo "No logs available to filter" >> /tmp/diagnostic_output.txt
+            fi
           fi
 
           # If the request mentions database or DB
@@ -128,6 +169,57 @@ jobs:
             fi
           fi
 
+          # If the request mentions cleanup of test users
+          if echo "$COMMENT_BODY" | grep -qi "cleanup\|clean up\|delete.*test.*user\|smoketest\|canary"; then
+            echo "" >> /tmp/diagnostic_output.txt
+            echo "=== Test User Cleanup ===" >> /tmp/diagnostic_output.txt
+
+            CLEANUP_SUCCESS=false
+
+            # Try TEST_CLEANUP_SECRET endpoint first (/api/test/cleanup-test-users)
+            if [ -n "$BACKEND_URL" ] && [ -n "$TEST_CLEANUP_SECRET" ]; then
+              echo "Using TEST_CLEANUP_SECRET endpoint..." >> /tmp/diagnostic_output.txt
+              CLEANUP_RESPONSE=$(curl -s -X DELETE \
+                "$BACKEND_URL/api/test/cleanup-test-users?secret=$TEST_CLEANUP_SECRET" \
+                -H "Content-Type: application/json" 2>&1)
+
+              if echo "$CLEANUP_RESPONSE" | jq -e '.deleted_count' >/dev/null 2>&1; then
+                CLEANUP_SUCCESS=true
+              fi
+            fi
+
+            # Fallback to DEVOPS_API_SECRET endpoint (/api/devops/cleanup/test-users)
+            if [ "$CLEANUP_SUCCESS" = "false" ] && [ -n "$BACKEND_URL" ] && [ -n "$DEVOPS_API_SECRET" ]; then
+              echo "Using DEVOPS_API_SECRET endpoint..." >> /tmp/diagnostic_output.txt
+              CLEANUP_RESPONSE=$(curl -s -X DELETE \
+                "$BACKEND_URL/api/devops/cleanup/test-users" \
+                -H "X-DevOps-Secret: $DEVOPS_API_SECRET" \
+                -H "Content-Type: application/json" 2>&1)
+
+              if echo "$CLEANUP_RESPONSE" | jq -e '.deleted_count' >/dev/null 2>&1; then
+                CLEANUP_SUCCESS=true
+              fi
+            fi
+
+            if [ "$CLEANUP_SUCCESS" = "true" ]; then
+              echo "" >> /tmp/diagnostic_output.txt
+              echo "Cleanup result:" >> /tmp/diagnostic_output.txt
+              echo "$CLEANUP_RESPONSE" | jq '.' 2>/dev/null >> /tmp/diagnostic_output.txt || echo "$CLEANUP_RESPONSE" >> /tmp/diagnostic_output.txt
+
+              DELETED_COUNT=$(echo "$CLEANUP_RESPONSE" | jq -r '.deleted_count // 0' 2>/dev/null || echo "0")
+              echo "" >> /tmp/diagnostic_output.txt
+              echo "✅ Deleted $DELETED_COUNT test users" >> /tmp/diagnostic_output.txt
+            else
+              echo "Cannot perform cleanup. Configure one of these secrets:" >> /tmp/diagnostic_output.txt
+              echo "  - TEST_CLEANUP_SECRET (for /api/test/cleanup-test-users)" >> /tmp/diagnostic_output.txt
+              echo "  - DEVOPS_API_SECRET (for /api/devops/cleanup/test-users)" >> /tmp/diagnostic_output.txt
+              if [ -n "$CLEANUP_RESPONSE" ]; then
+                echo "" >> /tmp/diagnostic_output.txt
+                echo "Last response: $CLEANUP_RESPONSE" >> /tmp/diagnostic_output.txt
+              fi
+            fi
+          fi
+
           # Output for next step
           DIAGNOSTIC_OUTPUT=$(cat /tmp/diagnostic_output.txt)
           echo "output<<EOF" >> $GITHUB_OUTPUT
@@ -137,25 +229,33 @@ jobs:
       - name: Post diagnostic results
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DIAGNOSTIC_OUTPUT: ${{ steps.diagnostic.outputs.output }}
         run: |
-          gh issue comment ${{ github.event.issue.number }} --body "## 🔧 DevOps Diagnostic Results
+          # Write comment body to file to avoid shell escaping issues
+          cat > /tmp/comment_body.md << 'COMMENT_EOF'
+          ## 🔧 DevOps Diagnostic Results
 
           <details>
           <summary>📋 Diagnostic Output (click to expand)</summary>
 
-          \`\`\`
-          ${{ steps.diagnostic.outputs.output }}
-          \`\`\`
+          ```
+          COMMENT_EOF
+          echo "$DIAGNOSTIC_OUTPUT" >> /tmp/comment_body.md
+          cat >> /tmp/comment_body.md << 'COMMENT_EOF'
+          ```
 
           </details>
 
           ---
           **Need more info?** You can request:
-          - \`@devops check user <username>\` - Look for user-related logs
-          - \`@devops check database\` - Check DB connection status
-          - \`@devops check logs <service>\` - Get recent logs for a service
+          - `@devops check user <username>` - Look for user-related logs
+          - `@devops check database` - Check DB connection status
+          - `@devops check logs <service>` - Get recent logs for a service
+          - `@devops cleanup test users` - Delete stale smoketest/canary accounts
 
-          **Note:** For direct database queries, use \`railway connect postgres\` locally with your Railway token."
+          **Note:** For direct database queries, use `railway connect postgres` locally with your Railway token.
+          COMMENT_EOF
+          gh issue comment ${{ github.event.issue.number }} --body-file /tmp/comment_body.md
 
   # ===========================================
   # HEALTH MONITORING (runs every 5 minutes)
@@ -273,6 +373,15 @@ jobs:
                 if gh pr merge "$PR_NUM" --squash --delete-branch 2>/dev/null; then
                   echo "✅ Auto-merged PR #$PR_NUM"
                   MERGED_COUNT=$((MERGED_COUNT + 1))
+
+                  # Trigger CI/CD workflow via repository_dispatch since GITHUB_TOKEN merges don't trigger push events
+                  echo "Triggering deploy via repository_dispatch..."
+                  if echo '{"event_type":"deploy-after-merge","client_payload":{"pr_number":"'"${PR_NUM}"'"}}' | \
+                     gh api repos/${{ github.repository }}/dispatches --input -; then
+                    echo "Deploy dispatch sent successfully for PR #$PR_NUM"
+                  else
+                    echo "Warning: Failed to send deploy dispatch for PR #$PR_NUM"
+                  fi
                 else
                   echo "Could not auto-merge PR #$PR_NUM (may need review or have conflicts)"
                 fi
@@ -363,21 +472,22 @@ jobs:
         id: railway_logs
         continue-on-error: true
         run: |
-          # Get last 30 lines of logs from each service (Railway CLI v3 streams indefinitely, use timeout)
-          BACKEND_LOGS=$(timeout 30 railway logs --service backend 2>&1 || echo "Unable to fetch backend logs")
-          FRONTEND_LOGS=$(timeout 30 railway logs --service frontend 2>&1 || echo "Unable to fetch frontend logs")
+          # Get last 30 lines of logs from each service (use -n flag to avoid streaming)
+          BACKEND_LOGS=$(railway logs --service backend -n 30 2>&1 || echo "Unable to fetch backend logs")
+          FRONTEND_LOGS=$(railway logs --service frontend -n 30 2>&1 || echo "Unable to fetch frontend logs")
 
           echo "backend_logs<<EOF" >> $GITHUB_OUTPUT
-          echo "$BACKEND_LOGS" | tail -30 >> $GITHUB_OUTPUT
+          echo "$BACKEND_LOGS" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
 
           echo "frontend_logs<<EOF" >> $GITHUB_OUTPUT
-          echo "$FRONTEND_LOGS" | tail -30 >> $GITHUB_OUTPUT
+          echo "$FRONTEND_LOGS" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN_SW_FACTORY }}
 
       - name: Update or create incident
+        id: incident
         run: |
           FAILURES="${{ needs.smoke-test.outputs.failures }}"
 
@@ -391,9 +501,10 @@ jobs:
             SEVERITY="SEV2"
             echo "$FAILURES" | grep -q "backend" && SEVERITY="SEV1"
 
-            gh issue create \
+            # Create issue WITHOUT ai-ready label first
+            ISSUE_URL=$(gh issue create \
               --title "🚨 Production Incident: $FAILURES failing" \
-              --label "bug,priority-high,production-incident,ai-ready" \
+              --label "bug,priority-high,production-incident" \
               --body "## 🚨 Production Incident
 
           **Severity:** $SEVERITY
@@ -424,10 +535,25 @@ jobs:
           - Use \`railway logs --service backend\` locally for full logs
 
           ---
-          *Auto-created by DevOps Agent*"
+          *Auto-created by DevOps Agent*")
+
+            # Extract issue number from URL
+            ISSUE_NUM=$(echo "$ISSUE_URL" | grep -oE '[0-9]+$')
+            echo "issue_number=$ISSUE_NUM" >> $GITHUB_OUTPUT
+            echo "created=true" >> $GITHUB_OUTPUT
           fi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Trigger Code Agent for incident
+        if: steps.incident.outputs.created == 'true'
+        run: |
+          # Post @code comment to trigger Code Agent (cleaner than label approach)
+          # MUST use PAT so the comment triggers Code Agent workflow
+          gh issue comment ${{ steps.incident.outputs.issue_number }} \
+            --body "@code This is a production incident. Please investigate immediately using the Railway logs above and fix the issue."
+        env:
+          GH_TOKEN: ${{ secrets.PAT_WITH_WORKFLOW_ACCESS }}
 
   # ===========================================
   # MANUAL ACTIONS (workflow_dispatch)
@@ -484,12 +610,12 @@ jobs:
             You have access to the Railway CLI. Key commands:
 
             ### Viewing Logs
-            **IMPORTANT:** Railway CLI v3 streams logs indefinitely. Always wrap with timeout:
+            Use the `-n` flag to limit output and avoid indefinite streaming:
             ```bash
-            timeout 30 railway logs --service backend 2>&1 | tail -50    # Get last 50 lines
-            timeout 30 railway logs --service frontend 2>&1 | tail -50   # Frontend logs
-            timeout 60 railway logs 2>&1 | tail -100                     # All services, more lines
-            railway logs --build                                          # Build logs (these don't stream)
+            railway logs --service backend -n 50     # Get last 50 lines from backend
+            railway logs --service frontend -n 50    # Get last 50 lines from frontend
+            railway logs -n 100                      # All services, more lines
+            railway logs --build                     # Build logs
             ```
 
             ### Service Management
@@ -522,16 +648,16 @@ jobs:
 
             ### For "incident-response":
             1. Check health endpoints with curl
-            2. Get Railway logs: `timeout 60 railway logs --service backend 2>&1 | tail -100`
+            2. Get Railway logs: `railway logs --service backend -n 100`
             3. Look for errors, exceptions, connection issues
             4. Check recent deployments: `gh run list --limit 10`
             5. If code issue: create a fix PR
             6. If infra issue: check Railway dashboard, restart if needed
             7. Document findings in issue comment
-            8. Escalate SEV1 to @jeremymatthewwerner
+            8. Escalate SEV1 to @your-github-username
 
             ### For "view-logs":
-            1. Run `timeout 60 railway logs --service ${{ github.event.inputs.service }} 2>&1 | tail -100`
+            1. Run `railway logs --service ${{ github.event.inputs.service }} -n 100`
             2. Look for patterns: errors, warnings, slow queries
             3. Summarize findings in a new issue or comment
 
@@ -635,8 +761,8 @@ jobs:
                - Ensure health checks cover critical dependencies (DB, cache, etc.)
 
             2. **Logging**
-               - Run `timeout 30 railway logs --service backend 2>&1 | tail -50` and `timeout 30 railway logs --service frontend 2>&1 | tail -50`
-               - Note: Railway CLI v3 streams indefinitely, so always use timeout wrapper
+               - Run `railway logs --service backend -n 50` and `railway logs --service frontend -n 50`
+               - Use the `-n` flag to limit output and avoid indefinite streaming
                - Check logs have proper structure (timestamps, levels, context)
                - Look for any recurring errors that need attention
 
@@ -681,6 +807,155 @@ jobs:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN_SW_FACTORY }}
 
   # ===========================================
+  # FEEDBACK-TO-ISSUE PROCESSING (runs every 5 minutes)
+  # ===========================================
+  process-feedback:
+    if: github.event_name == 'schedule' && github.event.schedule == '*/5 * * * *'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch pending feedback
+        id: fetch
+        run: |
+          BACKEND_URL="${{ secrets.PRODUCTION_BACKEND_URL }}"
+          SECRET="${{ secrets.FEEDBACK_PROCESSOR_SECRET }}"
+
+          if [ -z "$BACKEND_URL" ] || [ -z "$SECRET" ]; then
+            echo "⚠️ PRODUCTION_BACKEND_URL or FEEDBACK_PROCESSOR_SECRET not configured"
+            echo "has_feedback=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          echo "Fetching pending feedback from $BACKEND_URL/api/feedback/pending..."
+          RESPONSE=$(curl -s -w "\n%{http_code}" --max-time 30 \
+            "$BACKEND_URL/api/feedback/pending?secret=$SECRET&limit=10" 2>&1)
+          HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+          BODY=$(echo "$RESPONSE" | head -n-1)
+
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "::warning::Failed to fetch pending feedback: HTTP $HTTP_CODE"
+            echo "Response: $BODY"
+            echo "has_feedback=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          COUNT=$(echo "$BODY" | jq -r '.count // 0')
+          echo "Found $COUNT pending feedback items"
+
+          if [ "$COUNT" -eq 0 ]; then
+            echo "has_feedback=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          echo "has_feedback=true" >> $GITHUB_OUTPUT
+          echo "count=$COUNT" >> $GITHUB_OUTPUT
+          echo "feedbacks<<EOF" >> $GITHUB_OUTPUT
+          echo "$BODY" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub issues from feedback
+        if: steps.fetch.outputs.has_feedback == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.PAT_WITH_WORKFLOW_ACCESS }}
+          BACKEND_URL: ${{ secrets.PRODUCTION_BACKEND_URL }}
+          SECRET: ${{ secrets.FEEDBACK_PROCESSOR_SECRET }}
+          FEEDBACKS: ${{ steps.fetch.outputs.feedbacks }}
+        run: |
+          echo "Processing ${{ steps.fetch.outputs.count }} feedback items..."
+
+          echo "$FEEDBACKS" | jq -c '.feedbacks[]' | while read -r feedback; do
+            FEEDBACK_ID=$(echo "$feedback" | jq -r '.id')
+            FEEDBACK_TYPE=$(echo "$feedback" | jq -r '.feedback_type')
+            MESSAGE=$(echo "$feedback" | jq -r '.message')
+            EMAIL=$(echo "$feedback" | jq -r '.email // "Not provided"')
+            NAME=$(echo "$feedback" | jq -r '.name // "Anonymous"')
+            USER_AGENT=$(echo "$feedback" | jq -r '.user_agent // "Not provided"')
+            CREATED_AT=$(echo "$feedback" | jq -r '.created_at')
+
+            echo "Processing feedback $FEEDBACK_ID (type: $FEEDBACK_TYPE)..."
+
+            # Use only user-feedback label - let Triage Agent determine classification
+            LABELS="user-feedback"
+
+            # Set title prefix based on feedback type for context
+            if [ "$FEEDBACK_TYPE" = "bug" ]; then
+              TITLE_PREFIX="🐛 [User Bug Report]"
+            elif [ "$FEEDBACK_TYPE" = "feature" ]; then
+              TITLE_PREFIX="💡 [User Feature Request]"
+            else
+              TITLE_PREFIX="💬 [User Feedback]"
+            fi
+
+            # Create title from first 80 chars of message
+            TITLE_MSG=$(echo "$MESSAGE" | head -c 80 | tr '\n' ' ')
+            if [ ${#MESSAGE} -gt 80 ]; then
+              TITLE_MSG="${TITLE_MSG}..."
+            fi
+
+            # Create the GitHub issue using printf to build the body
+            {
+              printf '%s\n' "## User Feedback"
+              printf '\n'
+              printf '%s\n' "**Submitted by:** $NAME ($EMAIL)"
+              printf '%s\n' "**Type:** $FEEDBACK_TYPE"
+              printf '%s\n' "**Submitted:** $CREATED_AT"
+              printf '\n'
+              printf '%s\n' "### Message"
+              printf '\n'
+              printf '%s\n' "$MESSAGE"
+              printf '\n'
+              printf '%s\n' "---"
+              printf '\n'
+              printf '%s\n' "### Browser/Device Info"
+              printf '\n'
+              printf '%s\n' '```'
+              printf '%s\n' "$USER_AGENT"
+              printf '%s\n' '```'
+              printf '\n'
+              printf '%s\n' "---"
+              printf '%s\n' "_This issue was automatically created from user feedback._"
+              printf '%s\n' "_Feedback ID: ${FEEDBACK_ID}_"
+            } > /tmp/issue_body.md
+
+            ISSUE_URL=$(gh issue create \
+              --title "$TITLE_PREFIX $TITLE_MSG" \
+              --label "$LABELS" \
+              --body-file /tmp/issue_body.md 2>&1)
+
+            if [ $? -eq 0 ]; then
+              echo "✅ Created issue: $ISSUE_URL"
+
+              # Extract issue number and trigger Triage Agent first
+              ISSUE_NUM=$(echo "$ISSUE_URL" | grep -oE '[0-9]+$')
+              if [ -n "$ISSUE_NUM" ]; then
+                echo "Triggering Triage Agent on issue #$ISSUE_NUM..."
+                gh issue comment "$ISSUE_NUM" --body "@triage This issue was created from user feedback (type: ${FEEDBACK_TYPE}). Please triage and then trigger the appropriate agent to address the user's report." || echo "::warning::Failed to trigger Triage Agent for issue #$ISSUE_NUM"
+              fi
+
+              # Mark feedback as processed with the issue URL
+              PATCH_RESPONSE=$(curl -s -w "\n%{http_code}" -X PATCH \
+                --max-time 30 \
+                -H "Content-Type: application/json" \
+                -d "{\"github_issue_url\": \"$ISSUE_URL\"}" \
+                "$BACKEND_URL/api/feedback/$FEEDBACK_ID/processed?secret=$SECRET" 2>&1)
+              PATCH_CODE=$(echo "$PATCH_RESPONSE" | tail -n1)
+
+              if [ "$PATCH_CODE" = "200" ]; then
+                echo "✅ Marked feedback $FEEDBACK_ID as processed"
+              else
+                echo "::warning::Failed to mark feedback $FEEDBACK_ID as processed (HTTP $PATCH_CODE)"
+              fi
+            else
+              echo "::error::Failed to create issue for feedback $FEEDBACK_ID: $ISSUE_URL"
+            fi
+          done
+
+          echo "Feedback processing complete!"
+
+  # ===========================================
   # AUTO-REBASE (triggered on push to main)
   # ===========================================
   auto-rebase:
@@ -701,7 +976,8 @@ jobs:
 
       - name: Auto-rebase conflicting PRs
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # MUST use PAT to trigger other workflows when re-adding ai-ready label
+          GH_TOKEN: ${{ secrets.PAT_WITH_WORKFLOW_ACCESS }}
         run: |
           echo "🔄 Checking for PRs with merge conflicts after push to main..."
           echo "   Repository: $GITHUB_REPOSITORY"
@@ -787,7 +1063,11 @@ jobs:
                 # Trigger Code Agent by commenting on the related issue
                 if [ -n "$RELATED_ISSUE" ]; then
                   echo "   Triggering Code Agent on issue #$RELATED_ISSUE"
-                  gh issue comment "$RELATED_ISSUE" --repo "$GITHUB_REPOSITORY" --body "The previous PR was closed due to merge conflicts. Code Agent: please create a fresh PR from current main." || echo "   (Could not comment on issue)"
+                  gh issue comment "$RELATED_ISSUE" --repo "$GITHUB_REPOSITORY" --body "The previous PR #$PR_NUM was closed due to merge conflicts. Re-triggering Code Agent to create a fresh PR from current main." || echo "   (Could not comment on issue)"
+                  # Re-trigger Code Agent by removing and re-adding ai-ready label
+                  gh issue edit "$RELATED_ISSUE" --repo "$GITHUB_REPOSITORY" --remove-label "ai-ready" || echo "   (Could not remove ai-ready label)"
+                  sleep 2  # Brief pause to ensure label removal is processed
+                  gh issue edit "$RELATED_ISSUE" --repo "$GITHUB_REPOSITORY" --add-label "ai-ready" || echo "   (Could not re-add ai-ready label)"
                 else
                   echo "   ⚠️ Could not find related issue to trigger Code Agent"
                 fi

@@ -1,7 +1,5 @@
 name: Code Agent
 on:
-  issues:
-    types: [labeled]
   issue_comment:
     types: [created]
   schedule:
@@ -21,6 +19,7 @@ permissions:
   id-token: write
   actions: read
   checks: read
+  # NOTE: No workflows:write - Code Agent delegates workflow changes to Factory Manager
 
 # Prevent concurrent runs on the same issue
 concurrency:
@@ -101,26 +100,22 @@ jobs:
 
   fix:
     # Triggers on:
-    # 1. ai-ready label added AND issue already has (bug OR enhancement)
-    # 2. bug/enhancement label added AND issue already has ai-ready
-    # 3. Comment containing @claude on an issue with ai-ready label
-    # 4. ANY comment on an issue with status:awaiting-bot label (human responded)
-    # 5. Manual workflow dispatch
+    # 1. Comment containing @code or @claude on an issue
+    # 2. ANY comment on an issue with status:awaiting-bot label (human responded)
+    # 3. Manual workflow dispatch
     # SKIP if: needs-human label is present (escalated, requires human intervention)
+    # SKIP if: factory-meta label is present (handled by Factory Manager only)
+    # NOTE: Legacy ai-ready label triggers removed - use @code mention instead
     if: |
       !contains(github.event.issue.labels.*.name, 'needs-human') &&
+      !contains(github.event.issue.labels.*.name, 'factory-meta') &&
       (github.event_name == 'workflow_dispatch' ||
-       (github.event_name == 'issues' &&
-        ((github.event.label.name == 'ai-ready' &&
-          (contains(github.event.issue.labels.*.name, 'bug') ||
-           contains(github.event.issue.labels.*.name, 'enhancement'))) ||
-         ((github.event.label.name == 'bug' || github.event.label.name == 'enhancement') &&
-          contains(github.event.issue.labels.*.name, 'ai-ready')))) ||
        (github.event_name == 'issue_comment' &&
         !github.event.issue.pull_request &&
-        (contains(github.event.comment.body, '@claude') ||
+        (contains(github.event.comment.body, '@code') ||
+         contains(github.event.comment.body, '@Code') ||
+         contains(github.event.comment.body, '@claude') ||
          contains(github.event.comment.body, '@Claude') ||
-         contains(github.event.comment.body, 'claude') ||
          contains(github.event.issue.labels.*.name, 'status:awaiting-bot'))))
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -129,6 +124,15 @@ jobs:
         with:
           fetch-depth: 0
           token: ${{ secrets.PAT_WITH_WORKFLOW_ACCESS }}
+
+      # Configure git to use PAT for push operations (enables pushing workflow files)
+      # The checkout action embeds the token in the remote URL, so we must replace it
+      - name: Configure git with PAT
+        run: |
+          # Remove the embedded token from the remote URL (checkout embeds ghs_* token)
+          git remote set-url origin https://github.com/${{ github.repository }}.git
+          # Set extraheader with PAT that has workflow scope
+          git config --local http.https://github.com/.extraheader "AUTHORIZATION: basic $(echo -n 'x-access-token:${{ secrets.PAT_WITH_WORKFLOW_ACCESS }}' | base64)"
 
       - uses: actions/setup-node@v4
         with:
@@ -225,6 +229,7 @@ jobs:
           Thanks @${{ steps.context.outputs.comment_author }}! Resuming implementation...
 
           - [ ] 📖 Reading your response and previous context
+          - [ ] 📋 Updating implementation plan
           - [ ] 🛠️ Implementing: *pending*
           - [ ] ✅ Running tests and quality checks
           - [ ] 📝 Creating/updating PR
@@ -261,6 +266,7 @@ jobs:
 
           - [ ] 📖 Reading issue and understanding requirements
           - [ ] 🔍 Analyzing codebase and finding affected files
+          - [ ] 📋 Posting implementation plan
           - [ ] 🛠️ Implementing fix: *pending*
           - [ ] ✅ Running tests and quality checks
           - [ ] 📝 Creating PR
@@ -346,6 +352,28 @@ jobs:
             - If you think you can't do something, TRY IT FIRST
             - Only escalate if the command actually fails with a permission error
             - Being overly conservative wastes human time on things you CAN do
+
+            ## 📝 DOCUMENT FACTORY FIXES!
+
+            **When you fix a workflow, CLAUDE.md, or agent behavior issue**, create a factory-improvement issue:
+            ```bash
+            gh issue create --label "factory-improvement" \
+              --title "Factory Fix: [brief description]" \
+              --body "## Problem
+            [What went wrong]
+
+            ## Root Cause
+            [Why it happened]
+
+            ## Solution
+            [What you changed]
+
+            ## PR
+            PR #[number]"
+
+            gh issue close [new_issue_number] --comment "Fixed in PR #[number]"
+            ```
+            This creates a searchable audit trail of factory learnings.
 
             ## 🔍 PRODUCTION DIAGNOSTICS - Ask DevOps Agent!
 
@@ -471,6 +499,7 @@ jobs:
 
             - [x] 📖 Reading issue and understanding requirements
             - [x] 🔍 Analyzing codebase and finding affected files
+            - [x] 📋 Posting implementation plan
             - [ ] 🛠️ Implementing fix: Adding null check to thinker query
             - [ ] ✅ Running tests and quality checks
             - [ ] 📝 Creating PR
@@ -506,6 +535,7 @@ jobs:
             **Activity Log examples for different events:**
             - `| $TIMESTAMP | 📖 Read issue: [brief description of what issue asks] |`
             - `| $TIMESTAMP | 🔍 Found root cause: [what's causing the bug] |`
+            - `| $TIMESTAMP | 📋 Posted implementation plan: [brief strategy] |`
             - `| $TIMESTAMP | 🛠️ Implementing: [what fix you're applying] |`
             - `| $TIMESTAMP | ✅ Tests passed locally |`
             - `| $TIMESTAMP | ❌ Tests failed: [which test and why] |`
@@ -522,27 +552,59 @@ jobs:
             5. Diagnose the root cause - search codebase, read relevant files
             6. Check second box [x] and add Analysis section to progress comment
 
+            ## Step 1.5: Post Implementation Plan
+            1. Check third box [x] and update status to "Posting implementation plan..."
+            2. Post a detailed implementation plan comment:
+            ```bash
+            TIMESTAMP=$(date -u '+%Y-%m-%d %H:%M UTC')
+            gh api repos/${{ github.repository }}/issues/${{ steps.context.outputs.number }}/comments \
+              -X POST -f body="## 📋 Implementation Plan
+
+            ### Root Cause
+            [Brief description of what's causing the issue]
+
+            ### Affected Files
+            - \`path/to/file1.py\` - [what needs to change]
+            - \`path/to/file2.ts\` - [what needs to change]
+
+            ### Implementation Strategy
+            [Step-by-step approach to fix the issue]
+
+            ### Testing Plan
+            - [ ] Unit tests for [specific functionality]
+            - [ ] Integration tests for [API endpoints]
+            - [ ] E2E tests for [user workflows]
+
+            ### Risk Assessment
+            **Risk Level:** Low/Medium/High
+            **Mitigation:** [How to minimize risk]
+
+            **Proceeding with implementation...**
+
+            cc @${{ steps.context.outputs.issue_author }}"
+            ```
+
             ## Step 2: Implement Fix
-            1. Check third box [x] and update status to "Implementing fix..."
+            1. Check fourth box [x] and update status to "Implementing fix..."
             2. If existing branch: `git checkout <branch>` and fix the issue
                If new: Create a fix branch: git checkout -b fix/${{ steps.context.outputs.number }}-description
             3. Implement the fix with tests
-            4. Check fourth box [x] and update status to "Running tests..."
+            4. Check fifth box [x] and update status to "Running tests..."
             5. Run quality gates:
                - cd frontend && npm run lint && npm run typecheck && npm test
                - cd backend && uv run ruff check . && uv run mypy . && uv run pytest
 
             ## Step 3: Create/Update PR
-            1. Check fifth box [x] and update status to "Creating PR..."
+            1. Check sixth box [x] and update status to "Creating PR..."
             2. **ALWAYS work on a branch, NEVER push directly to main!**
-               - Pushing to main with "Fixes #N" auto-closes issues even if PR hasn't merged
                - Create branch: git checkout -b fix/${{ steps.context.outputs.number }}-description
             3. Commit with message: "fix: description\n\nRelates to #${{ steps.context.outputs.number }}"
-               - Use "Relates to #N" in commits (NOT "Fixes #N" - that auto-closes issues!)
+               - Use "Relates to #N" in commits (NOT "Fixes #N" - that auto-closes issues prematurely!)
             4. Push to branch and create PR:
-               gh pr create --title "fix: ..." --body "Fixes #${{ steps.context.outputs.number }}"
-               - Put "Fixes #N" only in PR description (closes issue when PR merges)
-            5. Check sixth box [x] and add PR link to progress comment
+               gh pr create --title "fix: ..." --body "Relates to #${{ steps.context.outputs.number }}"
+               - ALWAYS use "Relates to #N" (NOT "Fixes #N") - issues are closed by CI after deploy+smoke tests pass
+               - Using "Fixes #N" closes issues on PR merge, BEFORE code is deployed to production!
+            5. Check seventh box [x] and add PR link to progress comment
             6. Final status: "✅ PR created! Waiting for CI..."
 
             ## Status Label Management
@@ -554,7 +616,7 @@ jobs:
             ## IMPORTANT: Always @mention the human!
             When posting ANY comment (questions, status updates, escalations), always include "@${{ steps.context.outputs.issue_author }}" so they get notified.
 
-            If stuck for 30min or CI fails 3x, escalate to @jeremymatthewwerner (and cc @${{ steps.context.outputs.issue_author }}).
+            If stuck for 30min or CI fails 3x, escalate to @your-github-username (and cc @${{ steps.context.outputs.issue_author }}).
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           claude_args: |
             --model claude-opus-4-5-20251101
@@ -615,6 +677,7 @@ jobs:
 
             - [ ] 📖 Understanding the request
             - [ ] 🔍 Analyzing affected code
+            - [ ] 📋 Posting implementation plan
             - [ ] 🛠️ Implementing changes
             - [ ] ✅ Running tests
             - [ ] 📝 Creating/updating PR
@@ -635,6 +698,7 @@ jobs:
 
             - [x] 📖 Understanding the request
             - [x] 🔍 Analyzing affected code
+            - [x] 📋 Posted implementation plan
             - [ ] 🛠️ Implementing changes
             - [ ] ✅ Running tests
             - [ ] 📝 Creating/updating PR
@@ -735,6 +799,7 @@ jobs:
             Thanks @${{ steps.context.outputs.comment_author }}! Resuming implementation...
 
             - [x] 📖 Reading your response and previous context
+            - [x] 📋 Updated implementation plan
             - [x] 🛠️ Implementing the requested changes
             - [ ] ✅ Running tests and quality checks
             - [ ] 📝 Creating/updating PR
@@ -830,6 +895,7 @@ jobs:
 
           - [x] 📖 Reading issue and understanding requirements
           - [x] 🔍 Analyzing codebase and finding affected files
+          - [x] 📋 Posted implementation plan
           - [x] 🛠️ Implementing fix
           - [x] ✅ Running tests and quality checks
           - [x] 📝 Creating PR
@@ -898,6 +964,7 @@ jobs:
 
           - [x] 📖 Reading issue and understanding requirements
           - [x] 🔍 Analyzing codebase and finding affected files
+          - [x] 📋 Posted implementation plan
           - [x] 🛠️ Implementing fix
           - [x] ✅ Running tests and quality checks
           - [x] 📝 Creating PR
@@ -972,6 +1039,7 @@ jobs:
 
           - [x] 📖 Reading issue and understanding requirements
           - [x] 🔍 Analyzing codebase and finding affected files
+          - [x] 📋 Posted implementation plan
           - [x] 🛠️ Implementing fix
           - [x] ✅ Running tests and quality checks
           - [x] 📝 Creating PR
@@ -999,18 +1067,39 @@ jobs:
 
           cc @${ISSUE_AUTHOR}"
 
-                  # Explicitly close issue - GitHub's auto-close doesn't work when merging via API/CLI
-                  echo "Closing issue #${{ steps.context.outputs.number }}..."
-                  gh issue close ${{ steps.context.outputs.number }} \
-                    --comment "Closed by PR #${PR_NUMBER}" 2>/dev/null || echo "Issue already closed or not found"
+                  # NOTE: Do NOT close issue here - violates CLAUDE.md workflow rules!
+                  # Issues are closed by CI close-issues job AFTER deploy + smoke tests pass
+                  # This ensures issues are only marked "complete" when fixes are actually in production
+                  echo "PR #${PR_NUMBER} merged successfully - issue will close after deploy"
 
                   # Trigger CI/CD workflow via repository_dispatch since GITHUB_TOKEN merges don't trigger push events
                   echo "Triggering deploy via repository_dispatch..."
-                  # Note: Use -F (not -f) for client_payload so it's passed as JSON object, not string
-                  gh api repos/${{ github.repository }}/dispatches \
-                    -X POST \
-                    -f event_type=deploy-after-merge \
-                    -F client_payload='{"pr_number":"'"${PR_NUMBER}"'","issue_number":"${{ steps.context.outputs.number }}"}' || echo "Warning: Failed to trigger deploy dispatch"
+                  # Note: Must pipe full JSON body - gh api -F flag sends strings, not JSON objects
+                  DISPATCH_SUCCESS=false
+                  for attempt in 1 2 3; do
+                    if echo '{"event_type":"deploy-after-merge","client_payload":{"pr_number":"'"${PR_NUMBER}"'","issue_number":"${{ steps.context.outputs.number }}"}}' | \
+                       gh api repos/${{ github.repository }}/dispatches --input -; then
+                      DISPATCH_SUCCESS=true
+                      echo "Deploy dispatch sent successfully"
+                      break
+                    fi
+                    echo "Dispatch attempt $attempt failed, retrying..."
+                    sleep 2
+                  done
+
+                  if [ "$DISPATCH_SUCCESS" != "true" ]; then
+                    echo "::error::Failed to trigger deploy dispatch after 3 attempts"
+                    gh issue comment ${{ steps.context.outputs.number }} --body "## ⚠️ Deployment Warning
+
+          PR #${PR_NUMBER} was merged but the deployment trigger failed.
+
+          **Manual action required:** Please manually trigger a deployment:
+          \`\`\`
+          gh workflow run ci.yml --repo ${{ github.repository }}
+          \`\`\`
+
+          cc @your-github-username" 2>/dev/null || true
+                  fi
                 else
                   gh issue comment ${{ steps.context.outputs.number }} --body "## ✅ CI Passed
 
@@ -1044,7 +1133,7 @@ jobs:
           ISSUE_AUTHOR: ${{ steps.context.outputs.issue_author }}
         run: |
           # Count CI failure comments to prevent infinite retry loop
-          # Per CLAUDE.md: "Escalate to @jeremymatthewwerner when CI fails 3x on same issue"
+          # Per CLAUDE.md: "Escalate to @your-github-username when CI fails 3x on same issue"
           FAILURE_COUNT=$(gh issue view "$ISSUE_NUMBER" --comments --json comments \
             --jq '[.comments[] | select(.body | contains("❌ CI Failed"))] | length' 2>/dev/null || echo "0")
 
@@ -1063,7 +1152,7 @@ jobs:
           2. The issue may require manual investigation or a different approach
           3. After fixing, comment \`@claude please retry\` to trigger another attempt
 
-          Escalating to @jeremymatthewwerner for review.
+          Escalating to @your-github-username for review.
 
           cc @${ISSUE_AUTHOR}"
 
@@ -1116,6 +1205,7 @@ jobs:
 
           - [x] 📖 Reading issue and understanding requirements
           - [?] 🔍 Analyzing codebase... (timed out)
+          - [ ] 📋 Posting implementation plan
           - [ ] 🛠️ Implementing fix
           - [ ] ✅ Running tests and quality checks
           - [ ] 📝 Creating PR
@@ -1136,7 +1226,7 @@ jobs:
           2. Consider breaking this issue into smaller sub-issues
           3. Re-trigger by adding a comment with \`@claude please continue\`
 
-          Assigning to @jeremymatthewwerner for review.
+          Assigning to @your-github-username for review.
 
           cc @${ISSUE_AUTHOR}"
 
@@ -1159,6 +1249,7 @@ jobs:
 
           - [x] 📖 Reading issue and understanding requirements
           - [?] Work in progress... (workflow failed)
+          - [ ] 📋 Posting implementation plan
           - [ ] 🛠️ Implementing fix
           - [ ] ✅ Running tests and quality checks
           - [ ] 📝 Creating PR

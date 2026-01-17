@@ -2,6 +2,8 @@ name: Triage Agent
 on:
   issues:
     types: [opened]  # Only on NEW issues, not reopened (avoid re-triaging)
+  issue_comment:
+    types: [created]  # Trigger on @triage mentions for re-triaging
   workflow_dispatch:
     inputs:
       issue_number:
@@ -16,6 +18,19 @@ permissions:
 
 jobs:
   triage:
+    # Triggers on:
+    # 1. New issue opened
+    # 2. @triage mention in comment (for re-triaging)
+    # 3. Manual workflow dispatch
+    # SKIP if: factory-meta label is present (handled by Factory Manager only)
+    if: |
+      !contains(github.event.issue.labels.*.name, 'factory-meta') &&
+      (github.event_name == 'workflow_dispatch' ||
+       github.event_name == 'issues' ||
+       (github.event_name == 'issue_comment' &&
+        !github.event.issue.pull_request &&
+        (contains(github.event.comment.body, '@triage') ||
+         contains(github.event.comment.body, '@Triage'))))
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -46,9 +61,28 @@ jobs:
             echo "skip=false" >> $GITHUB_OUTPUT
           fi
 
+      # Pre-install Claude Code to avoid race condition lock issues
+      - name: Pre-install Claude Code
+        if: steps.check_triaged.outputs.skip != 'true'
+        run: |
+          # Clean up any stale lock files that might block installation
+          rm -f "$HOME/.claude/.installing" "$HOME/.claude/install.lock" 2>/dev/null || true
+
+          # Install Claude Code - match version used by claude-code-action
+          echo "Installing Claude Code..."
+          curl -fsSL https://claude.ai/install.sh | bash -s -- 2.0.74
+
+          # Add to PATH
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+          echo "$HOME/.claude/bin" >> $GITHUB_PATH
+
       - uses: anthropics/claude-code-action@v1
         if: steps.check_triaged.outputs.skip != 'true'
         with:
+          github_token: ${{ secrets.PAT_WITH_WORKFLOW_ACCESS }}
+          # Allow ALL users to trigger triage - safe because this workflow only has
+          # issues:write permission and only adds labels/comments
+          allowed_non_write_users: '*'
           prompt: |
             Read CLAUDE.md and .claude/agents/triage-product.md first.
 
@@ -57,16 +91,63 @@ jobs:
             2. Check for duplicates: gh issue list --search "similar terms"
             3. Classify as bug, feature/enhancement, or question
             4. Assign priority: P0 (critical), P1 (high), P2 (medium)
-            5. Add classification and priority labels FIRST: gh issue edit ${{ steps.issue.outputs.number }} --add-label "bug,priority-low" (or enhancement, P0, P1, P2, etc.)
-            6. Comment with your assessment: gh issue comment ${{ steps.issue.outputs.number }} --body "..."
-            7. IMPORTANT: Add 'ai-ready' label LAST, in a SEPARATE command: gh issue edit ${{ steps.issue.outputs.number }} --add-label "ai-ready"
-               This ensures the Code Agent triggers correctly (it checks for bug/enhancement labels when ai-ready is added).
+            5. Add classification and priority labels: gh issue edit ${{ steps.issue.outputs.number }} --add-label "bug,priority-low" (or enhancement, priority-high, etc.)
+            6. **INTELLIGENT ROUTING**: Determine which agent should handle this issue based on content:
 
-            Available labels: bug, enhancement, ai-ready, P0, P1, P2, needs-human
+            ## Agent Routing Rules
+
+            **Route to @roadmap if the issue contains:**
+            - Multiple phases (Phase 1, Phase 2, etc.)
+            - Progress tracking tables with phases
+            - Roadmap patterns that need sub-issue creation
+            - Multi-phase project planning
+
+            **Route to @factory-manager if the issue mentions:**
+            - Workflow problems (workflow, agent, triage, factory, CI/CD pipeline)
+            - Agent coordination issues (bot stuck, agent not triggering, escalation problems)
+            - Factory meta issues (how the autonomous factory works)
+
+            **Route to @devops if the issue mentions:**
+            - Infrastructure (railway, deploy, deployment, logs, database, production)
+            - Service health (health check, uptime, monitoring, incident)
+            - Environment variables or secrets management
+
+            **Route to @code for everything else:**
+            - Bug fixes (application bugs, errors, crashes)
+            - Feature requests (new functionality)
+            - Code changes (refactoring, optimization)
+            - Test issues (test failures, coverage - @code handles with @qa support)
+
+            7. Post your triage assessment with the APPROPRIATE @mention:
+               gh issue comment ${{ steps.issue.outputs.number }} --body "## 🤖 Triage Assessment
+
+            **Classification:** Bug/Enhancement
+            **Priority:** High/Medium/Low (P1/P2/P3)
+            **Status:** Ready for [agent type]
+
+            ### Analysis
+            [Your analysis here]
+
+            ### Next Steps
+            @[appropriate-agent] please investigate and fix this issue.
+
+            ---
+            *Auto-triaged by Triage Agent*"
+
+            IMPORTANT:
+            - Use EXACTLY ONE @mention in "Next Steps" - the appropriate agent for the issue type
+            - @roadmap for multi-phase roadmaps that need sub-issue creation
+            - @factory-manager for workflow/agent/factory issues
+            - @devops for infrastructure/deployment/production issues
+            - @code for bugs, features, and code changes (DEFAULT)
+            - Do NOT add 'ai-ready' label anymore - the @mention triggers the agent
+
+            Available labels: bug, enhancement, priority-high, priority-medium, priority-low, needs-human
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           claude_args: |
             --dangerously-skip-permissions
             --allowedTools "Bash(gh issue:*),Bash(gh search:*),Read,Glob,Grep"
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Use PAT so the @code comment triggers Code Agent workflow
+          GH_TOKEN: ${{ secrets.PAT_WITH_WORKFLOW_ACCESS }}
+          GITHUB_TOKEN: ${{ secrets.PAT_WITH_WORKFLOW_ACCESS }}

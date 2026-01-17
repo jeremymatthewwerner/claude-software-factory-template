@@ -4,8 +4,8 @@ name: Principal Engineer Agent
 # This agent takes a holistic approach to fix the factory, not just the symptom
 
 on:
-  issues:
-    types: [labeled]
+  issue_comment:
+    types: [created]
   workflow_dispatch:
     inputs:
       issue_number:
@@ -27,40 +27,90 @@ concurrency:
 
 jobs:
   investigate:
-    # Only trigger on needs-principal-engineer label (escalation from Code Agent)
+    # Triggers on:
+    # 1. @pe or @principal-engineer mention in comment
+    # 2. Manual workflow dispatch
+    # SKIP if: factory-meta label is present (handled by Factory Manager only)
+    # NOTE: Legacy needs-principal-engineer label trigger removed - use @pe mention instead
     if: |
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'issues' && github.event.label.name == 'needs-principal-engineer')
+      !contains(github.event.issue.labels.*.name, 'factory-meta') &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event_name == 'issue_comment' &&
+        !github.event.issue.pull_request &&
+        (contains(github.event.comment.body, '@pe') ||
+         contains(github.event.comment.body, '@PE') ||
+         contains(github.event.comment.body, '@principal-engineer'))))
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
     steps:
+      - name: Validate trigger is legitimate
+        id: validate
+        if: github.event_name == 'issue_comment'
+        env:
+          COMMENT_BODY: ${{ github.event.comment.body }}
+        run: |
+          # Strip code blocks from comment body to avoid false triggers
+          # Note: Using env var to safely handle special characters (quotes, apostrophes, etc.)
+
+          # Remove fenced code blocks (```...```)
+          STRIPPED=$(echo "$COMMENT_BODY" | sed '/^```/,/^```/d')
+
+          # Remove inline code (`...`)
+          STRIPPED=$(echo "$STRIPPED" | sed 's/`[^`]*`//g')
+
+          # Check if @pe mention exists in the stripped content
+          if echo "$STRIPPED" | grep -qi '@pe\|@PE\|@principal-engineer'; then
+            echo "trigger_valid=true" >> $GITHUB_OUTPUT
+            echo "✅ Valid @pe mention found outside code blocks"
+          else
+            echo "trigger_valid=false" >> $GITHUB_OUTPUT
+            echo "❌ @pe mention only found inside code blocks - skipping trigger"
+          fi
+
       - uses: actions/checkout@v4
+        if: steps.validate.outputs.trigger_valid != 'false'
         with:
           fetch-depth: 0
           token: ${{ secrets.PAT_WITH_WORKFLOW_ACCESS }}
 
+      # Configure git to use PAT for push operations (enables pushing workflow files)
+      # The checkout action embeds the token in the remote URL, so we must replace it
+      - name: Configure git with PAT
+        if: steps.validate.outputs.trigger_valid != 'false'
+        run: |
+          # Remove the embedded token from the remote URL (checkout embeds ghs_* token)
+          git remote set-url origin https://github.com/${{ github.repository }}.git
+          # Set extraheader with PAT that has workflow scope
+          git config --local http.https://github.com/.extraheader "AUTHORIZATION: basic $(echo -n 'x-access-token:${{ secrets.PAT_WITH_WORKFLOW_ACCESS }}' | base64)"
+
       - uses: actions/setup-node@v4
+        if: steps.validate.outputs.trigger_valid != 'false'
         with:
           node-version: '20'
           cache: 'npm'
         continue-on-error: true
 
       - name: Install uv
+        if: steps.validate.outputs.trigger_valid != 'false'
         uses: astral-sh/setup-uv@v6
 
       - name: Set up Python
+        if: steps.validate.outputs.trigger_valid != 'false'
         run: uv python install 3.11
 
       - name: Install frontend dependencies
+        if: steps.validate.outputs.trigger_valid != 'false'
         working-directory: frontend
         run: npm ci || true
 
       - name: Install backend dependencies
+        if: steps.validate.outputs.trigger_valid != 'false'
         working-directory: backend
         run: uv sync || true
 
       - name: Get issue context
+        if: steps.validate.outputs.trigger_valid != 'false'
         id: context
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -77,6 +127,7 @@ jobs:
           echo "issue_author=$ISSUE_AUTHOR" >> $GITHUB_OUTPUT
 
       - name: Update status
+        if: steps.validate.outputs.trigger_valid != 'false'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -86,6 +137,7 @@ jobs:
             --add-label "status:bot-working" 2>/dev/null || true
 
       - name: Create investigation comment
+        if: steps.validate.outputs.trigger_valid != 'false'
         id: progress
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -97,6 +149,7 @@ jobs:
           - [ ] 📖 Reading full issue history and understanding context
           - [ ] 📊 Analyzing CI failures and downloading artifacts
           - [ ] 🔍 Identifying root cause (code bug vs infrastructure vs workflow)
+          - [ ] 🎯 Documenting approach and solution strategy
           - [ ] 🛠️ Implementing fix
           - [ ] 🏭 Updating factory to prevent recurrence
           - [ ] ✅ Verifying fix works
@@ -115,6 +168,7 @@ jobs:
           echo "comment_id=$COMMENT_ID" >> $GITHUB_OUTPUT
 
       - name: Run Principal Engineer
+        if: steps.validate.outputs.trigger_valid != 'false'
         uses: anthropics/claude-code-action@v1
         with:
           prompt: |
@@ -256,14 +310,77 @@ jobs:
             3. The original issue will auto-retry once factory is fixed
             4. Update CLAUDE.md with the learning
 
-            ### Step 4: Implement Fix
+            ### Step 4: Document Approach (REQUIRED!)
+
+            **Before implementing ANY changes**, update your progress comment with a detailed approach:
+
+            ```bash
+            gh api repos/${{ github.repository }}/issues/comments/${{ steps.progress.outputs.comment_id }} \
+              -X PATCH -f body="## 🔧 Principal Engineer Investigation
+
+            - [x] 📖 Reading full issue history and understanding context
+            - [x] 📊 Analyzing CI failures and downloading artifacts
+            - [x] 🔍 Identifying root cause (code bug vs infrastructure vs workflow)
+            - [x] 🎯 Documenting approach and solution strategy
+            - [ ] 🛠️ Implementing fix
+            - [ ] 🏭 Updating factory to prevent recurrence
+            - [ ] ✅ Verifying fix works
+
+            **Status:** Ready to implement
+            **Workflow:** [View logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+
+            ---
+            ## 🎯 Approach & Solution Strategy
+
+            ### Root Cause Analysis
+            **Category:** [Code Bug | Test Infrastructure | Workflow/Agent Issue | Architecture | Factory Bug]
+
+            **What Happened:**
+            [Detailed explanation of what went wrong]
+
+            **Why Code Agent Got Stuck:**
+            [Explain the specific blocker]
+
+            ### E2E/CI Log Analysis (if applicable)
+            \\\`\\\`\\\`
+            [Key excerpts from logs showing the actual error]
+            \\\`\\\`\\\`
+
+            ### Solution Strategy
+            **Immediate Fix:**
+            1. [First change]
+            2. [Second change]
+
+            **Factory Improvement (prevent recurrence):**
+            - [How to prevent similar issues]
+
+            ### Impact Assessment
+            - **Risk Level:** [Low | Medium | High]
+            - **Files Affected:** [list files]
+            - **Breaking Changes:** [None | describe]
+
+            ### Rationale
+            [Explain WHY this approach was chosen over alternatives]
+
+            cc @${{ steps.context.outputs.issue_author }}"
+            ```
+
+            **Why this matters:**
+            - Provides visibility into PE's reasoning before changes are made
+            - Creates audit trail for factory-level decisions
+            - Allows stakeholders to intervene early if the approach seems wrong
+            - Documents learnings for future similar issues
+
+            **Do NOT skip this step!** The approach documentation is mandatory before implementation.
+
+            ### Step 5: Implement Fix
             Based on root cause:
             - Create branch: `git checkout -b fix/${{ steps.context.outputs.number }}-pe-fix`
             - Make necessary changes
             - Run quality gates
             - Create PR with "Fixes #${{ steps.context.outputs.number }}" in body
 
-            ### Step 5: Prevent Recurrence (CRITICAL!)
+            ### Step 6: Prevent Recurrence (CRITICAL!)
             This is what makes you different from Code Agent:
 
             **Always ask:** "How do I prevent this class of problem from happening again?"
@@ -275,7 +392,26 @@ jobs:
             - Add better error handling to code
             - Create new tests for edge cases
 
-            Document your factory improvement in the PR description.
+            **IMPORTANT: Document factory learnings for posterity!**
+            After fixing a factory issue, create a closed `factory-improvement` issue:
+            ```bash
+            gh issue create --label "factory-improvement" \
+              --title "Factory Fix: [brief description]" \
+              --body "## Problem
+            [What went wrong]
+
+            ## Root Cause
+            [Why it happened]
+
+            ## Solution
+            [What you changed]
+
+            ## PR
+            PR #[number]"
+
+            gh issue close [new_issue_number] --comment "Fixed in PR #[number]"
+            ```
+            This creates a searchable audit trail of factory learnings.
 
             ## Progress Comment Format
             Update comment #${{ steps.progress.outputs.comment_id }} as you work:
@@ -286,8 +422,10 @@ jobs:
             - [x] 📖 Reading full issue history and understanding context
             - [x] 📊 Analyzing CI failures and downloading artifacts
             - [x] 🔍 Identifying root cause (code bug vs infrastructure vs workflow)
+            - [x] 🎯 Documenting approach and solution strategy
             - [ ] 🛠️ Implementing fix
             - [ ] 🏭 Updating factory to prevent recurrence
+            - [ ] 📝 Creating factory-improvement issue for audit trail
             - [ ] ✅ Verifying fix works
 
             **Status:** [current status]
@@ -308,6 +446,32 @@ jobs:
 
             ### E2E Logs Analysis (if applicable)
             [Key findings from backend.log or Playwright reports]
+
+            ---
+            ## 🎯 Approach & Solution Strategy
+
+            ### Root Cause Analysis
+            **Category:** [Code Bug | Test Infrastructure | Workflow/Agent Issue | Architecture | Factory Bug]
+
+            **What Happened:** [Detailed explanation of what went wrong]
+
+            **Why Code Agent Got Stuck:** [Explain the specific blocker]
+
+            ### Solution Strategy
+            **Immediate Fix:**
+            1. [First change]
+            2. [Second change]
+
+            **Factory Improvement (prevent recurrence):**
+            - [How to prevent similar issues]
+
+            ### Impact Assessment
+            - **Risk Level:** [Low | Medium | High]
+            - **Files Affected:** [list files]
+            - **Breaking Changes:** [None | describe]
+
+            ### Rationale
+            [Explain WHY this approach was chosen over alternatives]
 
             cc @${{ steps.context.outputs.issue_author }}"
             ```
@@ -342,7 +506,7 @@ jobs:
             1. Document everything you tried (with specifics)
             2. Explain WHY this needs human judgment (not just "I'm stuck")
             3. Provide 2-3 specific options for the human to choose from
-            4. @mention @jeremymatthewwerner with the specific decision needed
+            4. @mention @your-github-username with the specific decision needed
             5. Set label: status:awaiting-human
 
             **Remember:** Every human escalation is a factory bug. If you're escalating for
@@ -358,7 +522,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.PAT_WITH_WORKFLOW_ACCESS }}
 
       - name: Update status on success
-        if: success()
+        if: success() && steps.validate.outputs.trigger_valid != 'false'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -366,7 +530,7 @@ jobs:
             --remove-label "status:bot-working" 2>/dev/null || true
 
       - name: Handle failure - Factory Diagnosis
-        if: failure()
+        if: failure() && steps.validate.outputs.trigger_valid != 'false'
         id: diagnosis
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -406,7 +570,7 @@ jobs:
           echo "EOF" >> $GITHUB_OUTPUT
 
       - name: Handle failure - Update and Escalate
-        if: failure()
+        if: failure() && steps.validate.outputs.trigger_valid != 'false'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PROGRESS_COMMENT_ID: ${{ steps.progress.outputs.comment_id }}
@@ -433,7 +597,7 @@ jobs:
 
           $(if [ \"$IS_FACTORY_BUG\" = \"true\" ]; then echo \"⚠️ This appears to be a factory/workflow bug, not a code bug. A human should fix the workflow file, then retry.\"; else echo \"This may require human review to determine the root cause.\"; fi)
 
-          @jeremymatthewwerner - please investigate.
+          @your-github-username - please investigate.
 
           cc @${ISSUE_AUTHOR}" 2>/dev/null || true
           fi
@@ -452,7 +616,7 @@ jobs:
 
           [View workflow logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
 
-          @jeremymatthewwerner
+          @your-github-username
 
           cc @${ISSUE_AUTHOR}"
           else
@@ -466,7 +630,7 @@ jobs:
           1. Check the [workflow logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
           2. Determine if this is a code bug, workflow bug, or needs a design decision
 
-          @jeremymatthewwerner
+          @your-github-username
 
           cc @${ISSUE_AUTHOR}"
           fi

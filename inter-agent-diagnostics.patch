@@ -1,0 +1,200 @@
+diff --git a/.claude/agents/bug-fixer.md b/.claude/agents/bug-fixer.md
+index 450ecb5..14bd32a 100644
+--- a/.claude/agents/bug-fixer.md
++++ b/.claude/agents/bug-fixer.md
+@@ -6,6 +6,13 @@ tools: Read, Write, Edit, Bash, Glob, Grep
+ 
+ # Bug Fixer Agent
+ 
++## Production Diagnostics
++
++Need to check production data? Ask the DevOps Agent:
++- Post `@devops please check <what you need>` on the issue
++- DevOps will query production and post results
++- Example: `@devops check user logs` or `@devops check database status`
++
+ ## You Have Full Permissions - Use Them!
+ 
+ You have `PAT_WITH_WORKFLOW_ACCESS` granting FULL repository access:
+@@ -16,7 +23,7 @@ You have `PAT_WITH_WORKFLOW_ACCESS` granting FULL repository access:
+ ## Steps
+ 
+ 1. Read CLAUDE.md for quality gates
+-2. Diagnose before coding
++2. Diagnose before coding (use @devops for production data if needed)
+ 3. Create branch: `fix/<issue>-<desc>`
+ 4. Implement minimal fix
+ 5. Add regression test
+diff --git a/.claude/agents/devops-sre.md b/.claude/agents/devops-sre.md
+index 472d361..aeda4eb 100644
+--- a/.claude/agents/devops-sre.md
++++ b/.claude/agents/devops-sre.md
+@@ -6,6 +6,16 @@ tools: Read, Write, Edit, Bash, Glob, Grep, WebFetch
+ 
+ # DevOps Agent
+ 
++## Inter-Agent Diagnostics
++
++Other agents can request production diagnostics by commenting `@devops` on issues.
++This agent will:
++1. Query Railway logs and service status
++2. Check relevant production data
++3. Post results back to the issue
++
++## Health Monitoring
++
+ Health checks run every 5 minutes against production:
+ - Backend health endpoint
+ - Backend version endpoint
+diff --git a/.github/workflows/bug-fix.yml b/.github/workflows/bug-fix.yml
+--- a/.github/workflows/bug-fix.yml
++++ b/.github/workflows/bug-fix.yml
+@@ -374,6 +374,24 @@ jobs:
+ 
+             **If you skip log analysis and just guess at fixes, you will fail repeatedly!**
+ 
++            ## 🔍 PRODUCTION DIAGNOSTICS - Ask DevOps Agent!
++
++            **Need to check production data to diagnose an issue?** You can request help from the DevOps Agent:
++
++            1. Post a comment on the issue: `@devops please check <what you need>`
++            2. DevOps Agent will query production and post results
++            3. Wait for the response before continuing
++
++            **Example requests:**
++            - `@devops check user logs for authentication errors`
++            - `@devops check database connection status`
++            - `@devops check recent backend logs`
++
++            This is useful when you need to verify:
++            - If a user exists or has certain data in production
++            - If an API is returning expected responses
++            - What errors are occurring in production logs
++
+             ## IMPORTANT: Check for Previous Attempts First!
+ 
+             Before starting fresh, check if there's already work done on this issue:
+diff --git a/.github/workflows/devops.yml b/.github/workflows/devops.yml
+--- a/.github/workflows/devops.yml
++++ b/.github/workflows/devops.yml
+@@ -3,6 +3,8 @@ name: DevOps Agent
+ on:
+   push:
+     branches: [main]
++  issue_comment:
++    types: [created]
+   schedule:
+     # Run health checks every 5 minutes
+     - cron: '*/5 * * * *'
+@@ -50,6 +52,111 @@ env:
+   FAILURE_THRESHOLD: 2
+ 
+ jobs:
++  # ===========================================
++  # DIAGNOSTIC REQUESTS (triggered by @devops mentions)
++  # ===========================================
++  diagnostic-request:
++    if: |
++      github.event_name == 'issue_comment' &&
++      !github.event.issue.pull_request &&
++      (contains(github.event.comment.body, '@devops') ||
++       contains(github.event.comment.body, '@DevOps'))
++    runs-on: ubuntu-latest
++    timeout-minutes: 10
++    steps:
++      - uses: actions/checkout@v4
++
++      - name: Acknowledge request
++        env:
++          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
++        run: |
++          gh issue comment ${{ github.event.issue.number }} --body "## 🔧 DevOps Agent - Diagnostic Request Received
++
++          **Requested by:** @${{ github.event.comment.user.login }}
++          **Request:** Running diagnostics...
++
++          **Status:** Gathering production data...
++          [View workflow logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})"
++
++      - name: Install Railway CLI
++        continue-on-error: true
++        run: |
++          for attempt in 1 2 3; do
++            echo "Railway CLI install attempt $attempt..."
++            if curl -fsSL https://railway.app/install.sh | sh; then
++              echo "Railway CLI installed successfully"
++              break
++            fi
++            if [ $attempt -lt 3 ]; then
++              sleep $((2 ** attempt))
++            fi
++          done
++          echo "$HOME/.railway/bin" >> $GITHUB_PATH
++
++      - name: Run diagnostic query
++        id: diagnostics
++        continue-on-error: true
++        env:
++          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
++          PRODUCTION_BACKEND_URL: ${{ secrets.PRODUCTION_BACKEND_URL }}
++          PRODUCTION_FRONTEND_URL: ${{ secrets.PRODUCTION_FRONTEND_URL }}
++        run: |
++          echo "=== Health Check ===" > /tmp/diagnostics.txt
++
++          # Backend health
++          if [ -n "$PRODUCTION_BACKEND_URL" ]; then
++            echo "Backend ($PRODUCTION_BACKEND_URL/health):" >> /tmp/diagnostics.txt
++            curl -s --max-time 10 "$PRODUCTION_BACKEND_URL/health" >> /tmp/diagnostics.txt 2>&1 || echo "FAILED" >> /tmp/diagnostics.txt
++            echo "" >> /tmp/diagnostics.txt
++          fi
++
++          # Frontend health
++          if [ -n "$PRODUCTION_FRONTEND_URL" ]; then
++            echo "Frontend ($PRODUCTION_FRONTEND_URL):" >> /tmp/diagnostics.txt
++            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$PRODUCTION_FRONTEND_URL" 2>&1)
++            echo "HTTP $HTTP_CODE" >> /tmp/diagnostics.txt
++            echo "" >> /tmp/diagnostics.txt
++          fi
++
++          echo "=== Railway Service Status ===" >> /tmp/diagnostics.txt
++          railway status >> /tmp/diagnostics.txt 2>&1 || echo "Railway CLI not configured" >> /tmp/diagnostics.txt
++          echo "" >> /tmp/diagnostics.txt
++
++          echo "=== Recent Backend Logs (last 30 lines) ===" >> /tmp/diagnostics.txt
++          railway logs --service backend --limit 30 >> /tmp/diagnostics.txt 2>&1 || echo "Unable to fetch logs" >> /tmp/diagnostics.txt
++
++          # Look for user-related logs if the comment mentions a user
++          COMMENT="${{ github.event.comment.body }}"
++          if echo "$COMMENT" | grep -qiE 'user|email|@'; then
++            echo "" >> /tmp/diagnostics.txt
++            echo "=== User-Related Logs ===" >> /tmp/diagnostics.txt
++            railway logs --service backend --limit 100 2>&1 | grep -iE 'user|email|auth|login|register' | tail -20 >> /tmp/diagnostics.txt || true
++          fi
++
++          cat /tmp/diagnostics.txt
++
++      - name: Post diagnostic results
++        env:
++          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
++        run: |
++          DIAGNOSTICS=$(cat /tmp/diagnostics.txt)
++
++          gh issue comment ${{ github.event.issue.number }} --body "## 🔧 DevOps Agent - Diagnostic Results
++
++          **Request:** ${{ github.event.comment.body }}
++
++          <details>
++          <summary>📊 Diagnostic Output (click to expand)</summary>
++
++          \`\`\`
++          $DIAGNOSTICS
++          \`\`\`
++
++          </details>
++
++          ---
++          *If you need more specific information, reply with another @devops request.*"
++
+   # ===========================================
+   # HEALTH MONITORING (runs every 5 minutes)
+   # ===========================================
