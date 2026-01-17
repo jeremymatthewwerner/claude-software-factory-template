@@ -216,9 +216,10 @@ When deploying code changes:
 1. Make changes with write_file
 2. Build: \`cd services/slack-bot && npm run build\`
 3. Commit: \`git add -A && git commit -m "message"\`
-4. Push: \`git push origin <branch>\`
-5. Verify: \`git log -1 --oneline\`
+4. Push to main: \`git push origin main\`
+5. Verify: \`git log origin/main -1 --oneline\`
 
+**ALWAYS push to \`main\` branch - Railway deploys from main.**
 **Show the actual git push output. If it fails, report the error clearly.**
 
 The git remote is pre-configured with authentication.`;
