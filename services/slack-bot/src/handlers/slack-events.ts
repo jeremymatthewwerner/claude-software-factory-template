@@ -195,6 +195,78 @@ function getInitialPhase(operationType: string): string {
 }
 
 /**
+ * Find natural break points in streaming content
+ */
+interface BreakPoint {
+  position: number;
+  type?: 'analysis' | 'result' | 'progress' | 'error';
+}
+
+function findNaturalBreaks(content: string, startPosition: number): BreakPoint[] {
+  const breaks: BreakPoint[] = [];
+  const searchContent = content.substring(startPosition);
+
+  // Look for sentence endings first
+  const sentencePattern = /[.!?]+\s+/g;
+  let match;
+  while ((match = sentencePattern.exec(searchContent)) !== null) {
+    const position = startPosition + match.index + match[0].length;
+    breaks.push({
+      position,
+      type: inferContentType(content.substring(Math.max(0, position - 200), position))
+    });
+  }
+
+  // Look for paragraph breaks
+  const paragraphPattern = /\n\s*\n/g;
+  while ((match = paragraphPattern.exec(searchContent)) !== null) {
+    const position = startPosition + match.index + match[0].length;
+    breaks.push({
+      position,
+      type: inferContentType(content.substring(Math.max(0, position - 200), position))
+    });
+  }
+
+  // Look for list items or bullet points
+  const listPattern = /\n\s*[-*•]\s+/g;
+  while ((match = listPattern.exec(searchContent)) !== null) {
+    const position = startPosition + match.index;
+    breaks.push({
+      position,
+      type: 'progress'
+    });
+  }
+
+  // Sort by position and return unique positions
+  const uniqueBreaks = Array.from(new Map(
+    breaks.map(b => [b.position, b])
+  ).values()).sort((a, b) => a.position - b.position);
+
+  return uniqueBreaks;
+}
+
+/**
+ * Infer content type from text context
+ */
+function inferContentType(text: string): 'analysis' | 'result' | 'progress' | 'error' {
+  const lowerText = text.toLowerCase();
+
+  if (lowerText.includes('error') || lowerText.includes('failed')) {
+    return 'error';
+  }
+
+  if (lowerText.includes('found') || lowerText.includes('analyzing') || lowerText.includes('examining')) {
+    return 'analysis';
+  }
+
+  if (lowerText.includes('✅') || lowerText.includes('completed') || lowerText.includes('result')) {
+    return 'result';
+  }
+
+  return 'progress';
+}
+
+/**
  * Extract meaningful content from streaming updates
  */
 function extractMeaningfulUpdate(content: string): string {
@@ -306,29 +378,43 @@ async function handleMessage(
       let lastChunkLength = 0;
       const chunkThreshold = 200; // Minimum chars for an update
 
+      // Set up intelligent streaming buffer
+      let streamBuffer = '';
+      let lastSentPosition = 0;
+      const minChunkSize = 100; // Smaller threshold for more frequent updates
+
       const result = await routeMessage(text, session, async (chunk) => {
-        // Only post updates if we have substantial new content
-        if (chunk.length - lastChunkLength > chunkThreshold) {
-          updateCount++;
+        // Add new chunk to buffer
+        streamBuffer += chunk;
 
-          // Extract meaningful sections from the streaming content
-          const newContent = chunk.substring(lastChunkLength);
-          const cleanedContent = extractMeaningfulUpdate(newContent);
+        // Look for natural break points in the buffer
+        const breakPoints = findNaturalBreaks(streamBuffer, lastSentPosition);
 
-          if (cleanedContent.trim()) {
-            await ProgressiveMessenger.postUpdate(sessionKey, {
-              id: `update-${updateCount}`,
-              type: determineUpdateType(cleanedContent, updateCount),
-              content: cleanedContent,
-              metadata: {
-                step: updateCount,
-                phase: getPhaseForUpdate(operationType, updateCount),
-                timestamp: Date.now()
-              }
-            });
+        for (const breakPoint of breakPoints) {
+          if (breakPoint.position > lastSentPosition + minChunkSize) {
+            updateCount++;
+
+            // Extract content from last position to break point
+            const content = streamBuffer.substring(lastSentPosition, breakPoint.position).trim();
+
+            if (content.length > 20) { // Ensure meaningful content
+              await ProgressiveMessenger.postUpdate(sessionKey, {
+                id: `update-${updateCount}`,
+                type: breakPoint.type || determineUpdateType(content, updateCount),
+                content: content,
+                metadata: {
+                  step: updateCount,
+                  phase: getPhaseForUpdate(operationType, updateCount),
+                  timestamp: Date.now()
+                }
+              });
+
+              lastSentPosition = breakPoint.position;
+
+              // Add small delay between updates for better UX
+              await new Promise(resolve => setTimeout(resolve, 1000));
+            }
           }
-
-          lastChunkLength = chunk.length;
         }
       });
 
