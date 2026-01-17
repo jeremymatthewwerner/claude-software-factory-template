@@ -207,9 +207,10 @@ You have access to tools for file operations and bash commands. Use them to help
 ## Response Formatting
 Keep responses SHORT and scannable for Slack:
 - Use bullet points for lists
-- Use \`code\` for file paths and commands
+- Use \`code\` for file paths and commands  
 - Keep explanations brief - 1-2 sentences max
-- Don't repeat tool outputs verbatim
+- Use line breaks appropriately for readability
+- Avoid excessive decoration or emojis
 
 ## Git Operations (CRITICAL)
 When deploying code changes:
@@ -334,9 +335,9 @@ export async function executeWithDirectSDK(
               ? (input.command as string).slice(0, 60) + '...'
               : input.command;
             if (result.startsWith('Error')) {
-              toolDisplay = `❌ \`$ ${cmd}\`\n\`\`\`\n${resultPreview}\n\`\`\``;
+              toolDisplay = `\`$ ${cmd}\`\n\`\`\`\n${resultPreview}\n\`\`\``;
             } else {
-              toolDisplay = `✅ \`$ ${cmd}\``;
+              toolDisplay = `\`$ ${cmd}\``;
               // Only show output if it's meaningful
               if (result && result !== '(no output)' && result.length > 0) {
                 toolDisplay += `\n\`\`\`\n${resultPreview}\n\`\`\``;
@@ -345,19 +346,19 @@ export async function executeWithDirectSDK(
             break;
           }
           case 'read_file':
-            toolDisplay = `📄 Read \`${input.path}\``;
+            toolDisplay = `Read \`${input.path}\``;
             break;
           case 'write_file':
-            toolDisplay = `✅ Wrote \`${input.path}\``;
+            toolDisplay = `Wrote \`${input.path}\``;
             break;
           case 'list_files':
-            toolDisplay = `📁 Listed \`${input.path}\``;
+            toolDisplay = `Listed \`${input.path}\``;
             break;
           case 'search_files':
-            toolDisplay = `🔍 Found files matching \`${input.pattern}\``;
+            toolDisplay = `Found files matching \`${input.pattern}\``;
             break;
           case 'grep':
-            toolDisplay = `🔎 Searched \`${input.pattern}\``;
+            toolDisplay = `Searched \`${input.pattern}\``;
             break;
           default:
             toolDisplay = `[${toolUse.name}]`;
@@ -410,7 +411,7 @@ export async function executeWithDirectSDK(
     logger.error('Direct SDK error', { error: errorMessage, userId, threadKey });
 
     return {
-      content: `❌ Error: ${errorMessage}`,
+      content: `Error: ${errorMessage}`,
       toolsUsed,
       error: errorMessage,
     };

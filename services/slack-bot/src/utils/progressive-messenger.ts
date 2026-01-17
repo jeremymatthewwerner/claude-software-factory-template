@@ -1,6 +1,6 @@
 /**
- * Progressive Messenger - Breaks updates into visually distinct posts
- * Provides better UX with timestamps, visual separation, and forwardable chunks
+ * Progressive Messenger - Simple, clean updates for Slack
+ * Provides better UX with minimal decoration and readable formatting
  */
 
 import logger from './logger.js';
@@ -30,7 +30,6 @@ export interface ProgressiveSession {
 export class ProgressiveMessenger {
   private static sessions = new Map<string, ProgressiveSession>();
   private static readonly MIN_UPDATE_INTERVAL = 2000; // 2 seconds between updates
-  private static readonly THINKING_EMOJIS = ['🤔', '💭', '🧠', '⚡', '✨'];
 
   /**
    * Start a progressive session with thinking animation
@@ -39,7 +38,7 @@ export class ProgressiveMessenger {
     channelId: string,
     threadTs: string,
     client: any,
-    initialPhase = 'Starting to work'
+    initialPhase = 'Working'
   ): Promise<string> {
     const sessionKey = `${channelId}-${threadTs}`;
 
@@ -94,7 +93,7 @@ export class ProgressiveMessenger {
         await this.clearThinking(session);
       }
 
-      // Format and post the update
+      // Format and post the update - simple and clean
       const formattedMessage = this.formatUpdate(update);
       const slackMessage = markdownToSlack(formattedMessage);
 
@@ -149,19 +148,8 @@ export class ProgressiveMessenger {
         await this.clearThinking(session);
       }
 
-      // Post completion update
-      const completionUpdate: ProgressiveUpdate = {
-        id: `complete-${Date.now()}`,
-        type: 'result',
-        content: finalResult,
-        metadata: {
-          timestamp: Date.now(),
-          ...metadata
-        }
-      };
-
-      const formattedMessage = this.formatUpdate(completionUpdate, true);
-      const slackMessage = markdownToSlack(formattedMessage);
+      // Post completion update - simple formatting
+      const slackMessage = markdownToSlack(finalResult);
 
       await session.client.chat.postMessage({
         channel: session.channelId,
@@ -183,7 +171,7 @@ export class ProgressiveMessenger {
   }
 
   /**
-   * Post thinking/working animation message
+   * Post thinking/working animation message - minimal
    */
   private static async postThinking(
     channelId: string,
@@ -191,8 +179,7 @@ export class ProgressiveMessenger {
     client: any,
     phase: string
   ): Promise<string> {
-    const emoji = this.THINKING_EMOJIS[Math.floor(Math.random() * this.THINKING_EMOJIS.length)];
-    const message = `${emoji} *${phase}...*`;
+    const message = `_${phase}..._`;
 
     const response = await client.chat.postMessage({
       channel: channelId,
@@ -223,7 +210,7 @@ export class ProgressiveMessenger {
         await session.client.chat.update({
           channel: session.channelId,
           ts: session.thinkingMessageTs,
-          text: '✅ _Complete_'
+          text: '_Complete_'
         });
       } catch (fallbackError) {
         logger.warn('Failed to update thinking message', { fallbackError });
@@ -234,55 +221,31 @@ export class ProgressiveMessenger {
   }
 
   /**
-   * Format an update with visual styling
+   * Format an update with minimal styling
    */
-  private static formatUpdate(update: ProgressiveUpdate, isFinal = false): string {
-    const { type, content, metadata = {} } = update;
+  private static formatUpdate(update: ProgressiveUpdate): string {
+    const { content, metadata = {} } = update;
 
-    // Visual separators and emojis for different update types
-    const typeConfig = {
-      thinking: { emoji: '🤔', title: 'Thinking', color: '🔵' },
-      analysis: { emoji: '🔍', title: 'Analysis', color: '🟡' },
-      progress: { emoji: '⚙️', title: 'Progress', color: '🟠' },
-      result: { emoji: '✅', title: 'Result', color: '🟢' },
-      error: { emoji: '❌', title: 'Error', color: '🔴' }
-    };
-
-    const config = typeConfig[type] || typeConfig.progress;
-
-    // Create visual separator
-    const separator = isFinal ? '═'.repeat(40) : '─'.repeat(30);
-
-    // Build message with structure
-    let message = '';
-
-    // Header with timestamp
-    if (isFinal) {
-      message += `\n${separator}\n`;
+    // Simple prefix based on type
+    let prefix = '';
+    switch (update.type) {
+      case 'error':
+        prefix = 'Error: ';
+        break;
+      case 'result':
+        prefix = '';  // No prefix for results
+        break;
+      default:
+        prefix = '';  // Clean, no decoration for most updates
     }
-
-    message += `${config.color} **${config.emoji} ${config.title}**`;
 
     // Add step info if available
+    let stepInfo = '';
     if (metadata.step && metadata.totalSteps) {
-      message += ` (${metadata.step}/${metadata.totalSteps})`;
+      stepInfo = ` (${metadata.step}/${metadata.totalSteps})`;
     }
 
-    if (metadata.phase) {
-      message += ` - ${metadata.phase}`;
-    }
-
-    message += '\n\n';
-
-    // Content
-    message += content;
-
-    // Footer separator for final messages
-    if (isFinal) {
-      message += `\n\n${separator}`;
-    }
-
-    return message;
+    return `${prefix}${content}${stepInfo}`;
   }
 
   /**
@@ -290,9 +253,9 @@ export class ProgressiveMessenger {
    */
   private static getNextPhase(update: ProgressiveUpdate): string | null {
     const phaseMap: Record<string, string> = {
-      thinking: 'Analyzing requirements',
-      analysis: 'Implementing solution',
-      progress: 'Finalizing results'
+      thinking: 'Analyzing',
+      analysis: 'Implementing',
+      progress: 'Finishing'
     };
 
     return phaseMap[update.type] || null;
