@@ -198,28 +198,30 @@ const SYSTEM_PROMPT = `You are Claude, a helpful AI assistant running in a Slack
 
 You have access to tools for file operations and bash commands. Use them to help users with their requests.
 
-Working Directory: /tmp/repo (a clone of the GitHub repository)
-- services/slack-bot/ - This Slack bot (TypeScript/Node.js)
-- .github/workflows/ - GitHub Actions for CI/CD
-- CLAUDE.md, README.md - Documentation
+## Working Directory
+\`/tmp/repo\` - a clone of the GitHub repository:
+- \`services/slack-bot/\` - This Slack bot (TypeScript/Node.js)
+- \`.github/workflows/\` - GitHub Actions for CI/CD
+- \`CLAUDE.md\`, \`README.md\` - Documentation
 
-## CRITICAL: Git Operations Verification
+## Response Formatting
+Keep responses SHORT and scannable for Slack:
+- Use bullet points for lists
+- Use \`code\` for file paths and commands
+- Keep explanations brief - 1-2 sentences max
+- Don't repeat tool outputs verbatim
 
-When making code changes and deploying:
-1. Read files first to understand the current implementation
-2. Make targeted changes using write_file
-3. Run: npm run build (in services/slack-bot/) - SHOW THE OUTPUT
-4. Run: git status - SHOW THE OUTPUT
-5. Run: git add -A && git commit -m "description" - SHOW THE OUTPUT
-6. Run: git push origin <branch> - SHOW THE FULL OUTPUT
-7. VERIFY with: git log -1 --oneline - SHOW THE OUTPUT to confirm push succeeded
+## Git Operations (CRITICAL)
+When deploying code changes:
+1. Make changes with write_file
+2. Build: \`cd services/slack-bot && npm run build\`
+3. Commit: \`git add -A && git commit -m "message"\`
+4. Push: \`git push origin <branch>\`
+5. Verify: \`git log -1 --oneline\`
 
-**NEVER claim a push succeeded without showing the actual git push output.**
-**If git push fails, report the error - don't pretend it worked.**
+**Show the actual git push output. If it fails, report the error clearly.**
 
-The git remote is pre-configured with authentication. If push fails with permission errors, report this clearly.
-
-Be concise in responses - this is Slack chat, not documentation.`;
+The git remote is pre-configured with authentication.`;
 
 /**
  * Execute a conversation with Claude using direct SDK
@@ -313,27 +315,48 @@ export async function executeWithDirectSDK(
         logger.info('Executing tool', { tool: toolUse.name, input: toolUse.input });
         toolsUsed.push(toolUse.name);
 
-        // Format tool invocation for display
         const input = toolUse.input as Record<string, unknown>;
+
+        const result = executeTool(
+          toolUse.name,
+          input,
+          workingDir
+        );
+
+        // Format tool invocation + result for display
         let toolDisplay = '';
+        const resultPreview = result.length > 200 ? result.slice(0, 200) + '...' : result;
+
         switch (toolUse.name) {
-          case 'run_bash':
-            toolDisplay = `\`$ ${input.command}\``;
+          case 'run_bash': {
+            const cmd = (input.command as string).length > 60
+              ? (input.command as string).slice(0, 60) + '...'
+              : input.command;
+            if (result.startsWith('Error')) {
+              toolDisplay = `❌ \`$ ${cmd}\`\n\`\`\`\n${resultPreview}\n\`\`\``;
+            } else {
+              toolDisplay = `✅ \`$ ${cmd}\``;
+              // Only show output if it's meaningful
+              if (result && result !== '(no output)' && result.length > 0) {
+                toolDisplay += `\n\`\`\`\n${resultPreview}\n\`\`\``;
+              }
+            }
             break;
+          }
           case 'read_file':
-            toolDisplay = `📄 Reading \`${input.path}\``;
+            toolDisplay = `📄 Read \`${input.path}\``;
             break;
           case 'write_file':
-            toolDisplay = `✏️ Writing \`${input.path}\``;
+            toolDisplay = `✅ Wrote \`${input.path}\``;
             break;
           case 'list_files':
-            toolDisplay = `📁 Listing \`${input.path}\``;
+            toolDisplay = `📁 Listed \`${input.path}\``;
             break;
           case 'search_files':
-            toolDisplay = `🔍 Searching for \`${input.pattern}\` in \`${input.path}\``;
+            toolDisplay = `🔍 Found files matching \`${input.pattern}\``;
             break;
           case 'grep':
-            toolDisplay = `🔎 Grep \`${input.pattern}\` in \`${input.path}\``;
+            toolDisplay = `🔎 Searched \`${input.pattern}\``;
             break;
           default:
             toolDisplay = `[${toolUse.name}]`;
@@ -341,12 +364,6 @@ export async function executeWithDirectSDK(
 
         // Notify progress with useful context
         options.onProgress?.(`\n${toolDisplay}\n`);
-
-        const result = executeTool(
-          toolUse.name,
-          input,
-          workingDir
-        );
 
         toolResults.push({
           type: 'tool_result',
