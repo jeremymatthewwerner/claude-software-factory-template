@@ -1,5 +1,5 @@
 /**
- * Claude Software Factory - Slack Bot v0.2.1
+ * Claude Software Factory - Slack Bot
  *
  * A conversational meta-agent that provides a Slack interface for interacting
  * with the Claude-powered software factory. This bot:
@@ -8,7 +8,6 @@
  * 2. Dispatches tasks to GitHub-based agents (triage, code, QA, etc.)
  * 3. Receives status updates from agent workflows and posts to Slack
  * 4. Helps humans monitor and intervene when workflows have issues
- * 5. Enhanced with emoji reactions for better visual feedback
  *
  * The actual agents (triage, code, QA, devops, etc.) continue to work
  * via GitHub Actions - this bot is the human collaboration layer.
@@ -22,44 +21,77 @@ import express from 'express';
 import { config, validateConfig } from './config.js';
 import { registerEventHandlers } from './handlers/slack-events.js';
 import { createWebhookRouter } from './handlers/webhook-handler.js';
+import { validateApiKey } from './integrations/claude-code.js';
+import { executeWithDirectSDK } from './integrations/anthropic-direct.js';
 import logger from './utils/logger.js';
 import sessionManager from './state/session-manager.js';
-import ProgressiveMessenger from './utils/progressive-messenger.js';
+import { setupRepository, getRepoPath } from './utils/repo-manager.js';
+
+// Store repo path globally for use in sessions
+let repoPath = process.cwd();
 
 /**
- * Bot status reactions for better visual feedback
+ * Get the repository path for Claude Code sessions
  */
-const BOT_STATUS_EMOJIS = {
-  thinking: '🤔',
-  working: '⚡',
-  success: '✅', 
-  error: '❌',
-  warning: '⚠️',
-  ready: '🚀',
-  deployed: '🎉',
-  updated: '🔄'  // NEW: Added status for updates/improvements
-};
+export function getWorkingDirectory(): string {
+  return repoPath;
+}
 
 /**
  * Initialize and start the Slack bot
  */
 async function main(): Promise<void> {
-  logger.info('🚀 Starting Claude Software Factory Slack Bot v0.2.1...');
+  logger.info('Starting Claude Software Factory Slack Bot...');
+
+  // Clone/update the repository for git operations
+  const repoSetup = await setupRepository();
+  if (repoSetup.success) {
+    repoPath = repoSetup.path;
+    logger.info('Repository ready for git operations', { path: repoPath });
+  } else {
+    logger.warn('Repository not available - git operations limited', { error: repoSetup.error });
+  }
 
   // Validate configuration
   const configErrors = validateConfig();
   if (configErrors.length > 0) {
-    logger.error('❌ Configuration errors:', { errors: configErrors });
+    logger.error('Configuration errors:', { errors: configErrors });
     process.exit(1);
   }
 
-  // Create Slack app with improved error handling
+  // Validate ANTHROPIC_API_KEY on startup
+  // This helps catch invalid/expired keys early with clear error messages
+  logger.info('Validating ANTHROPIC_API_KEY...');
+  const apiKeyValidation = await validateApiKey();
+  if (!apiKeyValidation.valid) {
+    logger.error('ANTHROPIC_API_KEY validation failed at startup', {
+      error: apiKeyValidation.error,
+      keyPrefix: apiKeyValidation.keyPrefix,
+    });
+    // Continue running but log the warning prominently
+    // This allows the bot to still handle non-Claude-Code features
+    logger.warn('⚠️ Claude Code features will be unavailable until API key is fixed');
+  } else {
+    logger.info('✅ ANTHROPIC_API_KEY is valid', { keyPrefix: apiKeyValidation.keyPrefix });
+  }
+
+  // Create Slack app with error handling
   const app = new App({
     token: config.slack.botToken,
     signingSecret: config.slack.signingSecret,
     appToken: config.slack.appToken,
     socketMode: true,
     logLevel: config.logLevel === 'debug' ? LogLevel.DEBUG : LogLevel.INFO,
+  });
+
+  // Handle Slack app errors to prevent crashes
+  app.error(async (error) => {
+    logger.error('Slack app error', {
+      message: error.message,
+      code: (error as any).code,
+      stack: error.stack,
+    });
+    // Don't crash - just log the error
   });
 
   // Create Slack web client for webhook handler
@@ -76,174 +108,95 @@ async function main(): Promise<void> {
   const webhookRouter = createWebhookRouter(slackClient);
   expressApp.use('/webhooks', webhookRouter);
 
-  // Enhanced health check with status emojis and improved metrics
+  // Health check on root and /health
   const healthResponse = (req: express.Request, res: express.Response) => {
-    const memoryUsage = process.memoryUsage();
-    const uptime = process.uptime();
-    const uptimeHours = Math.floor(uptime / 3600);
-    const uptimeMinutes = Math.floor((uptime % 3600) / 60);
-    const startTime = Date.now() - (uptime * 1000);
-    
     res.json({
       service: 'claude-software-factory-slack-bot',
       status: 'running',
-      version: '0.2.1',
-      statusEmoji: BOT_STATUS_EMOJIS.ready,
-      progressiveMessaging: 'enabled',
-      multiPostSystem: 'ENHANCED-WITH-EMOJI-REACTIONS',
-      threadedUpdates: 'working',
-      emojiReactions: 'active',
+      version: '1.0.0',
       timestamp: new Date().toISOString(),
-      deployment: {
-        buildTime: new Date().toISOString(),
-        startTime: new Date(startTime).toISOString(),  // NEW: Added actual start time
-        environment: process.env.RAILWAY_ENVIRONMENT || 'development',
-        gitCommit: process.env.RAILWAY_GIT_COMMIT_SHA || 'unknown',
-        nodeVersion: process.version,
-        lastUpdated: new Date().toISOString(),
-        realDeployment: true,
-        versionBump: '0.2.0 → 0.2.1',  // Updated version bump
-        latestImprovement: 'Added start time tracking and status emoji updates'  // NEW: Added improvement note
-      },
-      performance: {
-        uptime: `${uptimeHours}h ${uptimeMinutes}m`,
-        uptimeSeconds: Math.floor(uptime),
-        memoryUsageMB: {
-          rss: Math.round(memoryUsage.rss / 1024 / 1024),
-          heapUsed: Math.round(memoryUsage.heapUsed / 1024 / 1024),
-          heapTotal: Math.round(memoryUsage.heapTotal / 1024 / 1024),
-          external: Math.round(memoryUsage.external / 1024 / 1024)
-        },
-        memoryEfficiency: `${Math.round((memoryUsage.heapUsed / memoryUsage.heapTotal) * 100)}%`,
-        systemHealth: uptime > 300 ? 'stable' : 'starting'  // NEW: Simple health indicator
-      },
-      features: [
-        'progressive-messaging',
-        'thread-based-updates', 
-        'timestamp-tracking',
-        'multi-post-system',
-        'follow-through-fixes',
-        'tested-multi-post-flow',
-        'enhanced-monitoring',
-        'emoji-reactions',
-        'improved-status-display',
-        'start-time-tracking',  // NEW: Added feature
-        'PRODUCTION-READY-V2.1'  // Updated version
-      ],
-      statusIndicators: BOT_STATUS_EMOJIS
     });
   };
   expressApp.get('/', healthResponse);
   expressApp.get('/health', healthResponse);
 
-  // Enhanced test endpoint with emoji reactions
-  expressApp.post('/test-progressive', (req: express.Request, res: express.Response) => {
-    const { channel = 'demo-channel' } = req.body;
-
-    // Start enhanced progressive messaging demo
-    (async () => {
-      logger.info(`${BOT_STATUS_EMOJIS.deployed} === Enhanced Multi-Post Progressive Messaging Demo v0.2.1 Started ===`);
-
-      // Thinking animation with emoji
-      logger.info(`${BOT_STATUS_EMOJIS.thinking} MESSAGE 1 (Thinking Animation):`, {
-        timestamp: new Date().toISOString(),
-        content: `${BOT_STATUS_EMOJIS.thinking} Testing enhanced multi-post system v0.2.1...`
-      });
-
-      await new Promise(resolve => setTimeout(resolve, 1500));
-
-      // Analysis update with working emoji
-      logger.info(`${BOT_STATUS_EMOJIS.working} MESSAGE 2 (Analysis - Separate Post):`, {
-        timestamp: new Date().toISOString(),
-        content: `${BOT_STATUS_EMOJIS.working} **Enhanced Multi-Post System v0.2.1**\n\nNew features:\n${BOT_STATUS_EMOJIS.success} Emoji status reactions\n${BOT_STATUS_EMOJIS.success} Better visual feedback\n${BOT_STATUS_EMOJIS.updated} Start time tracking\n${BOT_STATUS_EMOJIS.success} Improved health monitoring`
-      });
-
-      await new Promise(resolve => setTimeout(resolve, 1000));
-
-      // Progress update with detailed emojis
-      logger.info(`${BOT_STATUS_EMOJIS.working} MESSAGE 3 (Progress - Another Separate Post):`, {
-        timestamp: new Date().toISOString(),
-        content: `${BOT_STATUS_EMOJIS.warning} **Latest Updates in v0.2.1**\n\n${BOT_STATUS_EMOJIS.updated} Added system start time tracking\n${BOT_STATUS_EMOJIS.success} Enhanced health status indicators\n${BOT_STATUS_EMOJIS.success} Better deployment monitoring\n${BOT_STATUS_EMOJIS.success} Improved uptime reporting`
-      });
-
-      await new Promise(resolve => setTimeout(resolve, 1000));
-
-      // Final results with celebration
-      logger.info(`${BOT_STATUS_EMOJIS.deployed} MESSAGE 4 (Completion - Final Separate Post):`, {
-        timestamp: new Date().toISOString(),
-        content: `${BOT_STATUS_EMOJIS.success} **Enhanced System Test Complete**\n\nVersion 0.2.1 deployed successfully! ${BOT_STATUS_EMOJIS.deployed}\n\n${BOT_STATUS_EMOJIS.ready} System ready for production use!`
-      });
-
-      logger.info(`${BOT_STATUS_EMOJIS.success} === Enhanced Demo Complete ===`);
-
-    })().catch(error => {
-      logger.error(`${BOT_STATUS_EMOJIS.error} Multi-post test failed`, { error });
-    });
-
+  // Diagnostics endpoint - validates API key and returns status in real-time
+  expressApp.get('/diagnostics', async (req, res) => {
+    const validation = await validateApiKey();
     res.json({
-      success: true,
-      message: 'Enhanced multi-post system demo started',
-      version: '0.2.1',  // Updated version
-      feature: 'progressive-messaging-with-emoji-reactions',
-      statusEmoji: BOT_STATUS_EMOJIS.deployed
+      timestamp: new Date().toISOString(),
+      apiKey: {
+        present: !!process.env.ANTHROPIC_API_KEY,
+        prefix: process.env.ANTHROPIC_API_KEY?.substring(0, 7) + '...',
+        valid: validation.valid,
+        error: validation.error,
+      },
+      env: {
+        nodeVersion: process.version,
+        cwd: process.cwd(),
+        repoPath: repoPath,
+      },
     });
+  });
+
+  // Test endpoint for direct SDK debugging
+  // POST /test-claude { "prompt": "list files" }
+  // Protected by a simple secret check
+  expressApp.post('/test-claude', async (req, res) => {
+    const testSecret = req.headers['x-test-secret'];
+    if (testSecret !== config.server.webhookSecret) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
+    const { prompt } = req.body;
+    if (!prompt) {
+      res.status(400).json({ error: 'Missing prompt' });
+      return;
+    }
+
+    logger.info('Test endpoint called', { prompt: prompt.substring(0, 50) });
+
+    try {
+      const result = await executeWithDirectSDK(
+        prompt,
+        'test-user',
+        'test-thread',
+        { workingDirectory: repoPath }
+      );
+      res.json({
+        success: !result.error,
+        content: result.content,
+        toolsUsed: result.toolsUsed,
+        error: result.error,
+      });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      logger.error('Test endpoint error', { error: errorMessage });
+      res.status(500).json({ error: errorMessage });
+    }
   });
 
   // Start webhook server - use PORT from Railway, fallback to webhookPort
   const port = process.env.PORT || config.server.webhookPort;
   const webhookServer = expressApp.listen(port, () => {
-    logger.info(`${BOT_STATUS_EMOJIS.success} Webhook server listening on port ${port}`);
-  });
-
-  // Enhanced error handling for Slack app with emoji indicators
-  app.error(async (error) => {
-    logger.error(`${BOT_STATUS_EMOJIS.error} Slack app error:`, { 
-      error: error.message, 
-      stack: error.stack,
-      timestamp: new Date().toISOString()
-    });
+    logger.info(`Webhook server listening on port ${port}`);
   });
 
   // Start Slack app in socket mode
   await app.start();
-  logger.info(`${BOT_STATUS_EMOJIS.success} Slack bot started in socket mode`);
+  logger.info('Slack bot started in socket mode');
 
-  // Set up periodic cleanup for progressive messaging sessions
-  const cleanupInterval = setInterval(() => {
-    ProgressiveMessenger.cleanup();
-    sessionManager.cleanup();
-  }, 5 * 60 * 1000); // Every 5 minutes
-
-  // Log startup info with enhanced details and emojis
-  logger.info(`${BOT_STATUS_EMOJIS.deployed} Claude Software Factory Slack Bot v0.2.1 is ready!`, {
+  // Log startup info
+  logger.info('Claude Software Factory Slack Bot is ready!', {
     webhookPort: config.server.webhookPort,
     githubRepo: config.github.repository,
     hasAnthropicKey: !!config.anthropic.apiKey,
-    version: '0.2.1',  // Updated version
-    nodeVersion: process.version,
-    platform: process.platform,
-    versionUpgrade: '0.2.0 → 0.2.1',  // Updated upgrade path
-    improvement: 'Added start time tracking and enhanced status indicators',  // NEW: Latest improvement
-    features: [
-      'progressive-messaging', 
-      'thread-based-updates', 
-      'multi-post-system', 
-      'follow-through-fixes', 
-      'enhanced-monitoring',
-      'improved-error-handling',
-      'emoji-status-reactions',
-      'better-visual-feedback',
-      'start-time-tracking',  // NEW: Added feature
-      'PRODUCTION-READY-V2.1'  // Updated version
-    ]
   });
 
   // Cleanup on shutdown
   const shutdown = async () => {
-    logger.info(`${BOT_STATUS_EMOJIS.warning} Shutting down...`);
-
-    // Clear intervals
-    clearInterval(cleanupInterval);
+    logger.info('Shutting down...');
 
     // Close webhook server
     webhookServer.close();
@@ -252,29 +205,39 @@ async function main(): Promise<void> {
     await app.stop();
 
     // Final cleanup
-    ProgressiveMessenger.cleanup();
     sessionManager.cleanup();
 
-    logger.info(`${BOT_STATUS_EMOJIS.success} Shutdown complete`);
+    logger.info('Shutdown complete');
     process.exit(0);
   };
 
   process.on('SIGTERM', shutdown);
   process.on('SIGINT', shutdown);
-  
-  // Handle uncaught exceptions gracefully with emoji indicators
-  process.on('uncaughtException', (error) => {
-    logger.error(`${BOT_STATUS_EMOJIS.error} Uncaught exception:`, { error: error.message, stack: error.stack });
-    shutdown();
-  });
-
-  process.on('unhandledRejection', (reason, promise) => {
-    logger.error(`${BOT_STATUS_EMOJIS.error} Unhandled rejection:`, { reason, promise });
-  });
 }
+
+// Global error handlers to prevent crashes from socket-mode edge cases
+process.on('uncaughtException', (error) => {
+  logger.error('Uncaught exception', {
+    message: error.message,
+    stack: error.stack,
+  });
+  // Don't exit - the socket-mode client will reconnect
+  // Only exit on truly fatal errors
+  if (error.message.includes('EADDRINUSE') || error.message.includes('EACCES')) {
+    process.exit(1);
+  }
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  logger.error('Unhandled rejection', {
+    reason: reason instanceof Error ? reason.message : String(reason),
+    stack: reason instanceof Error ? reason.stack : undefined,
+  });
+  // Don't exit - let the app continue
+});
 
 // Run the bot
 main().catch((error) => {
-  logger.error(`${BOT_STATUS_EMOJIS.error} Fatal error starting bot`, { error });
+  logger.error('Fatal error starting bot', { error });
   process.exit(1);
 });

@@ -17,17 +17,17 @@ open http://localhost:3000
 
 ## Scripts
 
-| Script                  | Description              |
-| ----------------------- | ------------------------ |
-| `npm run dev`           | Start development server |
-| `npm run build`         | Build for production     |
-| `npm start`             | Start production server  |
-| `npm run lint`          | Run ESLint               |
-| `npm run format`        | Format with Prettier     |
-| `npm run format:check`  | Check formatting         |
-| `npm run typecheck`     | TypeScript type check    |
-| `npm test`              | Run Jest tests           |
-| `npm run test:coverage` | Run tests with coverage  |
+| Script | Description |
+|--------|-------------|
+| `npm run dev` | Start development server |
+| `npm run build` | Build for production |
+| `npm start` | Start production server |
+| `npm run lint` | Run ESLint |
+| `npm run format` | Format with Prettier |
+| `npm run format:check` | Check formatting |
+| `npm run typecheck` | TypeScript type check |
+| `npm test` | Run Jest tests |
+| `npm run test:coverage` | Run tests with coverage |
 
 ## Project Structure
 
@@ -50,8 +50,8 @@ frontend/
 
 ## Environment Variables
 
-| Variable              | Description     | Default                 |
-| --------------------- | --------------- | ----------------------- |
+| Variable | Description | Default |
+|----------|-------------|---------|
 | `NEXT_PUBLIC_API_URL` | Backend API URL | `http://localhost:8000` |
 
 Create a `.env.local` file for local development:

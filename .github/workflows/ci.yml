@@ -1,3 +1,8 @@
+# CI/CD Workflow for Software Factory
+#
+# IMPORTANT: The ci-failure-monitor.yml watches for failures in a workflow
+# named "CI/CD" - keep this name or update the monitor workflow.
+
 name: CI/CD
 
 on:
@@ -5,25 +10,16 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
-  workflow_dispatch:  # Allow manual triggering for deployments
-  repository_dispatch:  # Triggered by claude-work after auto-merge (GITHUB_TOKEN can't trigger push)
-    types: [deploy-after-merge]
-
-env:
-  REGISTRY: ghcr.io
-  BACKEND_IMAGE: ghcr.io/${{ github.repository }}-backend
-  FRONTEND_IMAGE: ghcr.io/${{ github.repository }}-frontend
+  workflow_dispatch:
 
 jobs:
-  # Determine which parts of the codebase changed
+  # Detect which parts of the codebase changed
   changes:
     name: Detect Changes
     runs-on: ubuntu-latest
     outputs:
       backend: ${{ steps.filter.outputs.backend }}
       frontend: ${{ steps.filter.outputs.frontend }}
-      e2e: ${{ steps.filter.outputs.e2e }}
-      docs_only: ${{ steps.filter.outputs.docs_only }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -34,64 +30,13 @@ jobs:
               - 'backend/**'
             frontend:
               - 'frontend/**'
-            e2e:
-              - 'backend/**'
-              - 'frontend/**'
-            docs_only:
-              - '**/*.md'
-              - 'docs/**'
-              - '.claude/agents/**/*.md'
-              - '!backend/**/*.md'  # Exclude backend docs (may affect tests)
-              - '!frontend/**/*.md'  # Exclude frontend docs (may affect tests)
-            # Note: workflow-only changes don't trigger e2e - app code unchanged
 
-  # Fast-track documentation-only changes
-  docs-check:
-    name: Documentation Check
-    runs-on: ubuntu-latest
-    needs: changes
-    if: needs.changes.outputs.docs_only == 'true' && needs.changes.outputs.backend != 'true' && needs.changes.outputs.frontend != 'true'
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Check for broken links
-        run: |
-          echo "Checking for broken internal links in markdown files..."
-          # Find all markdown files
-          find . -name "*.md" -not -path "./.git/*" -print0 | while IFS= read -r -d '' file; do
-            echo "Checking $file..."
-            # Look for relative links that might be broken
-            grep -n '\[.*\](\..*\)' "$file" || true
-            grep -n '\[.*\](/.*\)' "$file" || true
-          done
-          echo "✅ Link check completed"
-
-      - name: Validate markdown format
-        run: |
-          echo "Checking for basic markdown formatting issues..."
-          # Look for common markdown issues
-          find . -name "*.md" -not -path "./.git/*" -exec grep -l $'\t' {} \; | while read -r file; do
-            echo "Warning: $file contains tabs (should use spaces for markdown)"
-          done
-          echo "✅ Format check completed"
-
-      - name: Check CLAUDE.md syntax
-        if: contains(github.event.head_commit.modified, 'CLAUDE.md') || contains(github.event.head_commit.added, 'CLAUDE.md')
-        run: |
-          echo "Validating CLAUDE.md for agent instructions..."
-          if [ -f "CLAUDE.md" ]; then
-            # Basic sanity checks for CLAUDE.md
-            grep -q "## Tech Stack" CLAUDE.md || echo "Warning: Missing Tech Stack section"
-            grep -q "## Autonomous Agents" CLAUDE.md || echo "Warning: Missing Autonomous Agents section"
-            grep -q "@code" CLAUDE.md || echo "Warning: Missing @code mention documentation"
-            echo "✅ CLAUDE.md validation completed"
-          fi
-
+  # Backend tests
   backend:
     name: Backend Tests
     runs-on: ubuntu-latest
     needs: changes
-    if: needs.changes.outputs.backend == 'true' || github.event_name == 'workflow_dispatch' || github.event_name == 'repository_dispatch'
+    if: needs.changes.outputs.backend == 'true' || github.event_name == 'workflow_dispatch'
     defaults:
       run:
         working-directory: backend
@@ -120,11 +65,12 @@ jobs:
       - name: Test with coverage
         run: uv run pytest --cov=app --cov-report=xml --cov-fail-under=70
 
+  # Frontend tests
   frontend:
     name: Frontend Tests
     runs-on: ubuntu-latest
     needs: changes
-    if: needs.changes.outputs.frontend == 'true' || github.event_name == 'workflow_dispatch' || github.event_name == 'repository_dispatch'
+    if: needs.changes.outputs.frontend == 'true' || github.event_name == 'workflow_dispatch'
     defaults:
       run:
         working-directory: frontend
@@ -154,712 +100,117 @@ jobs:
       - name: Test with coverage
         run: npm run test:coverage
 
-  e2e:
-    name: E2E Tests
+  # E2E Tests (optional - add Playwright when ready)
+  # e2e:
+  #   name: E2E Tests
+  #   runs-on: ubuntu-latest
+  #   needs: [changes, backend, frontend]
+  #   if: |
+  #     always() &&
+  #     github.event_name == 'pull_request' &&
+  #     (needs.backend.result == 'success' || needs.backend.result == 'skipped') &&
+  #     (needs.frontend.result == 'success' || needs.frontend.result == 'skipped')
+  #
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #
+  #     - name: Install uv
+  #       uses: astral-sh/setup-uv@v6
+  #
+  #     - name: Set up Python
+  #       run: uv python install 3.11
+  #
+  #     - name: Set up Node.js
+  #       uses: actions/setup-node@v4
+  #       with:
+  #         node-version: '22'
+  #         cache: 'npm'
+  #         cache-dependency-path: frontend/package-lock.json
+  #
+  #     - name: Install backend dependencies
+  #       working-directory: backend
+  #       run: uv sync
+  #
+  #     - name: Install frontend dependencies
+  #       working-directory: frontend
+  #       run: npm ci
+  #
+  #     - name: Install Playwright browsers
+  #       working-directory: frontend
+  #       run: npx playwright install --with-deps chromium
+  #
+  #     - name: Start backend
+  #       working-directory: backend
+  #       run: |
+  #         uv run uvicorn app.main:app --host 0.0.0.0 --port 8000 > /tmp/backend.log 2>&1 &
+  #         echo $! > /tmp/backend.pid
+  #
+  #     - name: Wait for backend
+  #       run: |
+  #         for i in {1..30}; do
+  #           if curl -s http://localhost:8000/health > /dev/null 2>&1; then
+  #             echo "Backend is ready!"
+  #             exit 0
+  #           fi
+  #           echo "Waiting for backend... (attempt $i/30)"
+  #           sleep 1
+  #         done
+  #         echo "Backend failed to start"
+  #         cat /tmp/backend.log
+  #         exit 1
+  #
+  #     - name: Run E2E tests
+  #       working-directory: frontend
+  #       run: npx playwright test --project=chromium
+  #
+  #     - name: Upload E2E test artifacts on failure
+  #       if: failure()
+  #       uses: actions/upload-artifact@v4
+  #       with:
+  #         name: e2e-debug-logs
+  #         path: |
+  #           /tmp/backend.log
+  #           frontend/test-results/
+  #           frontend/playwright-report/
+  #         retention-days: 7
+
+  # Deploy (only on main after tests pass)
+  deploy:
+    name: Deploy to Production
     runs-on: ubuntu-latest
-    needs: [changes, backend, frontend]
-    # Timeout after 35 minutes - E2E suite has 149+ tests with Claude API calls
-    # Tests can take 25-30 min when API responses are slow
-    timeout-minutes: 35
-    # Only run E2E on PRs (not on push to main) - PR E2E is sufficient
-    # This avoids running E2E twice (once on PR, once on merge)
-    # always() ensures condition is evaluated even when dependent jobs are skipped
-    if: |
-      always() &&
-      github.event_name == 'pull_request' &&
-      needs.changes.outputs.e2e == 'true' &&
-      (needs.backend.result == 'success' || needs.backend.result == 'skipped') &&
-      (needs.frontend.result == 'success' || needs.frontend.result == 'skipped')
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v6
-
-      - name: Set up Python
-        run: uv python install 3.11
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-          cache: 'npm'
-          cache-dependency-path: frontend/package-lock.json
-
-      - name: Install backend dependencies
-        working-directory: backend
-        run: uv sync
-
-      - name: Install frontend dependencies
-        working-directory: frontend
-        run: npm ci
-
-      - name: Install Playwright browsers
-        working-directory: frontend
-        run: npx playwright install --with-deps chromium
-
-      - name: Start backend
-        working-directory: backend
-        env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        run: |
-          # Start backend with logs captured to file for debugging
-          uv run uvicorn app.main:app --host 0.0.0.0 --port 8000 > /tmp/backend.log 2>&1 &
-          echo $! > /tmp/backend.pid
-
-      - name: Wait for backend
-        run: sleep 5
-
-      - name: Setup real-time progress reporting
-        id: progress
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          # Extract issue number from branch name
-          # Patterns supported:
-          #   fix/123-desc, feat/123-desc (Code Agent standard)
-          #   claude/fix-123-*, claude/*-123-* (Claude with issue number)
-          #   ending with -123 (legacy)
-          BRANCH="${{ github.head_ref }}"
-          ISSUE_NUMBER=""
-          if [[ "$BRANCH" =~ ^(fix|feat)/([0-9]+) ]]; then
-            ISSUE_NUMBER="${BASH_REMATCH[2]}"
-          elif [[ "$BRANCH" =~ ^claude/(fix|feat)-([0-9]+) ]]; then
-            ISSUE_NUMBER="${BASH_REMATCH[2]}"
-          elif [[ "$BRANCH" =~ -([0-9]+)-[a-zA-Z] ]]; then
-            # Match issue number followed by session ID (e.g., -457-nJsFc)
-            ISSUE_NUMBER="${BASH_REMATCH[1]}"
-          elif [[ "$BRANCH" =~ -([0-9]+)$ ]]; then
-            ISSUE_NUMBER="${BASH_REMATCH[1]}"
-          fi
-
-          if [ -z "$ISSUE_NUMBER" ]; then
-            echo "No issue number found in branch name, skipping real-time progress"
-            echo "comment_id=" >> $GITHUB_OUTPUT
-            exit 0
-          fi
-
-          echo "Found issue number: $ISSUE_NUMBER"
-
-          # Look for existing CI status comment
-          COMMENT_ID=$(gh api repos/${{ github.repository }}/issues/$ISSUE_NUMBER/comments \
-            --jq '.[] | select(.body | contains("<!-- ci-watcher -->")) | .id' 2>/dev/null | tail -1 || echo "")
-
-          if [ -z "$COMMENT_ID" ]; then
-            # Create new comment for real-time progress
-            BODY="<!-- ci-watcher -->
-          ## 🔄 CI Status
-
-          **Status:** ⏳ Starting E2E tests...
-          **Run:** [View logs](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})
-
-          *Starting: $(date -u '+%Y-%m-%d %H:%M:%S UTC')*"
-
-            COMMENT_ID=$(gh api repos/${{ github.repository }}/issues/$ISSUE_NUMBER/comments \
-              -X POST -f body="$BODY" --jq '.id' 2>/dev/null || echo "")
-            echo "Created new CI status comment: $COMMENT_ID"
-          else
-            echo "Found existing CI status comment: $COMMENT_ID"
-          fi
-
-          echo "comment_id=$COMMENT_ID" >> $GITHUB_OUTPUT
-
-      - name: Run E2E tests
-        working-directory: frontend
-        env:
-          # Real-time progress reporter configuration
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GH_REPO: ${{ github.repository }}
-          CI_COMMENT_ID: ${{ steps.progress.outputs.comment_id }}
-        # Only run chromium project - WebKit/iOS projects require additional browser install
-        run: npm run test:e2e -- --project=chromium
-
-      - name: Upload E2E test results
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: e2e-results
-          path: frontend/test-results/results.json
-          retention-days: 1
-
-      - name: Upload E2E debug artifacts on failure
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: e2e-debug-logs
-          path: |
-            /tmp/backend.log
-            frontend/test-results/
-            frontend/playwright-report/
-          retention-days: 7
-
-      - name: Print backend logs on failure
-        if: failure()
-        run: |
-          echo "=== Backend Logs ==="
-          cat /tmp/backend.log || echo "No backend logs found"
-
-  build-and-push:
-    name: Build & Push Docker Images
-    runs-on: ubuntu-latest
-    needs: [changes, backend, frontend]
-    # Run on push to main if code changed AND unit tests passed
-    # Skip for docs-only changes since no app code changed
-    # E2E is skipped on main (already passed on PR) so we don't check it here
-    # always() ensures condition is evaluated even when jobs are skipped
+    needs: [backend, frontend]
     if: |
       always() &&
       github.ref == 'refs/heads/main' &&
-      (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'repository_dispatch') &&
-      (needs.changes.outputs.e2e == 'true' || github.event_name == 'workflow_dispatch' || github.event_name == 'repository_dispatch') &&
-      !(needs.changes.outputs.docs_only == 'true' && needs.changes.outputs.backend != 'true' && needs.changes.outputs.frontend != 'true') &&
+      github.event_name == 'push' &&
       needs.backend.result != 'failure' &&
       needs.frontend.result != 'failure'
-    permissions:
-      contents: read
-      packages: write
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Extract metadata for Backend
-        id: meta-backend
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.BACKEND_IMAGE }}
-          tags: |
-            type=raw,value=latest
-            type=sha,prefix=
-
-      - name: Build and push Backend image
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: backend/Dockerfile
-          push: true
-          tags: ${{ steps.meta-backend.outputs.tags }}
-          labels: ${{ steps.meta-backend.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      - name: Extract metadata for Frontend
-        id: meta-frontend
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.FRONTEND_IMAGE }}
-          tags: |
-            type=raw,value=latest
-            type=sha,prefix=
-
-      - name: Derive WebSocket URL from Backend URL
-        id: ws-url
-        run: echo "url=$(echo '${{ secrets.PRODUCTION_BACKEND_URL }}' | sed 's|^https://|wss://|')" >> $GITHUB_OUTPUT
-
-      - name: Build and push Frontend image
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: frontend/Dockerfile
-          push: true
-          tags: ${{ steps.meta-frontend.outputs.tags }}
-          labels: ${{ steps.meta-frontend.outputs.labels }}
-          build-args: |
-            NEXT_PUBLIC_API_URL=${{ secrets.PRODUCTION_BACKEND_URL }}
-            NEXT_PUBLIC_WS_URL=${{ steps.ws-url.outputs.url }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-  deploy:
-    name: Deploy to Railway
-    runs-on: ubuntu-latest
-    needs: [build-and-push]
-    # always() needed because upstream jobs use always()
-    if: |
-      always() &&
-      needs.build-and-push.result == 'success' &&
-      github.ref == 'refs/heads/main' &&
-      (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'repository_dispatch')
 
     steps:
       - name: Install Railway CLI
         run: npm install -g @railway/cli
 
-      - name: Redeploy Backend
-        env:
-          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN_SW_FACTORY }}
-        run: railway redeploy --service backend --yes
+      # Uncomment and configure for Railway deployment:
+      #
+      # - name: Redeploy Backend
+      #   env:
+      #     RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN_SW_FACTORY }}
+      #   run: railway redeploy --service backend --yes
+      #
+      # - name: Redeploy Frontend
+      #   env:
+      #     RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN_SW_FACTORY }}
+      #   run: railway redeploy --service frontend --yes
 
-      - name: Redeploy Frontend
-        env:
-          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN_SW_FACTORY }}
-        run: railway redeploy --service frontend --yes
-
-  smoke-test:
-    name: Production Smoke Test
-    runs-on: ubuntu-latest
-    needs: [deploy]
-    # always() needed because upstream jobs use always()
-    if: |
-      always() &&
-      needs.deploy.result == 'success' &&
-      github.ref == 'refs/heads/main' &&
-      (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'repository_dispatch')
-
-    steps:
-      - name: Wait for Railway to start deployment
-        run: sleep 15
-
-      - name: Check backend health (poll until ready)
+      - name: Deployment placeholder
         run: |
-          BACKEND_URL="${{ secrets.PRODUCTION_BACKEND_URL }}"
-          if [ -z "$BACKEND_URL" ]; then
-            echo "Warning: PRODUCTION_BACKEND_URL not set, skipping backend check"
-            exit 0
-          fi
-          echo "Polling backend health at $BACKEND_URL/health"
-
-          # Poll up to 12 times with 10-second intervals (2 minutes total)
-          for i in $(seq 1 12); do
-            response=$(curl -s -o /dev/null -w "%{http_code}" "$BACKEND_URL/health" || echo "000")
-            if [ "$response" = "200" ]; then
-              echo "Backend health check passed (attempt $i)"
-              exit 0
-            fi
-            echo "Attempt $i/12: Backend returned $response, retrying in 10s..."
-            sleep 10
-          done
-
-          echo "Backend health check failed after 12 attempts (2 minutes)"
-          exit 1
-
-      - name: Check frontend health (poll until ready)
-        run: |
-          FRONTEND_URL="${{ secrets.PRODUCTION_FRONTEND_URL }}"
-          if [ -z "$FRONTEND_URL" ]; then
-            echo "Warning: PRODUCTION_FRONTEND_URL not set, skipping frontend check"
-            exit 0
-          fi
-          echo "Polling frontend at $FRONTEND_URL"
-
-          # Poll up to 12 times with 10-second intervals (2 minutes total)
-          for i in $(seq 1 12); do
-            response=$(curl -s -o /dev/null -w "%{http_code}" "$FRONTEND_URL" || echo "000")
-            if [ "$response" = "200" ]; then
-              echo "Frontend health check passed (attempt $i)"
-              exit 0
-            fi
-            echo "Attempt $i/12: Frontend returned $response, retrying in 10s..."
-            sleep 10
-          done
-
-          echo "Frontend health check failed after 12 attempts (2 minutes)"
-          exit 1
-
-      - name: Wait for service stability
-        run: |
-          echo "Waiting 10s for services to stabilize after health checks..."
-          sleep 10
-
-      - name: Test user registration
-        id: register
-        run: |
-          BACKEND_URL="${{ secrets.PRODUCTION_BACKEND_URL }}"
-          if [ -z "$BACKEND_URL" ]; then
-            echo "Warning: PRODUCTION_BACKEND_URL not set, skipping registration test"
-            exit 0
-          fi
-          # Generate unique username for this test run
-          TEST_USER="smoketest_$(date +%s)"
-          TEST_DISPLAY="Smoke Test User"
-          TEST_PASS="testpass123"
-          echo "Testing registration with user: $TEST_USER"
-
-          # Retry logic for transient failures (502, 503, connection errors)
-          MAX_RETRIES=3
-          RETRY_DELAY=5
-
-          for attempt in $(seq 1 $MAX_RETRIES); do
-            echo "Registration attempt $attempt/$MAX_RETRIES..."
-
-            response=$(curl -s -w "\n%{http_code}" --max-time 30 -X POST "$BACKEND_URL/api/auth/register" \
-              -H "Content-Type: application/json" \
-              -d "{\"username\": \"$TEST_USER\", \"display_name\": \"$TEST_DISPLAY\", \"password\": \"$TEST_PASS\"}" 2>&1) || response=$'\n000'
-
-            http_code=$(echo "$response" | tail -n1)
-            body=$(echo "$response" | head -n-1)
-
-            echo "Response code: $http_code"
-
-            if [ "$http_code" = "200" ]; then
-              echo "Registration successful"
-              TOKEN=$(echo "$body" | jq -r '.access_token')
-              echo "token=$TOKEN" >> $GITHUB_OUTPUT
-              echo "test_user=$TEST_USER" >> $GITHUB_OUTPUT
-              exit 0
-            elif [ "$http_code" = "502" ] || [ "$http_code" = "503" ] || [ "$http_code" = "000" ]; then
-              echo "Transient error ($http_code), retrying in ${RETRY_DELAY}s..."
-              # Generate new username for retry (in case partial registration occurred)
-              TEST_USER="smoketest_$(date +%s)_r${attempt}"
-              sleep $RETRY_DELAY
-              RETRY_DELAY=$((RETRY_DELAY * 2))
-            else
-              echo "Registration failed with status: $http_code"
-              echo "Response body: $body"
-              exit 1
-            fi
-          done
-
-          echo "Registration failed after $MAX_RETRIES attempts"
-          exit 1
-
-      - name: Test user authentication (get current user)
-        run: |
-          BACKEND_URL="${{ secrets.PRODUCTION_BACKEND_URL }}"
-          TOKEN="${{ steps.register.outputs.token }}"
-          if [ -z "$TOKEN" ] || [ "$TOKEN" = "null" ]; then
-            echo "Warning: No token available, skipping auth test"
-            exit 0
-          fi
-          echo "Testing authenticated endpoint /api/auth/me"
-
-          # Retry logic for transient failures
-          MAX_RETRIES=3
-          RETRY_DELAY=5
-
-          for attempt in $(seq 1 $MAX_RETRIES); do
-            echo "Auth check attempt $attempt/$MAX_RETRIES..."
-
-            response=$(curl -s -w "\n%{http_code}" --max-time 30 "$BACKEND_URL/api/auth/me" \
-              -H "Authorization: Bearer $TOKEN" 2>&1) || response=$'\n000'
-
-            http_code=$(echo "$response" | tail -n1)
-            body=$(echo "$response" | head -n-1)
-
-            echo "Response code: $http_code"
-
-            if [ "$http_code" = "200" ]; then
-              echo "Auth check passed"
-              username=$(echo "$body" | jq -r '.username')
-              echo "Logged in as: $username"
-              exit 0
-            elif [ "$http_code" = "502" ] || [ "$http_code" = "503" ] || [ "$http_code" = "000" ]; then
-              echo "Transient error ($http_code), retrying in ${RETRY_DELAY}s..."
-              sleep $RETRY_DELAY
-              RETRY_DELAY=$((RETRY_DELAY * 2))
-            else
-              echo "Auth check failed with status: $http_code"
-              echo "Response body: $body"
-              exit 1
-            fi
-          done
-
-          echo "Auth check failed after $MAX_RETRIES attempts"
-          exit 1
-
-  # Fast-track issue closure for documentation-only changes
-  close-issues-docs-only:
-    name: Close Issues (Documentation Only)
-    runs-on: ubuntu-latest
-    needs: [changes, docs-check]
-    if: |
-      always() &&
-      needs.docs-check.result == 'success' &&
-      needs.changes.outputs.docs_only == 'true' &&
-      needs.changes.outputs.backend != 'true' &&
-      needs.changes.outputs.frontend != 'true' &&
-      github.ref == 'refs/heads/main' &&
-      (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'repository_dispatch')
-    permissions:
-      issues: write
-
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 10  # Get recent commits to find issue references
-
-      - name: Find and close related issues
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          # Function to check sub-issues completion status
-          check_sub_issues() {
-            local ISSUE_NUM=$1
-            local REPO="${{ github.repository }}"
-            local OWNER=$(echo "$REPO" | cut -d'/' -f1)
-            local NAME=$(echo "$REPO" | cut -d'/' -f2)
-
-            # Get issue node ID first
-            ISSUE_ID=$(gh api graphql -H "GraphQL-Features: sub_issues" \
-              -f query="query { repository(owner:\"$OWNER\", name:\"$NAME\") { issue(number: $ISSUE_NUM) { id } } }" \
-              --jq '.data.repository.issue.id' 2>/dev/null || echo "")
-
-            if [ -z "$ISSUE_ID" ] || [ "$ISSUE_ID" = "null" ]; then
-              echo "0 0 0"  # No ID found, return zeros
-              return
-            fi
-
-            # Query sub-issues summary
-            SUMMARY=$(gh api graphql -H "GraphQL-Features: sub_issues" \
-              -f query="query { node(id:\"$ISSUE_ID\") { ... on Issue { subIssuesSummary { total completed percentCompleted } } } }" \
-              --jq '.data.node.subIssuesSummary | "\(.total) \(.completed) \(.percentCompleted)"' 2>/dev/null || echo "0 0 0")
-
-            echo "$SUMMARY"
-          }
-
-          echo "Finding issues referenced in recent PRs (documentation-only change)..."
-
-          # Get PR numbers from recent commit messages (squash merges include PR #)
-          PR_NUMBERS=$(git log --oneline -10 | grep -oE '#[0-9]+' | tr -d '#' | sort -u)
-
-          ISSUE_NUMBERS=""
-
-          # For each PR, check its body for "Fixes/Closes/Resolves #N"
-          for PR_NUM in $PR_NUMBERS; do
-            echo "Checking PR #$PR_NUM for issue references..."
-            PR_BODY=$(gh pr view $PR_NUM --json body -q .body 2>/dev/null || echo "")
-
-            # Extract issue numbers ONLY from "Fixes #N", "Closes #N", "Resolves #N" patterns
-            # IMPORTANT: Do NOT match "Relates to #N" - that indicates context, not a fix
-            # See issue #518 for the bug this pattern caused
-            REFS=$(echo "$PR_BODY" | grep -oE '(Fixes|Closes|Resolves) #[0-9]+' | grep -oE '#[0-9]+' | tr -d '#' || true)
-
-            if [ -n "$REFS" ]; then
-              echo "  Found issue refs in PR #$PR_NUM: $REFS"
-              ISSUE_NUMBERS="$ISSUE_NUMBERS $REFS"
-            fi
-          done
-
-          # Deduplicate
-          ISSUE_NUMBERS=$(echo "$ISSUE_NUMBERS" | tr ' ' '\n' | sort -u | tr '\n' ' ')
-
-          if [ -z "$(echo "$ISSUE_NUMBERS" | tr -d ' ')" ]; then
-            echo "No issue references found in recent PRs"
-            exit 0
-          fi
-
-          echo "Found issue references: $ISSUE_NUMBERS"
-
-          for ISSUE_NUM in $ISSUE_NUMBERS; do
-            [ -z "$ISSUE_NUM" ] && continue
-            echo "Checking issue #$ISSUE_NUM..."
-
-            # Get issue state, labels, and body
-            ISSUE_DATA=$(gh issue view $ISSUE_NUM --json state,labels,body 2>/dev/null || echo '{"state":"NOT_FOUND","labels":[],"body":""}')
-            STATE=$(echo "$ISSUE_DATA" | jq -r '.state')
-            LABELS=$(echo "$ISSUE_DATA" | jq -r '.labels[].name' | tr '\n' ' ')
-            BODY=$(echo "$ISSUE_DATA" | jq -r '.body')
-
-            # Check if this is a multi-phase roadmap issue (legacy markdown detection)
-            if echo "$BODY" | grep -qi "phase [0-9]" && echo "$BODY" | grep -q "### Phase [0-9]"; then
-              echo "Skipping issue #$ISSUE_NUM - appears to be a multi-phase roadmap issue"
-              echo "  Body contains multiple phases - manual closure required after all phases complete"
-              continue
-            fi
-
-            # Don't close issues that need human or PE intervention
-            if echo "$LABELS" | grep -q "needs-human"; then
-              echo "Skipping issue #$ISSUE_NUM - has 'needs-human' label (requires human intervention)"
-              continue
-            fi
-            if echo "$LABELS" | grep -q "needs-principal-engineer"; then
-              echo "Skipping issue #$ISSUE_NUM - has 'needs-principal-engineer' label (PE investigating)"
-              continue
-            fi
-            if echo "$LABELS" | grep -q "status:awaiting-human"; then
-              echo "Skipping issue #$ISSUE_NUM - has 'status:awaiting-human' label (waiting for human)"
-              continue
-            fi
-            if echo "$LABELS" | grep -q "status:bot-working"; then
-              echo "Skipping issue #$ISSUE_NUM - has 'status:bot-working' label (bot still working)"
-              continue
-            fi
-
-            # Check sub-issues completion status (GitHub Sub-Issues feature)
-            SUB_ISSUES_INFO=$(check_sub_issues "$ISSUE_NUM")
-            SUB_TOTAL=$(echo "$SUB_ISSUES_INFO" | cut -d' ' -f1)
-            SUB_COMPLETED=$(echo "$SUB_ISSUES_INFO" | cut -d' ' -f2)
-
-            if [ "$SUB_TOTAL" != "0" ] && [ "$SUB_TOTAL" != "null" ] && [ "$SUB_COMPLETED" != "$SUB_TOTAL" ]; then
-              echo "Skipping issue #$ISSUE_NUM - has incomplete sub-issues ($SUB_COMPLETED/$SUB_TOTAL complete)"
-              gh issue comment $ISSUE_NUM --body "Auto-close skipped - This issue has incomplete sub-issues ($SUB_COMPLETED/$SUB_TOTAL complete).
-
-            The issue will auto-close when all sub-issues are complete.
-
-            Workflow: [View run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})" 2>/dev/null || true
-              continue
-            fi
-
-            if [ "$STATE" = "OPEN" ]; then
-              echo "Closing issue #$ISSUE_NUM (documentation update completed)"
-              gh issue close $ISSUE_NUM \
-                --comment "✅ **Documentation updated**
-
-              This documentation issue has been resolved and published.
-
-              Commit: ${{ github.sha }}
-              Workflow: [View run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
-
-              *No deployment required for documentation-only changes.*"
-            elif [ "$STATE" = "CLOSED" ]; then
-              echo "Issue #$ISSUE_NUM already closed"
-            else
-              echo "Issue #$ISSUE_NUM not found or inaccessible"
-            fi
-          done
-
-  # Close issues only after successful deploy and smoke tests
-  close-issues:
-    name: Close Related Issues
-    runs-on: ubuntu-latest
-    needs: [smoke-test]
-    if: |
-      always() &&
-      needs.smoke-test.result == 'success' &&
-      github.ref == 'refs/heads/main' &&
-      (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'repository_dispatch')
-    permissions:
-      issues: write
-
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 10  # Get recent commits to find issue references
-
-      - name: Find and close related issues
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          # Function to check sub-issues completion status
-          check_sub_issues() {
-            local ISSUE_NUM=$1
-            local REPO="${{ github.repository }}"
-            local OWNER=$(echo "$REPO" | cut -d'/' -f1)
-            local NAME=$(echo "$REPO" | cut -d'/' -f2)
-
-            # Get issue node ID first
-            ISSUE_ID=$(gh api graphql -H "GraphQL-Features: sub_issues" \
-              -f query="query { repository(owner:\"$OWNER\", name:\"$NAME\") { issue(number: $ISSUE_NUM) { id } } }" \
-              --jq '.data.repository.issue.id' 2>/dev/null || echo "")
-
-            if [ -z "$ISSUE_ID" ] || [ "$ISSUE_ID" = "null" ]; then
-              echo "0 0 0"  # No ID found, return zeros
-              return
-            fi
-
-            # Query sub-issues summary
-            SUMMARY=$(gh api graphql -H "GraphQL-Features: sub_issues" \
-              -f query="query { node(id:\"$ISSUE_ID\") { ... on Issue { subIssuesSummary { total completed percentCompleted } } } }" \
-              --jq '.data.node.subIssuesSummary | "\(.total) \(.completed) \(.percentCompleted)"' 2>/dev/null || echo "0 0 0")
-
-            echo "$SUMMARY"
-          }
-
-          echo "Finding issues referenced in recent PRs..."
-
-          # Get PR numbers from recent commit messages (squash merges include PR #)
-          PR_NUMBERS=$(git log --oneline -10 | grep -oE '#[0-9]+' | tr -d '#' | sort -u)
-
-          ISSUE_NUMBERS=""
-
-          # For each PR, check its body for "Fixes/Closes/Resolves #N"
-          for PR_NUM in $PR_NUMBERS; do
-            echo "Checking PR #$PR_NUM for issue references..."
-            PR_BODY=$(gh pr view $PR_NUM --json body -q .body 2>/dev/null || echo "")
-
-            # Extract issue numbers ONLY from "Fixes #N", "Closes #N", "Resolves #N" patterns
-            # IMPORTANT: Do NOT match "Relates to #N" - that indicates context, not a fix
-            # See issue #518 for the bug this pattern caused
-            REFS=$(echo "$PR_BODY" | grep -oE '(Fixes|Closes|Resolves) #[0-9]+' | grep -oE '#[0-9]+' | tr -d '#' || true)
-
-            if [ -n "$REFS" ]; then
-              echo "  Found issue refs in PR #$PR_NUM: $REFS"
-              ISSUE_NUMBERS="$ISSUE_NUMBERS $REFS"
-            fi
-          done
-
-          # Deduplicate
-          ISSUE_NUMBERS=$(echo "$ISSUE_NUMBERS" | tr ' ' '\n' | sort -u | tr '\n' ' ')
-
-          if [ -z "$(echo "$ISSUE_NUMBERS" | tr -d ' ')" ]; then
-            echo "No issue references found in recent PRs"
-            exit 0
-          fi
-
-          echo "Found issue references: $ISSUE_NUMBERS"
-
-          for ISSUE_NUM in $ISSUE_NUMBERS; do
-            [ -z "$ISSUE_NUM" ] && continue
-            echo "Checking issue #$ISSUE_NUM..."
-
-            # Get issue state, labels, and body
-            ISSUE_DATA=$(gh issue view $ISSUE_NUM --json state,labels,body 2>/dev/null || echo '{"state":"NOT_FOUND","labels":[],"body":""}')
-            STATE=$(echo "$ISSUE_DATA" | jq -r '.state')
-            LABELS=$(echo "$ISSUE_DATA" | jq -r '.labels[].name' | tr '\n' ' ')
-            BODY=$(echo "$ISSUE_DATA" | jq -r '.body')
-
-            # Check if this is a multi-phase roadmap issue (legacy markdown detection)
-            if echo "$BODY" | grep -qi "phase [0-9]" && echo "$BODY" | grep -q "### Phase [0-9]"; then
-              echo "Skipping issue #$ISSUE_NUM - appears to be a multi-phase roadmap issue"
-              echo "  Body contains multiple phases - manual closure required after all phases complete"
-              continue
-            fi
-
-            # Don't close issues that need human or PE intervention
-            if echo "$LABELS" | grep -q "needs-human"; then
-              echo "Skipping issue #$ISSUE_NUM - has 'needs-human' label (requires human intervention)"
-              continue
-            fi
-            if echo "$LABELS" | grep -q "needs-principal-engineer"; then
-              echo "Skipping issue #$ISSUE_NUM - has 'needs-principal-engineer' label (PE investigating)"
-              continue
-            fi
-            if echo "$LABELS" | grep -q "status:awaiting-human"; then
-              echo "Skipping issue #$ISSUE_NUM - has 'status:awaiting-human' label (waiting for human)"
-              continue
-            fi
-            if echo "$LABELS" | grep -q "status:bot-working"; then
-              echo "Skipping issue #$ISSUE_NUM - has 'status:bot-working' label (bot still working)"
-              continue
-            fi
-
-            # Check sub-issues completion status (GitHub Sub-Issues feature)
-            SUB_ISSUES_INFO=$(check_sub_issues "$ISSUE_NUM")
-            SUB_TOTAL=$(echo "$SUB_ISSUES_INFO" | cut -d' ' -f1)
-            SUB_COMPLETED=$(echo "$SUB_ISSUES_INFO" | cut -d' ' -f2)
-
-            if [ "$SUB_TOTAL" != "0" ] && [ "$SUB_TOTAL" != "null" ] && [ "$SUB_COMPLETED" != "$SUB_TOTAL" ]; then
-              echo "Skipping issue #$ISSUE_NUM - has incomplete sub-issues ($SUB_COMPLETED/$SUB_TOTAL complete)"
-              gh issue comment $ISSUE_NUM --body "Auto-close skipped - This issue has incomplete sub-issues ($SUB_COMPLETED/$SUB_TOTAL complete).
-
-            The issue will auto-close when all sub-issues are complete.
-
-            Workflow: [View run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})" 2>/dev/null || true
-              continue
-            fi
-
-            if [ "$STATE" = "OPEN" ]; then
-              echo "Closing issue #$ISSUE_NUM (deploy successful)"
-              gh issue close $ISSUE_NUM \
-                --comment "✅ **Deployed to production**
-
-              This issue was resolved and the fix has been successfully deployed.
-
-              Commit: ${{ github.sha }}
-              Workflow: [View run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})"
-            elif [ "$STATE" = "CLOSED" ]; then
-              echo "Issue #$ISSUE_NUM already closed"
-            else
-              echo "Issue #$ISSUE_NUM not found or inaccessible"
-            fi
-          done
+          echo "=========================================="
+          echo "  Deploy step - configure for your platform"
+          echo "=========================================="
+          echo ""
+          echo "Options:"
+          echo "  - Railway: Uncomment the railway commands above"
+          echo "  - Vercel: Add vercel deploy command"
+          echo "  - Docker: Add docker build/push commands"
+          echo ""
+          echo "See README.md for deployment instructions."

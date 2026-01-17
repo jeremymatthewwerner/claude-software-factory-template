@@ -68,6 +68,14 @@ export const config = {
     maxRequestsPerMinute: parseInt(optionalEnv('RATE_LIMIT_PER_MINUTE', '30'), 10),
     maxTokensPerHour: parseInt(optionalEnv('RATE_LIMIT_TOKENS_PER_HOUR', '100000'), 10),
   },
+
+  // Railway Configuration (for deployment management)
+  railway: {
+    token: optionalEnv('RAILWAY_TOKEN'),
+    serviceId: optionalEnv('RAILWAY_SERVICE_ID'),
+    environmentId: optionalEnv('RAILWAY_ENVIRONMENT_ID'),
+  },
+
   // Webhook secret at top level for convenience
   webhookSecret: optionalEnv('WEBHOOK_SECRET'),
 } as const;

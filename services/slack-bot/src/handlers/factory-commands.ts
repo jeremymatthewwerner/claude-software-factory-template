@@ -10,7 +10,6 @@
 
 import { config } from '../config.js';
 import logger from '../utils/logger.js';
-import sessionManager from '../state/session-manager.js';
 
 interface GitHubIssue {
   number: number;
@@ -521,81 +520,10 @@ export async function getWorkflowHealth(): Promise<string> {
   }
 }
 
-/**
- * REPOSITORY STATUS - Show current working repositories and status
- */
-export async function getRepositoryStatus(): Promise<string> {
-  try {
-    const repoStatus = sessionManager.getCurrentRepoStatus();
-    const { activeRepos, mostRecentRepo, statusInfo } = repoStatus;
-
-    const lines: string[] = [
-      `*📂 Repository Status*`,
-      ``,
-    ];
-
-    if (activeRepos.length === 0) {
-      lines.push(`💤 *No active repositories*`);
-      lines.push(`The factory is idle. Start a conversation to begin working in a repository.`);
-      return lines.join('\n');
-    }
-
-    lines.push(`*Active Repositories (${activeRepos.length}):*`);
-    activeRepos.forEach(repo => {
-      const marker = repo === mostRecentRepo ? '🟢 ' : '🔵 ';
-      lines.push(`${marker}\`${repo}\``);
-    });
-
-    lines.push(``);
-    lines.push(`*Current Bot Status:*`);
-    if (statusInfo.cache.lastText && statusInfo.cache.lastEmoji) {
-      lines.push(`${statusInfo.cache.lastEmoji} "${statusInfo.cache.lastText}"`);
-      if (statusInfo.cache.lastUpdate) {
-        const minutesAgo = Math.round((Date.now() - new Date(statusInfo.cache.lastUpdate).getTime()) / (1000 * 60));
-        lines.push(`_Updated ${minutesAgo} minute${minutesAgo !== 1 ? 's' : ''} ago_`);
-      }
-    } else {
-      lines.push(`❓ No status set`);
-    }
-
-    lines.push(``);
-    lines.push(`*Session Info:*`);
-    const stats = sessionManager.getStats();
-    lines.push(`• Active sessions: ${stats.active}`);
-    lines.push(`• Completed sessions: ${stats.completed}`);
-    lines.push(`• Most recent work: \`${mostRecentRepo || 'none'}\``);
-
-    return lines.join('\n');
-  } catch (error) {
-    logger.error('Error getting repository status', { error });
-    return `❌ Error getting repository status: ${error instanceof Error ? error.message : 'Unknown error'}`;
-  }
-}
-
-/**
- * SET STATUS - Manually set bot status
- */
-export async function setFactoryStatus(operation: string): Promise<string> {
-  try {
-    const success = await sessionManager.setFactoryStatus(operation);
-
-    if (success) {
-      return `✅ *Bot status updated*\n🏭 "${operation}"`;
-    } else {
-      return `❌ Failed to update bot status. Check logs for details.`;
-    }
-  } catch (error) {
-    logger.error('Error setting factory status', { error, operation });
-    return `❌ Error setting status: ${error instanceof Error ? error.message : 'Unknown error'}`;
-  }
-}
-
 export default {
   getFactoryStatus,
   analyzeIssue,
   getFailurePatterns,
   getAgentPerformance,
   getWorkflowHealth,
-  getRepositoryStatus,
-  setFactoryStatus,
 };

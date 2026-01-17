@@ -1,153 +1,201 @@
 #!/bin/bash
-
-# Railway Management Script for Claude Software Factory Slack Bot
-# This script provides convenient commands for managing the Railway deployment
+# Railway CLI wrapper using GraphQL API
+# Usage: ./railway.sh <command> [args]
+#
+# Commands:
+#   status          - Get current deployment status
+#   logs [limit]    - Get deployment logs (default: 50 lines)
+#   deployments [n] - List recent deployments (default: 5)
+#   redeploy        - Trigger a redeploy
+#   rollback <id>   - Rollback to a specific deployment ID
+#   info            - Get service information
 
 set -e
 
-# Check if railway CLI is available
-if ! command -v railway &> /dev/null; then
-    echo "⚠️  Railway CLI not found. Installing..."
-    curl -fsSL https://railway.app/install.sh | sh
-    export PATH="$HOME/.railway/bin:$PATH"
+RAILWAY_API="https://backboard.railway.com/graphql/v2"
+
+# Check required environment variables
+if [ -z "$RAILWAY_TOKEN" ]; then
+  echo "Error: RAILWAY_TOKEN environment variable not set"
+  exit 1
 fi
 
-# Function to check Railway authentication
-check_auth() {
-    # Check for RAILWAY_TOKEN first, then fall back to RAILWAY_TOKEN_SW_FACTORY
-    if [[ -n "$RAILWAY_TOKEN" ]]; then
-        export RAILWAY_TOKEN
-    elif [[ -n "$RAILWAY_TOKEN_SW_FACTORY" ]]; then
-        export RAILWAY_TOKEN="$RAILWAY_TOKEN_SW_FACTORY"
-        echo "ℹ️  Using RAILWAY_TOKEN_SW_FACTORY as RAILWAY_TOKEN"
-    else
-        echo "❌ Neither RAILWAY_TOKEN nor RAILWAY_TOKEN_SW_FACTORY environment variable is set"
-        echo "Please set one of these to your Railway project token"
-        return 1
-    fi
+if [ -z "$RAILWAY_SERVICE_ID" ]; then
+  echo "Error: RAILWAY_SERVICE_ID environment variable not set"
+  exit 1
+fi
+
+if [ -z "$RAILWAY_ENVIRONMENT_ID" ]; then
+  echo "Error: RAILWAY_ENVIRONMENT_ID environment variable not set"
+  exit 1
+fi
+
+# Helper function to execute GraphQL queries
+railway_query() {
+  local query="$1"
+  local variables="${2:-{}}"
+
+  curl -s -X POST "$RAILWAY_API" \
+    -H "Authorization: Bearer $RAILWAY_TOKEN" \
+    -H "Content-Type: application/json" \
+    -d "{\"query\": \"$query\", \"variables\": $variables}"
 }
 
-# Function to make health check without Railway CLI
-health_check() {
-    echo "🔍 Checking service health..."
-    local health_url="https://claude-software-factory-template-production.up.railway.app/health"
+# Get current deployment status
+cmd_status() {
+  local query="query { deployments(first: 1, input: { serviceId: \\\"$RAILWAY_SERVICE_ID\\\", environmentId: \\\"$RAILWAY_ENVIRONMENT_ID\\\" }) { edges { node { id status createdAt meta { commitHash commitMessage branch } } } } }"
 
-    if curl -s "$health_url" > /dev/null; then
-        echo "✅ Service is healthy"
-        curl -s "$health_url" | jq '.' 2>/dev/null || curl -s "$health_url"
-    else
-        echo "❌ Service health check failed"
-        return 1
-    fi
+  local result=$(railway_query "$query")
+
+  # Parse with jq if available, otherwise show raw
+  if command -v jq &> /dev/null; then
+    echo "$result" | jq -r '.data.deployments.edges[0].node | "Status: \(.status)\nDeployment ID: \(.id)\nCommit: \(.meta.commitHash // "N/A" | .[0:7])\nMessage: \(.meta.commitMessage // "N/A")\nBranch: \(.meta.branch // "N/A")\nCreated: \(.createdAt)"'
+  else
+    echo "$result"
+  fi
 }
 
-# Function to show usage
-show_usage() {
-    echo "Railway Management Script"
-    echo ""
-    echo "Usage: $0 <command> [args]"
+# Get deployment logs
+cmd_logs() {
+  local limit="${1:-50}"
+
+  # First get the latest deployment ID
+  local deploy_query="query { deployments(first: 1, input: { serviceId: \\\"$RAILWAY_SERVICE_ID\\\", environmentId: \\\"$RAILWAY_ENVIRONMENT_ID\\\" }) { edges { node { id } } } }"
+  local deploy_result=$(railway_query "$deploy_query")
+
+  local deployment_id=""
+  if command -v jq &> /dev/null; then
+    deployment_id=$(echo "$deploy_result" | jq -r '.data.deployments.edges[0].node.id')
+  else
+    echo "Error: jq is required for logs command"
+    exit 1
+  fi
+
+  if [ -z "$deployment_id" ] || [ "$deployment_id" = "null" ]; then
+    echo "Error: No deployment found"
+    exit 1
+  fi
+
+  local log_query="query { deploymentLogs(deploymentId: \\\"$deployment_id\\\", limit: $limit) { timestamp message severity } }"
+  local result=$(railway_query "$log_query")
+
+  if command -v jq &> /dev/null; then
+    echo "$result" | jq -r '.data.deploymentLogs[] | "\(.timestamp) [\(.severity // "INFO")] \(.message)"' 2>/dev/null || echo "$result"
+  else
+    echo "$result"
+  fi
+}
+
+# List recent deployments
+cmd_deployments() {
+  local limit="${1:-5}"
+  local query="query { deployments(first: $limit, input: { serviceId: \\\"$RAILWAY_SERVICE_ID\\\", environmentId: \\\"$RAILWAY_ENVIRONMENT_ID\\\" }) { edges { node { id status createdAt meta { commitHash commitMessage } } } } }"
+
+  local result=$(railway_query "$query")
+
+  if command -v jq &> /dev/null; then
+    echo "Recent Deployments:"
+    echo "$result" | jq -r '.data.deployments.edges[] | .node | "  \(.id | .[0:8])  \(.status | .[0:10])  \(.meta.commitHash // "N/A" | .[0:7])  \(.meta.commitMessage // "No message" | .[0:40])"'
+  else
+    echo "$result"
+  fi
+}
+
+# Trigger redeploy
+cmd_redeploy() {
+  local query="mutation { serviceInstanceRedeploy(serviceId: \\\"$RAILWAY_SERVICE_ID\\\", environmentId: \\\"$RAILWAY_ENVIRONMENT_ID\\\") { id } }"
+
+  local result=$(railway_query "$query")
+
+  if command -v jq &> /dev/null; then
+    local new_id=$(echo "$result" | jq -r '.data.serviceInstanceRedeploy.id // empty')
+    if [ -n "$new_id" ]; then
+      echo "Redeploy triggered successfully!"
+      echo "New deployment ID: $new_id"
+    else
+      echo "Error: $(echo "$result" | jq -r '.errors[0].message // "Unknown error"')"
+      exit 1
+    fi
+  else
+    echo "$result"
+  fi
+}
+
+# Rollback to a specific deployment
+cmd_rollback() {
+  local deployment_id="$1"
+
+  if [ -z "$deployment_id" ]; then
+    echo "Error: Deployment ID required"
+    echo "Usage: railway.sh rollback <deployment-id>"
+    exit 1
+  fi
+
+  local query="mutation { deploymentRollback(id: \\\"$deployment_id\\\") { id } }"
+
+  local result=$(railway_query "$query")
+
+  if command -v jq &> /dev/null; then
+    local new_id=$(echo "$result" | jq -r '.data.deploymentRollback.id // empty')
+    if [ -n "$new_id" ]; then
+      echo "Rollback successful!"
+      echo "New deployment ID: $new_id"
+    else
+      echo "Error: $(echo "$result" | jq -r '.errors[0].message // "Unknown error"')"
+      exit 1
+    fi
+  else
+    echo "$result"
+  fi
+}
+
+# Get service info
+cmd_info() {
+  local query="query { service(id: \\\"$RAILWAY_SERVICE_ID\\\") { name deployments(first: 1) { edges { node { status staticUrl } } } } }"
+
+  local result=$(railway_query "$query")
+
+  if command -v jq &> /dev/null; then
+    echo "$result" | jq -r '.data.service | "Service: \(.name)\nStatus: \(.deployments.edges[0].node.status // "unknown")\nURL: \(.deployments.edges[0].node.staticUrl // "N/A")"'
+  else
+    echo "$result"
+  fi
+}
+
+# Main command router
+case "${1:-help}" in
+  status)
+    cmd_status
+    ;;
+  logs)
+    cmd_logs "$2"
+    ;;
+  deployments|list)
+    cmd_deployments "$2"
+    ;;
+  redeploy|deploy)
+    cmd_redeploy
+    ;;
+  rollback)
+    cmd_rollback "$2"
+    ;;
+  info)
+    cmd_info
+    ;;
+  help|--help|-h)
+    echo "Railway CLI wrapper"
     echo ""
     echo "Commands:"
-    echo "  status               - Show deployment status"
-    echo "  logs [lines]         - View recent logs (default: 100)"
-    echo "  deployments [count]  - List recent deployments (default: 10)"
-    echo "  redeploy            - Trigger manual redeploy"
-    echo "  rollback <id>       - Rollback to specific deployment"
-    echo "  info                - Show service information"
-    echo "  health              - Check service health (no auth required)"
-    echo "  help                - Show this help message"
-}
-
-# Main command dispatcher
-case "$1" in
-    "status")
-        echo "🔍 Checking deployment status..."
-        if check_auth; then
-            railway status
-        else
-            health_check
-        fi
-        ;;
-
-    "logs")
-        LINES=${2:-100}
-        echo "📋 Fetching last $LINES log lines..."
-        if check_auth; then
-            railway logs --lines "$LINES"
-        else
-            echo "❌ Railway CLI authentication required for logs"
-            exit 1
-        fi
-        ;;
-
-    "deployments")
-        COUNT=${2:-10}
-        echo "📦 Listing last $COUNT deployments..."
-        if check_auth; then
-            railway deployments --limit "$COUNT"
-        else
-            echo "❌ Railway CLI authentication required for deployments"
-            exit 1
-        fi
-        ;;
-
-    "redeploy")
-        echo "🚀 Triggering manual redeploy..."
-        if check_auth; then
-            railway redeploy
-            echo "✅ Redeploy triggered"
-        else
-            echo "❌ Railway CLI authentication required for redeploy"
-            exit 1
-        fi
-        ;;
-
-    "rollback")
-        if [[ -z "$2" ]]; then
-            echo "❌ Deployment ID required"
-            echo "Usage: $0 rollback <deployment-id>"
-            echo "Get deployment ID with: $0 deployments"
-            exit 1
-        fi
-        echo "⏪ Rolling back to deployment $2..."
-        if check_auth; then
-            railway rollback "$2"
-            echo "✅ Rollback completed"
-        else
-            echo "❌ Railway CLI authentication required for rollback"
-            exit 1
-        fi
-        ;;
-
-    "info")
-        echo "ℹ️  Service information..."
-        if check_auth; then
-            railway status
-            echo ""
-            railway variables
-        else
-            echo "❌ Railway CLI authentication required for detailed info"
-            health_check
-        fi
-        ;;
-
-    "health")
-        health_check
-        ;;
-
-    "help"|"--help"|"-h")
-        show_usage
-        ;;
-
-    "")
-        echo "❌ No command specified"
-        show_usage
-        exit 1
-        ;;
-
-    *)
-        echo "❌ Unknown command: $1"
-        show_usage
-        exit 1
-        ;;
+    echo "  status          - Get current deployment status"
+    echo "  logs [limit]    - Get deployment logs (default: 50)"
+    echo "  deployments [n] - List recent deployments (default: 5)"
+    echo "  redeploy        - Trigger a redeploy"
+    echo "  rollback <id>   - Rollback to a specific deployment"
+    echo "  info            - Get service information"
+    ;;
+  *)
+    echo "Unknown command: $1"
+    echo "Run '$0 help' for usage"
+    exit 1
+    ;;
 esac

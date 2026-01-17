@@ -9,14 +9,20 @@ import { markdownToSlack } from '../utils/markdown-to-slack.js';
 import { rateLimiter } from '../utils/rate-limiter.js';
 import logger from '../utils/logger.js';
 import { config } from '../config.js';
-import StatusAnimator from '../utils/status-animator.js';
-import ProgressiveMessenger from '../utils/progressive-messenger.js';
+import { fetchThreadHistory, formatHistoryForPrompt } from '../utils/thread-history.js';
+
+// Use a generic type for Slack client to avoid version conflicts between @slack/bolt and @slack/web-api
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type SlackClient = any;
+
+// Cache the bot's user ID for identifying bot messages
+let botUserId: string | undefined;
 
 /**
  * Register all Slack event handlers
  */
 export function registerEventHandlers(app: App): void {
-  // Handle direct messages
+  // Handle direct messages and thread replies where bot is participating
   app.message(async ({ message, client, say }) => {
     const msg = message as MessageEvent & { text?: string; user?: string; thread_ts?: string; bot_id?: string; channel_type?: string };
 
@@ -30,21 +36,47 @@ export function registerEventHandlers(app: App): void {
       return;
     }
 
-    // Ignore @mentions in channels - those are handled by app_mention event
-    // Only process DMs (channel_type === 'im') or non-mention messages
-    if (msg.channel_type !== 'im' && msg.text.includes('<@')) {
+    // Skip messages with @mentions - let app_mention handler deal with those
+    // This prevents duplicate responses when bot is mentioned in a thread it's already in
+    if (msg.text.includes('<@') && msg.channel_type !== 'im') {
       return;
     }
 
-    await handleMessage(
-      msg.text,
-      msg.user,
-      msg.channel,
-      msg.thread_ts || msg.ts,
-      msg.ts,
-      client,
-      say
-    );
+    // DMs - always respond
+    if (msg.channel_type === 'im') {
+      await handleMessage(
+        msg.text,
+        msg.user,
+        msg.channel,
+        msg.thread_ts || msg.ts,
+        msg.ts,
+        client,
+        say
+      );
+      return;
+    }
+
+    // In channels: Only respond in threads where bot is already participating
+    // (i.e., there's an existing session for this thread)
+    if (msg.thread_ts) {
+      const existingSession = sessionManager.get(msg.channel, msg.thread_ts);
+      if (existingSession) {
+        // Bot is participating in this thread - respond automatically
+        await handleMessage(
+          msg.text,
+          msg.user,
+          msg.channel,
+          msg.thread_ts,
+          msg.ts,
+          client,
+          say
+        );
+        return;
+      }
+    }
+
+    // In channels without a thread, or in threads where bot isn't participating:
+    // Don't respond - require @mention (handled by app_mention event)
   });
 
   // Handle @mentions in channels
@@ -138,194 +170,178 @@ export function registerEventHandlers(app: App): void {
     }
 
     // Default: start conversation in thread
-    // Use the same dynamic status system as regular messages
-    await handleMessage(
-      text,
-      user_id,
-      channel_id,
-      trigger_id, // Use trigger_id as thread_ts for slash commands
-      trigger_id, // Use trigger_id as message_ts for slash commands
-      app.client,
-      async (response: any) => {
-        await respond({
-          response_type: 'in_channel',
-          ...response
-        });
-      }
-    );
+    await respond({
+      response_type: 'in_channel',
+      text: `<@${user_id}> asked: ${text}\n\n_Starting conversation..._`,
+    });
   });
 
   logger.info('Slack event handlers registered');
 }
 
 /**
- * Determine operation type based on message content
+ * Create a progressive messenger that posts SEPARATE messages for each update
+ * Each update becomes its own Slack message with timestamp
  */
-function getOperationType(text: string): keyof typeof StatusAnimator.DEFAULT_PHASES {
-  const lowerText = text.toLowerCase();
+function createProgressiveMessenger(
+  client: any,
+  channelId: string,
+  threadTs: string,
+) {
+  let thinkingTs: string | null = null;
+  let animationFrame = 0;
+  let animationInterval: NodeJS.Timeout | null = null;
+  const postedMessages: string[] = []; // Track all posted message timestamps
 
-  // Check for dispatch commands
-  if (lowerText.includes('dispatch ') || lowerText.startsWith('/dispatch')) {
-    return 'dispatch';
-  }
+  // Animation frames for the thinking indicator
+  const thinkingFrames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
-  // Check for factory commands
-  if (lowerText.includes('factory') || lowerText.includes('failures') ||
-      lowerText.includes('agent performance') || lowerText.includes('workflows') ||
-      lowerText.includes('analyze #')) {
-    return 'factory_analysis';
-  }
+  // Start the thinking animation as a NEW message
+  const startThinking = async () => {
+    // Stop any existing animation first
+    if (animationInterval) {
+      clearInterval(animationInterval);
+      animationInterval = null;
+    }
 
-  // Default to conversation
-  return 'conversation';
-}
+    const frame = thinkingFrames[0];
+    const result = await client.chat.postMessage({
+      channel: channelId,
+      thread_ts: threadTs,
+      text: `${frame} _working..._`,
+    });
+    thinkingTs = result.ts;
+    animationFrame = 0;
 
-/**
- * Get initial phase description based on operation type
- */
-function getInitialPhase(operationType: string): string {
-  const phaseMap: Record<string, string> = {
-    dispatch: 'Analyzing dispatch request',
-    factory_analysis: 'Gathering factory metrics',
-    conversation: 'Processing your message',
-    code_analysis: 'Examining codebase'
+    // Animate the thinking indicator
+    animationInterval = setInterval(async () => {
+      if (!thinkingTs) return;
+      animationFrame++;
+      const frame = thinkingFrames[animationFrame % thinkingFrames.length];
+      try {
+        await client.chat.update({
+          channel: channelId,
+          ts: thinkingTs,
+          text: `${frame} _working..._`,
+        });
+      } catch (e) {
+        // Ignore update errors
+      }
+    }, 400);
   };
 
-  return phaseMap[operationType] || 'Starting to work';
-}
+  // Update the thinking message with content, then it becomes a permanent post
+  const convertThinkingToPost = async (content: string) => {
+    if (animationInterval) {
+      clearInterval(animationInterval);
+      animationInterval = null;
+    }
 
-/**
- * Find natural break points in streaming content
- */
-interface BreakPoint {
-  position: number;
-  type?: 'analysis' | 'result' | 'progress' | 'error';
-}
-
-function findNaturalBreaks(content: string, startPosition: number): BreakPoint[] {
-  const breaks: BreakPoint[] = [];
-  const searchContent = content.substring(startPosition);
-
-  // Look for sentence endings first
-  const sentencePattern = /[.!?]+\s+/g;
-  let match;
-  while ((match = sentencePattern.exec(searchContent)) !== null) {
-    const position = startPosition + match.index + match[0].length;
-    breaks.push({
-      position,
-      type: inferContentType(content.substring(Math.max(0, position - 200), position))
-    });
-  }
-
-  // Look for paragraph breaks
-  const paragraphPattern = /\n\s*\n/g;
-  while ((match = paragraphPattern.exec(searchContent)) !== null) {
-    const position = startPosition + match.index + match[0].length;
-    breaks.push({
-      position,
-      type: inferContentType(content.substring(Math.max(0, position - 200), position))
-    });
-  }
-
-  // Look for list items or bullet points
-  const listPattern = /\n\s*[-*•]\s+/g;
-  while ((match = listPattern.exec(searchContent)) !== null) {
-    const position = startPosition + match.index;
-    breaks.push({
-      position,
-      type: 'progress'
-    });
-  }
-
-  // Sort by position and return unique positions
-  const uniqueBreaks = Array.from(new Map(
-    breaks.map(b => [b.position, b])
-  ).values()).sort((a, b) => a.position - b.position);
-
-  return uniqueBreaks;
-}
-
-/**
- * Infer content type from text context
- */
-function inferContentType(text: string): 'analysis' | 'result' | 'progress' | 'error' {
-  const lowerText = text.toLowerCase();
-
-  if (lowerText.includes('error') || lowerText.includes('failed')) {
-    return 'error';
-  }
-
-  if (lowerText.includes('found') || lowerText.includes('analyzing') || lowerText.includes('examining')) {
-    return 'analysis';
-  }
-
-  if (lowerText.includes('✅') || lowerText.includes('completed') || lowerText.includes('result')) {
-    return 'result';
-  }
-
-  return 'progress';
-}
-
-/**
- * Extract meaningful content from streaming updates
- */
-function extractMeaningfulUpdate(content: string): string {
-  // Remove excessive whitespace and clean up formatting
-  let cleaned = content.trim();
-
-  // Skip very short updates
-  if (cleaned.length < 50) {
-    return '';
-  }
-
-  // Extract complete sentences or meaningful chunks
-  const sentences = cleaned.split(/[.!?]+/);
-  const meaningfulSentences = sentences.filter(s => s.trim().length > 20);
-
-  if (meaningfulSentences.length > 0) {
-    return meaningfulSentences.slice(0, 2).join('. ').trim() + '.';
-  }
-
-  // Fallback: return first 150 chars if no complete sentences
-  return cleaned.substring(0, 150) + (cleaned.length > 150 ? '...' : '');
-}
-
-/**
- * Determine update type based on content and position
- */
-function determineUpdateType(content: string, updateNumber: number): 'thinking' | 'analysis' | 'result' | 'error' | 'progress' {
-  const lowerContent = content.toLowerCase();
-
-  if (lowerContent.includes('error') || lowerContent.includes('failed')) {
-    return 'error';
-  }
-
-  if (updateNumber === 1) {
-    return 'analysis';
-  }
-
-  if (lowerContent.includes('found') || lowerContent.includes('discovered') || lowerContent.includes('analyzing')) {
-    return 'analysis';
-  }
-
-  return 'progress';
-}
-
-/**
- * Get phase description for update based on operation and step
- */
-function getPhaseForUpdate(operationType: string, updateNumber: number): string {
-  const phasesByType: Record<string, string[]> = {
-    dispatch: ['Parsing request', 'Creating issue', 'Setting up workflow'],
-    factory_analysis: ['Collecting metrics', 'Analyzing patterns', 'Generating insights'],
-    conversation: ['Understanding context', 'Researching solution', 'Formulating response'],
-    code_analysis: ['Scanning codebase', 'Identifying patterns', 'Proposing solution']
+    if (thinkingTs && content.trim()) {
+      try {
+        await client.chat.update({
+          channel: channelId,
+          ts: thinkingTs,
+          text: markdownToSlack(content),
+        });
+        postedMessages.push(thinkingTs);
+        thinkingTs = null;
+      } catch (e) {
+        // If update fails, try posting new message
+        logger.warn('Failed to update thinking message, posting new', { error: e });
+        await client.chat.postMessage({
+          channel: channelId,
+          thread_ts: threadTs,
+          text: markdownToSlack(content),
+        });
+        thinkingTs = null;
+      }
+    }
   };
 
-  const phases = phasesByType[operationType] || phasesByType.conversation;
-  const phaseIndex = Math.min(updateNumber - 1, phases.length - 1);
+  // Delete the thinking message without converting
+  const deleteThinking = async () => {
+    if (animationInterval) {
+      clearInterval(animationInterval);
+      animationInterval = null;
+    }
+    if (thinkingTs) {
+      try {
+        await client.chat.delete({
+          channel: channelId,
+          ts: thinkingTs,
+        });
+      } catch (e) {
+        // Ignore delete errors
+      }
+      thinkingTs = null;
+    }
+  };
 
-  return phases[phaseIndex] || 'Processing';
+  // Initialize with thinking message
+  startThinking();
+
+  // Queue for processing updates sequentially
+  let updateQueue: Promise<void> = Promise.resolve();
+  let pendingContent = '';
+
+  return {
+    /**
+     * Add content - queues for posting as separate message
+     */
+    addChunk: (chunk: string) => {
+      pendingContent += chunk;
+
+      // Check for natural break points to create separate messages
+      const hasBreakPoint = pendingContent.includes('\n\n') ||
+        pendingContent.length > 300;
+
+      if (hasBreakPoint && pendingContent.trim().length > 30) {
+        const content = pendingContent;
+        pendingContent = '';
+
+        // Queue the update to ensure sequential processing
+        updateQueue = updateQueue.then(async () => {
+          // Convert current thinking message to this content
+          await convertThinkingToPost(content);
+          // Start new thinking message for next update
+          await startThinking();
+        }).catch(err => {
+          logger.error('Error posting update', { error: err });
+        });
+      }
+    },
+
+    /**
+     * Get accumulated content
+     */
+    getContent: () => pendingContent,
+
+    /**
+     * Finalize - post any remaining content
+     */
+    finalize: async (finalContent?: string) => {
+      // Wait for any pending updates
+      await updateQueue;
+
+      const content = finalContent ?? pendingContent;
+
+      if (content.trim()) {
+        // Convert thinking to final content
+        await convertThinkingToPost(content);
+      } else {
+        // No content, just delete thinking
+        await deleteThinking();
+      }
+    },
+
+    /**
+     * Cancel and clean up
+     */
+    cancel: async () => {
+      await deleteThinking();
+    },
+  };
 }
 
 /**
@@ -337,8 +353,8 @@ async function handleMessage(
   channelId: string,
   threadTs: string,
   messageTs: string,
-  client: any,
-  say: any
+  client: SlackClient,
+  say: SlackClient
 ): Promise<void> {
   // Rate limiting
   if (!rateLimiter.check(userId)) {
@@ -360,101 +376,68 @@ async function handleMessage(
   const session = sessionManager.getOrCreate(channelId, threadTs, userId);
 
   try {
-    // Determine operation type for initial phase
-    const operationType = getOperationType(text);
-    const initialPhase = getInitialPhase(operationType);
+    // Get bot's user ID if not cached (needed to identify bot messages in history)
+    if (!botUserId) {
+      try {
+        const authResult = await client.auth.test();
+        botUserId = authResult.user_id as string;
+        logger.info('Cached bot user ID', { botUserId });
+      } catch (error) {
+        logger.warn('Could not get bot user ID', { error });
+      }
+    }
 
-    // Start progressive messaging session
-    const sessionKey = await ProgressiveMessenger.startSession(
+    // Fetch full thread history from Slack (not just in-memory)
+    const threadHistory = await fetchThreadHistory(
+      client,
       channelId,
       threadTs,
-      client,
-      initialPhase
+      botUserId
     );
 
-    try {
-      // Track intermediate updates
-      let updateCount = 0;
-      let lastChunkLength = 0;
-      const chunkThreshold = 200; // Minimum chars for an update
+    // Format history for Claude
+    const conversationHistory = formatHistoryForPrompt(threadHistory);
 
-      // Set up intelligent streaming buffer
-      let streamBuffer = '';
-      let lastSentPosition = 0;
-      const minChunkSize = 100; // Smaller threshold for more frequent updates
+    logger.info('Fetched thread history from Slack', {
+      channelId,
+      threadTs,
+      totalMessages: threadHistory.totalMessages,
+      includedMessages: conversationHistory.length,
+      truncated: threadHistory.truncated,
+    });
 
-      const result = await routeMessage(text, session, async (chunk) => {
-        // Add new chunk to buffer
-        streamBuffer += chunk;
+    // Create progressive messenger - posts separate messages for each update
+    const messenger = createProgressiveMessenger(client as any, channelId, threadTs);
 
-        // Look for natural break points in the buffer
-        const breakPoints = findNaturalBreaks(streamBuffer, lastSentPosition);
+    // Process the message with progressive updates and full thread history
+    const result = await routeMessage(text, session, {
+      onChunk: (chunk) => {
+        messenger.addChunk(chunk);
+      },
+      conversationHistory,
+    });
 
-        for (const breakPoint of breakPoints) {
-          if (breakPoint.position > lastSentPosition + minChunkSize) {
-            updateCount++;
+    // Finalize with any remaining content
+    await messenger.finalize(result.response);
 
-            // Extract content from last position to break point
-            const content = streamBuffer.substring(lastSentPosition, breakPoint.position).trim();
+    // Track both user message and assistant response in session history
+    // (also update in-memory for faster access within same deploy)
+    sessionManager.addMessage(channelId, threadTs, 'user', text, messageTs);
+    sessionManager.addMessage(channelId, threadTs, 'assistant', result.response, Date.now().toString());
 
-            if (content.length > 20) { // Ensure meaningful content
-              await ProgressiveMessenger.postUpdate(sessionKey, {
-                id: `update-${updateCount}`,
-                type: breakPoint.type || determineUpdateType(content, updateCount),
-                content: content,
-                metadata: {
-                  step: updateCount,
-                  phase: getPhaseForUpdate(operationType, updateCount),
-                  timestamp: Date.now()
-                }
-              });
-
-              lastSentPosition = breakPoint.position;
-
-              // Add small delay between updates for better UX
-              await new Promise(resolve => setTimeout(resolve, 1000));
-            }
-          }
-        }
-      });
-
-      // Complete the session with final result
-      await ProgressiveMessenger.completeSession(
-        sessionKey,
-        result.response,
-        {
-          success: !result.response.includes('error'),
-          summary: result.dispatchedAgent ? `Dispatched to ${result.dispatchedAgent} agent` : 'Conversation completed'
-        }
-      );
-
-      // Track the response in session
-      sessionManager.addMessage(channelId, threadTs, 'assistant', result.response, undefined);
-
-      // If an agent was dispatched, track it
-      if (result.dispatchedAgent && result.issueUrl) {
-        const issueNumber = parseInt(result.issueUrl.split('/').pop() || '0');
-        if (issueNumber) {
-          sessionManager.linkIssue(channelId, threadTs, issueNumber);
-        }
+    // If an agent was dispatched, track it
+    if (result.dispatchedAgent && result.issueUrl) {
+      const issueNumber = parseInt(result.issueUrl.split('/').pop() || '0');
+      if (issueNumber) {
+        sessionManager.linkIssue(channelId, threadTs, issueNumber);
       }
-
-      logger.info('Message processed successfully', {
-        channelId,
-        threadTs,
-        dispatchedAgent: result.dispatchedAgent,
-        totalUpdates: updateCount
-      });
-    } catch (processingError) {
-      // If processing fails, complete with error
-      await ProgressiveMessenger.completeSession(
-        sessionKey,
-        "I encountered an error processing your message. Please try again.",
-        { success: false }
-      );
-
-      throw processingError;
     }
+
+    logger.info('Message processed successfully', {
+      channelId,
+      threadTs,
+      dispatchedAgent: result.dispatchedAgent,
+    });
   } catch (error) {
     logger.error('Error processing message', { error, channelId, threadTs });
 

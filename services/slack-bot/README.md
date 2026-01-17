@@ -154,6 +154,41 @@ When agents complete work, they post updates back to your Slack thread:
 | `WEBHOOK_PORT` | No | Port for webhook server (default: 3001) |
 | `WEBHOOK_SECRET` | No | Secret for validating webhooks |
 | `LOG_LEVEL` | No | Logging level (default: info) |
+| `RAILWAY_TOKEN` | No | Railway API token (for deployment management) |
+| `RAILWAY_SERVICE_ID` | No | Railway service ID |
+| `RAILWAY_ENVIRONMENT_ID` | No | Railway environment ID |
+
+### Railway Configuration (Optional)
+
+To enable the bot to manage its own deployments (view logs, rollback, redeploy):
+
+1. **Get Railway Token:**
+   - Go to [Railway Account Settings](https://railway.app/account/tokens)
+   - Create a new token with full access
+
+2. **Get Service & Environment IDs:**
+   ```bash
+   # Using Railway CLI
+   railway whoami
+   railway status
+
+   # Or from Railway dashboard URL:
+   # https://railway.app/project/<PROJECT_ID>/service/<SERVICE_ID>
+   ```
+
+3. **Add to Railway environment variables:**
+   ```
+   RAILWAY_TOKEN=<your-token>
+   RAILWAY_SERVICE_ID=<service-id>
+   RAILWAY_ENVIRONMENT_ID=<environment-id>
+   ```
+
+4. **Test the integration:**
+   ```bash
+   # In Slack, ask the bot:
+   @Claude Factory check deployment status
+   @Claude Factory show me the deployment logs
+   ```
 
 ### MCP Servers
 

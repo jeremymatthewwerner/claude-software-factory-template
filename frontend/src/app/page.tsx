@@ -3,26 +3,6 @@
 import { useState, useEffect } from 'react';
 import styles from './page.module.css';
 
-// Animated thinking indicator component
-function ThinkingDots() {
-  const [dots, setDots] = useState('');
-
-  useEffect(() => {
-    const interval = setInterval(() => {
-      setDots((prev) => {
-        if (prev === '') return '.';
-        if (prev === '.') return '..';
-        if (prev === '..') return '...';
-        return '';
-      });
-    }, 2000); // Update every 2 seconds
-
-    return () => clearInterval(interval);
-  }, []);
-
-  return <span>{dots}</span>;
-}
-
 interface ApiStatus {
   health: 'checking' | 'healthy' | 'unhealthy';
   version: string | null;
@@ -115,16 +95,11 @@ export default function Home() {
                       : styles.checking
                 }`}
               >
-                {apiStatus.health === 'checking' ? (
-                  <>
-                    Checking
-                    <ThinkingDots />
-                  </>
-                ) : apiStatus.health === 'healthy' ? (
-                  'Connected'
-                ) : (
-                  'Disconnected'
-                )}
+                {apiStatus.health === 'checking'
+                  ? 'Checking...'
+                  : apiStatus.health === 'healthy'
+                    ? 'Connected'
+                    : 'Disconnected'}
               </span>
             </div>
             {apiStatus.version && (
@@ -158,14 +133,7 @@ export default function Home() {
               className={styles.button}
               disabled={loading || apiStatus.health !== 'healthy'}
             >
-              {loading ? (
-                <>
-                  Sending
-                  <ThinkingDots />
-                </>
-              ) : (
-                'Say Hello'
-              )}
+              {loading ? 'Sending...' : 'Say Hello'}
             </button>
           </form>
           {greeting && <p className={styles.greeting}>{greeting}</p>}

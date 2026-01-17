@@ -50,33 +50,16 @@ export function multiply(...numbers: number[]): CalculationResult {
 /**
  * Divide first number by subsequent numbers
  *
- * @throws Error if any divisor is zero
+ * BUG: Does not handle division by zero!
+ * TODO: Add proper error handling for division by zero
  */
 export function divide(first: number, ...rest: number[]): CalculationResult {
-  if (rest.some((n) => n === 0)) {
-    throw new Error('Division by zero');
-  }
+  // INTENTIONAL BUG: No check for division by zero
   const value = rest.reduce((quotient, n) => quotient / n, first);
   return {
     value,
     operation: 'divide',
     inputs: [first, ...rest],
-  };
-}
-
-/**
- * Calculate modulo (remainder of division)
- *
- * @throws Error if divisor is zero
- */
-export function modulo(dividend: number, divisor: number): CalculationResult {
-  if (divisor === 0) {
-    throw new Error('Division by zero');
-  }
-  return {
-    value: dividend % divisor,
-    operation: 'modulo',
-    inputs: [dividend, divisor],
   };
 }
 

@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "slack": {
+      "command": "node",
+      "args": ["dist/mcp/index.js"],
+      "cwd": "/path/to/claude-software-factory-template/services/slack-bot",
+      "env": {
+        "SLACK_BOT_TOKEN": "xoxb-your-bot-token"
+      }
+    }
+  }
+}
