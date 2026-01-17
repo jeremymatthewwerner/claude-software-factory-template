@@ -83,53 +83,55 @@ async function main(): Promise<void> {
 
   // Test endpoint for progressive messaging demo
   expressApp.post('/test-progressive', (req: express.Request, res: express.Response) => {
-    const { channel } = req.body;
+    const { channel = 'demo-channel' } = req.body;
 
-    if (!channel) {
-      return res.status(400).json({ error: 'Missing channel ID' });
-    }
-
-    // Start progressive messaging demo
+    // Start progressive messaging demo (even without real Slack)
     (async () => {
-      // Use a fake thread timestamp for demo
-      const threadTs = Date.now().toString();
-      const sessionKey = await ProgressiveMessenger.startSession(
-        channel,
-        threadTs,
-        slackClient,
-        'Testing enhanced messaging system...'
-      );
+      logger.info('=== Progressive Messaging Demo Started ===');
+
+      // Simulate what would happen in Slack
+      logger.info('📱 MESSAGE 1 (Thinking Animation):', {
+        timestamp: new Date().toISOString(),
+        content: ':thinking_face: Analyzing your request...'
+      });
 
       await new Promise(resolve => setTimeout(resolve, 2000));
 
       // Analysis update
-      await ProgressiveMessenger.postUpdate(sessionKey, {
-        id: `analysis-${Date.now()}`,
-        type: 'analysis',
+      logger.info('📱 MESSAGE 2 (Analysis - Replaces thinking):', {
+        timestamp: new Date().toISOString(),
         content: ':mag: **Analysis Complete**\n\nI\'ll demonstrate the progressive messaging system with visual separation and timestamps.'
       });
+
       await new Promise(resolve => setTimeout(resolve, 1500));
 
       // Progress update
-      await ProgressiveMessenger.postUpdate(sessionKey, {
-        id: `progress-${Date.now()}`,
-        type: 'progress',
+      logger.info('📱 MESSAGE 3 (Progress):', {
+        timestamp: new Date().toISOString(),
         content: ':gear: **Processing Request**\n\nBreaking down your text into meaningful chunks for better readability...'
       });
+
       await new Promise(resolve => setTimeout(resolve, 2000));
 
-      // Complete session with final results
-      await ProgressiveMessenger.completeSession(
-        sessionKey,
-        `:white_check_mark: **Results**\n\n${'═'.repeat(50)}\n\n:sparkles: **Enhanced Visual Formatting Active!**\n\n• Progressive updates with timestamps\n• Visual separators between content blocks\n• Color-coded emojis for different update types\n• Forwardable message chunks\n• Auto-clearing thinking animations\n\n${'═'.repeat(50)}\n\n*This completes the progressive messaging demo*`,
-        { success: true, summary: 'Progressive messaging demo completed' }
-      );
+      // Final results
+      logger.info('📱 MESSAGE 4 (Results):', {
+        timestamp: new Date().toISOString(),
+        content: `:white_check_mark: **Results**\n\n${'═'.repeat(50)}\n\n:sparkles: **Enhanced Visual Formatting Active!**\n\n• Progressive updates with timestamps\n• Visual separators between content blocks\n• Color-coded emojis for different update types\n• Forwardable message chunks\n• Auto-clearing thinking animations\n\n${'═'.repeat(50)}\n\n*This completes the progressive messaging demo*`
+      });
+
+      logger.info('=== Progressive Messaging Demo Complete ===');
+      logger.info('✅ Each message above would be a SEPARATE Slack post with individual timestamps');
+      logger.info('✅ Users can now forward individual messages instead of massive walls of text');
 
     })().catch(error => {
       logger.error('Progressive messaging test failed', { error });
     });
 
-    res.json({ success: true, message: 'Progressive messaging demo started' });
+    res.json({
+      success: true,
+      message: 'Progressive messaging demo started - check server logs for simulation',
+      demo: 'This simulates 4 separate Slack messages with timestamps instead of one large post'
+    });
   });
 
   // Start webhook server - use PORT from Railway, fallback to webhookPort
