@@ -180,128 +180,145 @@ export function registerEventHandlers(app: App): void {
 }
 
 /**
- * Create a streaming message updater that throttles updates to avoid Slack rate limits
- * Includes a heartbeat animation to show progress during tool execution
+ * Create a progressive messenger that posts separate messages for each update
+ * This gives users timestamps, links, and the ability to forward individual updates
  */
-function createStreamingUpdater(
+function createProgressiveMessenger(
   client: any,
   channelId: string,
-  messageTs: string,
-  updateIntervalMs: number = 2500  // Update every 2.5 seconds
+  threadTs: string,
 ) {
-  let accumulatedContent = '';
-  let lastUpdateTime = 0;
-  let updateTimeout: NodeJS.Timeout | null = null;
-  let heartbeatInterval: NodeJS.Timeout | null = null;
-  let isUpdating = false;
+  let thinkingTs: string | null = null;
+  let lastPostTime = 0;
+  let pendingContent = '';
   let animationFrame = 0;
+  let animationInterval: NodeJS.Timeout | null = null;
+  const minPostInterval = 3000; // Minimum 3 seconds between posts to avoid spam
 
-  // Animation frames for the working indicator
-  const workingFrames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+  // Animation frames for the thinking indicator
+  const thinkingFrames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
-  const doUpdate = async (content: string, isFinal: boolean = false) => {
-    if (isUpdating && !isFinal) return;
-    isUpdating = true;
+  // Start the thinking animation
+  const startThinking = async () => {
+    const frame = thinkingFrames[0];
+    const result = await client.chat.postMessage({
+      channel: channelId,
+      thread_ts: threadTs,
+      text: `${frame} _thinking..._`,
+    });
+    thinkingTs = result.ts;
 
-    try {
-      let displayContent: string;
-
-      if (isFinal) {
-        displayContent = content;
-      } else if (content) {
-        // Has content - show it with working indicator
-        const frame = workingFrames[animationFrame % workingFrames.length];
-        displayContent = content + `\n\n${frame} _working..._`;
-      } else {
-        // No content yet - show animated thinking
-        const frame = workingFrames[animationFrame % workingFrames.length];
-        displayContent = `${frame} _thinking..._`;
-      }
-
-      await client.chat.update({
-        channel: channelId,
-        ts: messageTs,
-        text: markdownToSlack(displayContent),
-      });
-      lastUpdateTime = Date.now();
+    // Animate the thinking indicator
+    animationInterval = setInterval(async () => {
+      if (!thinkingTs) return;
       animationFrame++;
-    } catch (error) {
-      logger.warn('Failed to update streaming message', { error });
-    } finally {
-      isUpdating = false;
+      const frame = thinkingFrames[animationFrame % thinkingFrames.length];
+      try {
+        await client.chat.update({
+          channel: channelId,
+          ts: thinkingTs,
+          text: `${frame} _working..._`,
+        });
+      } catch (e) {
+        // Ignore update errors
+      }
+    }, 500);
+  };
+
+  // Stop the thinking animation and delete the thinking message
+  const stopThinking = async () => {
+    if (animationInterval) {
+      clearInterval(animationInterval);
+      animationInterval = null;
+    }
+    if (thinkingTs) {
+      try {
+        await client.chat.delete({
+          channel: channelId,
+          ts: thinkingTs,
+        });
+      } catch (e) {
+        // If we can't delete, just update it to be minimal
+        try {
+          await client.chat.update({
+            channel: channelId,
+            ts: thinkingTs,
+            text: '✓',
+          });
+        } catch (e2) {
+          // Ignore
+        }
+      }
+      thinkingTs = null;
     }
   };
 
-  // Start heartbeat to show animation even when no content is streaming
-  heartbeatInterval = setInterval(() => {
-    doUpdate(accumulatedContent);
-  }, updateIntervalMs);
+  // Post a new message with content
+  const postUpdate = async (content: string) => {
+    if (!content.trim()) return;
 
-  // Do initial update immediately
-  doUpdate(accumulatedContent);
+    await stopThinking();
+
+    await client.chat.postMessage({
+      channel: channelId,
+      thread_ts: threadTs,
+      text: markdownToSlack(content),
+    });
+    lastPostTime = Date.now();
+  };
+
+  // Initialize
+  startThinking();
 
   return {
     /**
-     * Add a chunk of content to the stream
+     * Add content - will be batched and posted as separate messages
      */
     addChunk: (chunk: string) => {
-      accumulatedContent += chunk;
+      pendingContent += chunk;
 
+      // Check if we have enough content and enough time has passed
       const now = Date.now();
-      const timeSinceLastUpdate = now - lastUpdateTime;
+      const timeSinceLastPost = now - lastPostTime;
 
-      // Clear any pending update
-      if (updateTimeout) {
-        clearTimeout(updateTimeout);
-        updateTimeout = null;
-      }
+      // Look for natural break points (double newline, end of sentence after 200+ chars)
+      const hasBreakPoint = pendingContent.includes('\n\n') ||
+        (pendingContent.length > 200 && /[.!?]\s*$/.test(pendingContent));
 
-      // If enough time has passed, update immediately
-      if (timeSinceLastUpdate >= updateIntervalMs) {
-        doUpdate(accumulatedContent);
-      } else {
-        // Schedule an update for later
-        updateTimeout = setTimeout(() => {
-          doUpdate(accumulatedContent);
-        }, updateIntervalMs - timeSinceLastUpdate);
+      if (hasBreakPoint && timeSinceLastPost >= minPostInterval && pendingContent.length > 50) {
+        const content = pendingContent;
+        pendingContent = '';
+        postUpdate(content);
+        startThinking(); // Show thinking again while waiting for more
       }
     },
 
     /**
-     * Get the accumulated content so far
+     * Get accumulated content
      */
-    getContent: () => accumulatedContent,
+    getContent: () => pendingContent,
 
     /**
-     * Finalize the message with the complete content
+     * Finalize - post any remaining content and clean up
      */
     finalize: async (finalContent?: string) => {
-      // Stop heartbeat
-      if (heartbeatInterval) {
-        clearInterval(heartbeatInterval);
-        heartbeatInterval = null;
-      }
-      if (updateTimeout) {
-        clearTimeout(updateTimeout);
-        updateTimeout = null;
-      }
+      await stopThinking();
 
-      const content = finalContent ?? accumulatedContent;
-      await doUpdate(content, true);
+      const content = finalContent ?? pendingContent;
+      if (content.trim()) {
+        await client.chat.postMessage({
+          channel: channelId,
+          thread_ts: threadTs,
+          text: markdownToSlack(content),
+        });
+      }
     },
 
     /**
-     * Cancel any pending updates
+     * Cancel and clean up
      */
-    cancel: () => {
-      if (heartbeatInterval) {
-        clearInterval(heartbeatInterval);
-        heartbeatInterval = null;
-      }
-      if (updateTimeout) {
-        clearTimeout(updateTimeout);
-        updateTimeout = null;
-      }
+    cancel: async () => {
+      await stopThinking();
     },
   };
 }
@@ -368,31 +385,24 @@ async function handleMessage(
       truncated: threadHistory.truncated,
     });
 
-    // Post initial placeholder message (will be immediately updated by streamer)
-    const initialMsg = await client.chat.postMessage({
-      channel: channelId,
-      thread_ts: threadTs,
-      text: '⠋ _thinking..._',
-    });
+    // Create progressive messenger - posts separate messages for each update
+    const messenger = createProgressiveMessenger(client as any, channelId, threadTs);
 
-    // Create streaming updater
-    const streamer = createStreamingUpdater(client as any, channelId, initialMsg.ts as string);
-
-    // Process the message with streaming updates and full thread history
+    // Process the message with progressive updates and full thread history
     const result = await routeMessage(text, session, {
       onChunk: (chunk) => {
-        streamer.addChunk(chunk);
+        messenger.addChunk(chunk);
       },
       conversationHistory,
     });
 
-    // Finalize with the complete response (in case onChunk wasn't called or missed content)
-    await streamer.finalize(result.response);
+    // Finalize with any remaining content
+    await messenger.finalize(result.response);
 
     // Track both user message and assistant response in session history
     // (also update in-memory for faster access within same deploy)
     sessionManager.addMessage(channelId, threadTs, 'user', text, messageTs);
-    sessionManager.addMessage(channelId, threadTs, 'assistant', result.response, initialMsg.ts as string);
+    sessionManager.addMessage(channelId, threadTs, 'assistant', result.response, Date.now().toString());
 
     // If an agent was dispatched, track it
     if (result.dispatchedAgent && result.issueUrl) {
