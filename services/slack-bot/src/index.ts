@@ -66,9 +66,9 @@ async function main(): Promise<void> {
     res.json({
       service: 'claude-software-factory-slack-bot',
       status: 'running',
-      version: '0.1.7',
+      version: '0.1.8',
       progressiveMessaging: 'enabled',
-      multiPostSystem: 'active-testing',
+      multiPostSystem: 'ACTUALLY-DEPLOYED',
       threadedUpdates: 'working',
       timestamp: new Date().toISOString(),
       deployment: {
@@ -76,7 +76,8 @@ async function main(): Promise<void> {
         environment: process.env.RAILWAY_ENVIRONMENT || 'development',
         gitCommit: process.env.RAILWAY_GIT_COMMIT_SHA || 'unknown',
         nodeVersion: process.version,
-        lastUpdated: new Date().toISOString()
+        lastUpdated: new Date().toISOString(),
+        realDeployment: true
       },
       uptime: process.uptime(),
       features: [
@@ -85,7 +86,8 @@ async function main(): Promise<void> {
         'timestamp-tracking',
         'multi-post-system',
         'follow-through-fixes',
-        'tested-multi-post-flow'
+        'tested-multi-post-flow',
+        'ACTUAL-DEPLOYMENT-NOT-FAKE'
       ]
     });
   };
@@ -127,7 +129,7 @@ async function main(): Promise<void> {
       // Final results
       logger.info('📱 MESSAGE 4 (Completion - Final Separate Post):', {
         timestamp: new Date().toISOString(),
-        content: `:white_check_mark: **Multi-Post System Test Complete**\n\nVersion 0.1.7 now implements the requested multi-post progressive messaging! :rocket:`
+        content: `:white_check_mark: **Multi-Post System Test Complete**\n\nVersion 0.1.8 now implements the requested multi-post progressive messaging! :rocket:`
       });
 
       logger.info('=== Multi-Post Demo Complete ===');
@@ -139,7 +141,7 @@ async function main(): Promise<void> {
     res.json({
       success: true,
       message: 'Multi-post system demo started',
-      version: '0.1.7',
+      version: '0.1.8',
       feature: 'progressive-messaging-with-separate-posts'
     });
   });
@@ -165,8 +167,8 @@ async function main(): Promise<void> {
     webhookPort: config.server.webhookPort,
     githubRepo: config.github.repository,
     hasAnthropicKey: !!config.anthropic.apiKey,
-    version: '0.1.7',
-    features: ['progressive-messaging', 'thread-based-updates', 'multi-post-system', 'follow-through-fixes', 'tested-multi-post-flow']
+    version: '0.1.8',
+    features: ['progressive-messaging', 'thread-based-updates', 'multi-post-system', 'follow-through-fixes', 'tested-multi-post-flow', 'ACTUAL-DEPLOYMENT-NOT-FAKE']
   });
 
   // Cleanup on shutdown
