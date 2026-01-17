@@ -1,10 +1,11 @@
 /**
- * Progressive Messenger - Simple, clean updates for Slack
- * Provides better UX with minimal decoration and readable formatting
+ * Progressive Messenger - Claude Code style updates for Slack
+ * Provides dynamic status updates with rich animation and Claude-style phases
  */
 
 import logger from './logger.js';
 import { markdownToSlack } from './markdown-to-slack.js';
+import StatusAnimator, { StatusPhase } from './status-animator.js';
 
 export interface ProgressiveUpdate {
   id: string;
@@ -15,6 +16,7 @@ export interface ProgressiveUpdate {
     step?: number;
     totalSteps?: number;
     timestamp?: number;
+    operationType?: 'conversation' | 'dispatch' | 'factory_analysis' | 'code_analysis';
   };
 }
 
@@ -22,42 +24,57 @@ export interface ProgressiveSession {
   channelId: string;
   threadTs: string;
   client: any;
-  thinkingMessageTs?: string;
+  statusAnimatorKey?: string;
   updateCount: number;
   lastUpdateTime: number;
+  operationType: string;
 }
 
 export class ProgressiveMessenger {
   private static sessions = new Map<string, ProgressiveSession>();
-  private static readonly MIN_UPDATE_INTERVAL = 2000; // 2 seconds between updates
+  private static readonly MIN_UPDATE_INTERVAL = 1500; // Faster updates for more responsive feel
 
   /**
-   * Start a progressive session with thinking animation
+   * Start a progressive session with Claude Code style status animation
    */
   static async startSession(
     channelId: string,
     threadTs: string,
     client: any,
-    initialPhase = 'Working'
+    operationType: 'conversation' | 'dispatch' | 'factory_analysis' | 'code_analysis' = 'conversation'
   ): Promise<string> {
     const sessionKey = `${channelId}-${threadTs}`;
 
     try {
-      // Show initial thinking message
-      const thinkingMessage = await this.postThinking(channelId, threadTs, client, initialPhase);
+      // Get appropriate phases for this operation
+      const phases = StatusAnimator.getPhasesForOperation(operationType);
+
+      // Start the Claude Code style status animation
+      const statusAnimatorKey = await StatusAnimator.start({
+        channel: channelId,
+        threadTs: threadTs,
+        client: client,
+        phases: phases,
+        animationInterval: 1600 // Lively animation
+      });
 
       const session: ProgressiveSession = {
         channelId,
         threadTs,
         client,
-        thinkingMessageTs: thinkingMessage,
+        statusAnimatorKey,
         updateCount: 0,
-        lastUpdateTime: Date.now()
+        lastUpdateTime: Date.now(),
+        operationType
       };
 
       this.sessions.set(sessionKey, session);
 
-      logger.info('Progressive session started', { sessionKey, initialPhase });
+      logger.info('Progressive session started with Claude style animation', { 
+        sessionKey, 
+        operationType, 
+        phases: phases.length 
+      });
       return sessionKey;
     } catch (error) {
       logger.error('Failed to start progressive session', { error, channelId, threadTs });
@@ -66,7 +83,7 @@ export class ProgressiveMessenger {
   }
 
   /**
-   * Post a substantive update as a new message
+   * Post intermediate update while maintaining status animation
    */
   static async postUpdate(
     sessionKey: string,
@@ -88,15 +105,11 @@ export class ProgressiveMessenger {
     }
 
     try {
-      // Clear thinking message if it exists
-      if (session.thinkingMessageTs && update.type !== 'thinking') {
-        await this.clearThinking(session);
-      }
-
-      // Format and post the update - simple and clean
+      // For intermediate updates, post as new messages while animation continues
       const formattedMessage = this.formatUpdate(update);
       const slackMessage = markdownToSlack(formattedMessage);
 
+      // Post as new message in thread 
       await session.client.chat.postMessage({
         channel: session.channelId,
         thread_ts: session.threadTs,
@@ -107,19 +120,6 @@ export class ProgressiveMessenger {
 
       session.updateCount++;
       session.lastUpdateTime = now;
-
-      // Show new thinking message if this wasn't a final result
-      if (update.type !== 'result' && update.type !== 'error') {
-        const nextPhase = this.getNextPhase(update);
-        if (nextPhase) {
-          session.thinkingMessageTs = await this.postThinking(
-            session.channelId,
-            session.threadTs,
-            session.client,
-            nextPhase
-          );
-        }
-      }
 
       logger.info('Progressive update posted', {
         sessionKey,
@@ -132,7 +132,7 @@ export class ProgressiveMessenger {
   }
 
   /**
-   * Complete the session with final result
+   * Complete the session with final result, replacing the status animation
    */
   static async completeSession(
     sessionKey: string,
@@ -143,25 +143,32 @@ export class ProgressiveMessenger {
     if (!session) return;
 
     try {
-      // Clear any remaining thinking message
-      if (session.thinkingMessageTs) {
-        await this.clearThinking(session);
+      // Complete the status animation by replacing it with the final result
+      if (session.statusAnimatorKey) {
+        const slackMessage = markdownToSlack(finalResult);
+        
+        await StatusAnimator.complete(
+          session.statusAnimatorKey,
+          slackMessage,
+          session.client,
+          session.channelId
+        );
+      } else {
+        // Fallback: post as new message
+        const slackMessage = markdownToSlack(finalResult);
+        await session.client.chat.postMessage({
+          channel: session.channelId,
+          thread_ts: session.threadTs,
+          text: slackMessage,
+          unfurl_links: false,
+          unfurl_media: false
+        });
       }
-
-      // Post completion update - simple formatting
-      const slackMessage = markdownToSlack(finalResult);
-
-      await session.client.chat.postMessage({
-        channel: session.channelId,
-        thread_ts: session.threadTs,
-        text: slackMessage,
-        unfurl_links: false,
-        unfurl_media: false
-      });
 
       logger.info('Progressive session completed', {
         sessionKey,
-        totalUpdates: session.updateCount
+        totalUpdates: session.updateCount,
+        operationType: session.operationType
       });
     } catch (error) {
       logger.error('Failed to complete progressive session', { error, sessionKey });
@@ -171,94 +178,127 @@ export class ProgressiveMessenger {
   }
 
   /**
-   * Post thinking/working animation message - minimal
+   * Force advance to next phase of the status animation
    */
-  private static async postThinking(
-    channelId: string,
-    threadTs: string,
-    client: any,
-    phase: string
-  ): Promise<string> {
-    const message = `_${phase}..._`;
+  static async advanceToPhase(
+    sessionKey: string,
+    phaseIndex: number
+  ): Promise<void> {
+    const session = this.sessions.get(sessionKey);
+    if (!session || !session.statusAnimatorKey) return;
 
-    const response = await client.chat.postMessage({
-      channel: channelId,
-      thread_ts: threadTs,
-      text: message,
-      unfurl_links: false,
-      unfurl_media: false
-    });
-
-    return response.ts;
+    const phases = StatusAnimator.getPhasesForOperation(session.operationType as any);
+    
+    await StatusAnimator.updatePhase(
+      session.statusAnimatorKey,
+      phaseIndex,
+      session.client,
+      session.channelId,
+      phases
+    );
   }
 
   /**
-   * Clear the thinking message
+   * Stream partial content updates (like Claude Code's streaming)
    */
-  private static async clearThinking(session: ProgressiveSession): Promise<void> {
-    if (!session.thinkingMessageTs) return;
+  static async streamUpdate(
+    sessionKey: string,
+    partialContent: string
+  ): Promise<void> {
+    const session = this.sessions.get(sessionKey);
+    if (!session || !session.statusAnimatorKey) return;
+
+    // Update the status message with partial content
+    await StatusAnimator.update(
+      session.statusAnimatorKey,
+      partialContent,
+      session.client,
+      session.channelId
+    );
+  }
+
+  /**
+   * Cancel session and clean up
+   */
+  static async cancelSession(sessionKey: string): Promise<void> {
+    const session = this.sessions.get(sessionKey);
+    if (!session) return;
 
     try {
-      await session.client.chat.delete({
-        channel: session.channelId,
-        ts: session.thinkingMessageTs
-      });
-    } catch (error) {
-      logger.warn('Failed to clear thinking message', { error });
-      // Fallback: update to indicate completion
-      try {
-        await session.client.chat.update({
-          channel: session.channelId,
-          ts: session.thinkingMessageTs,
-          text: '_Complete_'
-        });
-      } catch (fallbackError) {
-        logger.warn('Failed to update thinking message', { fallbackError });
+      if (session.statusAnimatorKey) {
+        StatusAnimator.stop(session.statusAnimatorKey);
       }
+      
+      logger.info('Progressive session cancelled', { sessionKey });
+    } catch (error) {
+      logger.error('Failed to cancel progressive session', { error, sessionKey });
+    } finally {
+      this.sessions.delete(sessionKey);
     }
-
-    session.thinkingMessageTs = undefined;
   }
 
   /**
-   * Format an update with minimal styling
+   * Format an update with enhanced styling based on type
    */
   private static formatUpdate(update: ProgressiveUpdate): string {
     const { content, metadata = {} } = update;
 
-    // Simple prefix based on type
+    // Enhanced prefixes with emojis
     let prefix = '';
     switch (update.type) {
       case 'error':
-        prefix = 'Error: ';
+        prefix = '❌ **Error:** ';
         break;
       case 'result':
-        prefix = '';  // No prefix for results
+        prefix = '✅ **Result:** ';
+        break;
+      case 'analysis':
+        prefix = '🔍 **Analysis:** ';
+        break;
+      case 'progress':
+        prefix = '⚡ **Progress:** ';
+        break;
+      case 'thinking':
+        prefix = '💭 **Note:** ';
         break;
       default:
-        prefix = '';  // Clean, no decoration for most updates
+        prefix = '';
     }
 
     // Add step info if available
     let stepInfo = '';
     if (metadata.step && metadata.totalSteps) {
-      stepInfo = ` (${metadata.step}/${metadata.totalSteps})`;
+      const progressBar = this.createMiniProgressBar(metadata.step, metadata.totalSteps);
+      stepInfo = `\n${progressBar}`;
     }
 
-    return `${prefix}${content}${stepInfo}`;
+    // Add timestamp for context
+    const timestamp = metadata.timestamp ? 
+      `_${new Date(metadata.timestamp).toLocaleTimeString()}_` : '';
+
+    return `${prefix}${content}${stepInfo}${timestamp ? `\n\n${timestamp}` : ''}`;
   }
 
   /**
-   * Determine next phase based on current update
+   * Create a mini progress bar for step updates
    */
-  private static getNextPhase(update: ProgressiveUpdate): string | null {
-    const phaseMap: Record<string, string> = {
-      thinking: 'Analyzing',
-      analysis: 'Implementing',
-      progress: 'Finishing'
-    };
+  private static createMiniProgressBar(current: number, total: number): string {
+    const width = 12;
+    const filled = Math.floor((current / total) * width);
+    const empty = width - filled;
+    const percentage = Math.round((current / total) * 100);
 
-    return phaseMap[update.type] || null;
+    const filledBar = '█'.repeat(filled);
+    const emptyBar = '░'.repeat(empty);
+
+    return `\`${filledBar}${emptyBar}\` ${percentage}% (${current}/${total})`;
+  }
+
+  /**
+   * Get session info for debugging
+   */
+  static getSessionInfo(sessionKey: string): ProgressiveSession | undefined {
+    return this.sessions.get(sessionKey);
   }
 
   /**
@@ -270,10 +310,36 @@ export class ProgressiveMessenger {
 
     for (const [key, session] of this.sessions.entries()) {
       if (now - session.lastUpdateTime > maxAge) {
+        // Clean up status animator
+        if (session.statusAnimatorKey) {
+          StatusAnimator.stop(session.statusAnimatorKey);
+        }
+        
         this.sessions.delete(key);
         logger.info('Cleaned up abandoned session', { sessionKey: key });
       }
     }
+  }
+
+  /**
+   * Get operation type from message content
+   */
+  static inferOperationType(message: string): 'conversation' | 'dispatch' | 'factory_analysis' | 'code_analysis' {
+    const lowerMessage = message.toLowerCase();
+    
+    if (lowerMessage.startsWith('dispatch ')) {
+      return 'dispatch';
+    }
+    
+    if (lowerMessage.includes('factory') || lowerMessage.includes('status') || lowerMessage.includes('health')) {
+      return 'factory_analysis';
+    }
+    
+    if (lowerMessage.includes('code') || lowerMessage.includes('bug') || lowerMessage.includes('implement')) {
+      return 'code_analysis';
+    }
+    
+    return 'conversation';
   }
 }
 
