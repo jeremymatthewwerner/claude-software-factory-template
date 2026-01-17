@@ -65,15 +65,16 @@ async function main(): Promise<void> {
   const healthResponse = (req: express.Request, res: express.Response) => {
     res.json({
       service: 'claude-software-factory-slack-bot',
-      testDeployment: 'TESTING-DEPLOYMENT-2026-01-17',
+      testDeployment: 'LIVE-DEPLOYMENT-DEMO-2026-01-17',
       status: 'running',
-      version: '0.1.2',
+      version: '0.1.3',
       timestamp: new Date().toISOString(),
       deployment: {
         buildTime: new Date().toISOString(),
         environment: process.env.RAILWAY_ENVIRONMENT || 'development',
         gitCommit: process.env.RAILWAY_GIT_COMMIT_SHA || 'unknown',
         nodeVersion: process.version,
+        lastUpdated: '2026-01-17T19:45:00Z'
       },
       uptime: process.uptime(),
     });
