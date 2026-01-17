@@ -265,9 +265,12 @@ export async function executeWithClaudeCode(
           stderrOutput += data;
           logger.error('Claude Code stderr', { stderr: data });
         },
-        // Enable debug mode to see what's happening
+        // Environment setup for containers
         env: {
           ...process.env,
+          // Ensure HOME is set (required by Claude Code CLI for config)
+          HOME: process.env.HOME || '/tmp',
+          // Enable debug mode to see what's happening
           DEBUG: '1',
         },
       },
