@@ -66,8 +66,9 @@ async function main(): Promise<void> {
     res.json({
       service: 'claude-software-factory-slack-bot',
       status: 'running',
-      version: '0.1.4',
+      version: '0.1.5',
       progressiveMessaging: 'enabled',
+      multiPostSystem: 'active',
       timestamp: new Date().toISOString(),
       deployment: {
         buildTime: new Date().toISOString(),
@@ -79,8 +80,9 @@ async function main(): Promise<void> {
       uptime: process.uptime(),
       features: [
         'progressive-messaging',
-        'thread-based-updates',
-        'timestamp-tracking'
+        'thread-based-updates', 
+        'timestamp-tracking',
+        'multi-post-system'
       ]
     });
   };
@@ -93,50 +95,49 @@ async function main(): Promise<void> {
 
     // Start progressive messaging demo (even without real Slack)
     (async () => {
-      logger.info('=== Progressive Messaging Demo Started ===');
+      logger.info('=== Multi-Post Progressive Messaging Demo Started ===');
 
       // Simulate what would happen in Slack
       logger.info('📱 MESSAGE 1 (Thinking Animation):', {
         timestamp: new Date().toISOString(),
-        content: ':thinking_face: Analyzing your request...'
-      });
-
-      await new Promise(resolve => setTimeout(resolve, 2000));
-
-      // Analysis update
-      logger.info('📱 MESSAGE 2 (Analysis - Replaces thinking):', {
-        timestamp: new Date().toISOString(),
-        content: ':mag: **Analysis Complete**\n\nI\'ll demonstrate the progressive messaging system with visual separation and timestamps.'
+        content: ':thinking_face: Testing multi-post system...'
       });
 
       await new Promise(resolve => setTimeout(resolve, 1500));
 
-      // Progress update
-      logger.info('📱 MESSAGE 3 (Progress):', {
+      // Analysis update
+      logger.info('📱 MESSAGE 2 (Analysis - Separate Post):', {
         timestamp: new Date().toISOString(),
-        content: ':gear: **Processing Request**\n\nBreaking down your text into meaningful chunks for better readability...'
+        content: ':mag: **Multi-Post System Active**\n\nEach update now gets its own Slack message with individual timestamps for better tracking and linking.'
       });
 
-      await new Promise(resolve => setTimeout(resolve, 2000));
+      await new Promise(resolve => setTimeout(resolve, 1000));
+
+      // Progress update
+      logger.info('📱 MESSAGE 3 (Progress - Another Separate Post):', {
+        timestamp: new Date().toISOString(),
+        content: ':gear: **Benefits of Multi-Post System**\n\n✅ Individual timestamps\n✅ Linkable messages\n✅ Better conversation flow\n✅ No wall-of-text issues'
+      });
+
+      await new Promise(resolve => setTimeout(resolve, 1000));
 
       // Final results
-      logger.info('📱 MESSAGE 4 (Results):', {
+      logger.info('📱 MESSAGE 4 (Completion - Final Separate Post):', {
         timestamp: new Date().toISOString(),
-        content: `:white_check_mark: **Results**\n\n${'═'.repeat(50)}\n\n:sparkles: **Enhanced Visual Formatting Active!**\n\n• Progressive updates with timestamps\n• Visual separators between content blocks\n• Color-coded emojis for different update types\n• Forwardable message chunks\n• Auto-clearing thinking animations\n\n${'═'.repeat(50)}\n\n*This completes the progressive messaging demo*`
+        content: `:white_check_mark: **Multi-Post System Test Complete**\n\nVersion 0.1.5 now implements the requested multi-post progressive messaging! :rocket:`
       });
 
-      logger.info('=== Progressive Messaging Demo Complete ===');
-      logger.info('✅ Each message above would be a SEPARATE Slack post with individual timestamps');
-      logger.info('✅ Users can now forward individual messages instead of massive walls of text');
+      logger.info('=== Multi-Post Demo Complete ===');
 
     })().catch(error => {
-      logger.error('Progressive messaging test failed', { error });
+      logger.error('Multi-post test failed', { error });
     });
 
     res.json({
       success: true,
-      message: 'Progressive messaging demo started - check server logs for simulation',
-      demo: 'This simulates 4 separate Slack messages with timestamps instead of one large post'
+      message: 'Multi-post system demo started',
+      version: '0.1.5',
+      feature: 'progressive-messaging-with-separate-posts'
     });
   });
 
@@ -161,8 +162,8 @@ async function main(): Promise<void> {
     webhookPort: config.server.webhookPort,
     githubRepo: config.github.repository,
     hasAnthropicKey: !!config.anthropic.apiKey,
-    version: '0.1.4',
-    features: ['progressive-messaging', 'thread-based-updates']
+    version: '0.1.5',
+    features: ['progressive-messaging', 'thread-based-updates', 'multi-post-system']
   });
 
   // Cleanup on shutdown
