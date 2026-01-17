@@ -9,7 +9,7 @@ function ThinkingDots() {
 
   useEffect(() => {
     const interval = setInterval(() => {
-      setDots(prev => {
+      setDots((prev) => {
         if (prev === '') return '.';
         if (prev === '.') return '..';
         if (prev === '..') return '...';
@@ -115,11 +115,16 @@ export default function Home() {
                       : styles.checking
                 }`}
               >
-                {apiStatus.health === 'checking'
-                  ? <>Checking<ThinkingDots /></>
-                  : apiStatus.health === 'healthy'
-                    ? 'Connected'
-                    : 'Disconnected'}
+                {apiStatus.health === 'checking' ? (
+                  <>
+                    Checking
+                    <ThinkingDots />
+                  </>
+                ) : apiStatus.health === 'healthy' ? (
+                  'Connected'
+                ) : (
+                  'Disconnected'
+                )}
               </span>
             </div>
             {apiStatus.version && (
@@ -153,7 +158,14 @@ export default function Home() {
               className={styles.button}
               disabled={loading || apiStatus.health !== 'healthy'}
             >
-              {loading ? <>Sending<ThinkingDots /></> : 'Say Hello'}
+              {loading ? (
+                <>
+                  Sending
+                  <ThinkingDots />
+                </>
+              ) : (
+                'Say Hello'
+              )}
             </button>
           </form>
           {greeting && <p className={styles.greeting}>{greeting}</p>}
