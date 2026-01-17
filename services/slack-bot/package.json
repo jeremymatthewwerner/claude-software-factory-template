@@ -1,7 +1,7 @@
 {
   "name": "claude-software-factory-slack-bot",
-  "version": "0.1.9",
-  "description": "Slack bot for Claude Software Factory with enhanced monitoring",
+  "version": "0.2.0",
+  "description": "Slack bot for Claude Software Factory with enhanced monitoring and emoji reactions",
   "type": "module",
   "main": "dist/index.js",
   "scripts": {
