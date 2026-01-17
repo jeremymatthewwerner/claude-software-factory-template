@@ -64,7 +64,7 @@ async function main(): Promise<void> {
   const healthResponse = (req: express.Request, res: express.Response) => {
     res.json({
       service: 'claude-software-factory-slack-bot',
-      testDeployment: 'TESTING-DEPLOYMENT-2026-01-16',
+      testDeployment: 'TESTING-DEPLOYMENT-2026-01-17',
       status: 'running',
       version: '1.0.2',
       timestamp: new Date().toISOString(),
