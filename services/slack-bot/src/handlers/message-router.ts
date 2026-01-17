@@ -1,7 +1,7 @@
 /**
- * Message router - routes all messages to Claude Code
+ * Message router - routes all messages to Claude (via direct SDK)
  *
- * This bot uses Claude Code for ALL interactions, giving full capabilities:
+ * This bot uses the Anthropic SDK directly for ALL interactions, giving full capabilities:
  * - Read, Write, Edit files
  * - Run bash/terminal commands
  * - Git operations
@@ -12,7 +12,7 @@
 
 import type { AgentType, SlackSession, MessageIntent, IntentType } from '../types.js';
 import { dispatchToAgent } from '../integrations/github-dispatcher.js';
-import { executeWithClaudeCode, isClaudeCodeAvailable } from '../integrations/claude-code.js';
+import { executeWithDirectSDK } from '../integrations/anthropic-direct.js';
 import sessionManager from '../state/session-manager.js';
 import logger from '../utils/logger.js';
 
@@ -90,10 +90,10 @@ export async function routeMessage(
     historyLength: options.conversationHistory?.length || 0,
   });
 
-  // Check Claude Code availability
-  if (!isClaudeCodeAvailable()) {
+  // Check API key availability
+  if (!process.env.ANTHROPIC_API_KEY) {
     return {
-      response: '❌ Claude Code SDK is not available. Please check the installation.',
+      response: '❌ ANTHROPIC_API_KEY not configured. Please set it in environment variables.',
     };
   }
 
@@ -147,7 +147,7 @@ async function handleDispatch(
 }
 
 /**
- * Handle conversation with Claude Code
+ * Handle conversation with Claude (via direct SDK)
  */
 async function handleClaudeCodeConversation(
   message: string,
@@ -172,7 +172,7 @@ async function handleClaudeCodeConversation(
   });
 
   try {
-    const result = await executeWithClaudeCode(
+    const result = await executeWithDirectSDK(
       message,
       session.userId,
       threadKey,
@@ -184,14 +184,14 @@ async function handleClaudeCodeConversation(
     );
 
     if (result.error) {
-      logger.error('Claude Code execution error', { error: result.error, threadKey });
+      logger.error('Direct SDK execution error', { error: result.error, threadKey });
     }
 
     return { response: result.content };
   } catch (error) {
-    logger.error('Error in Claude Code conversation', { error, threadKey });
+    logger.error('Error in Claude conversation', { error, threadKey });
     return {
-      response: '❌ Error executing Claude Code. Please try again.',
+      response: '❌ Error executing request. Please try again.',
     };
   }
 }

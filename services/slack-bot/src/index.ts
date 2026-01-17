@@ -21,7 +21,8 @@ import express from 'express';
 import { config, validateConfig } from './config.js';
 import { registerEventHandlers } from './handlers/slack-events.js';
 import { createWebhookRouter } from './handlers/webhook-handler.js';
-import { executeWithClaudeCode, validateApiKey } from './integrations/claude-code.js';
+import { validateApiKey } from './integrations/claude-code.js';
+import { executeWithDirectSDK } from './integrations/anthropic-direct.js';
 import logger from './utils/logger.js';
 import sessionManager from './state/session-manager.js';
 import { setupRepository, getRepoPath } from './utils/repo-manager.js';
@@ -138,10 +139,10 @@ async function main(): Promise<void> {
     });
   });
 
-  // Test endpoint for Claude Code SDK debugging
-  // POST /test-claude-code { "prompt": "list files" }
+  // Test endpoint for direct SDK debugging
+  // POST /test-claude { "prompt": "list files" }
   // Protected by a simple secret check
-  expressApp.post('/test-claude-code', async (req, res) => {
+  expressApp.post('/test-claude', async (req, res) => {
     const testSecret = req.headers['x-test-secret'];
     if (testSecret !== config.server.webhookSecret) {
       res.status(401).json({ error: 'Unauthorized' });
@@ -157,11 +158,11 @@ async function main(): Promise<void> {
     logger.info('Test endpoint called', { prompt: prompt.substring(0, 50) });
 
     try {
-      const result = await executeWithClaudeCode(
+      const result = await executeWithDirectSDK(
         prompt,
         'test-user',
         'test-thread',
-        { workingDirectory: process.cwd() }
+        { workingDirectory: repoPath }
       );
       res.json({
         success: !result.error,
