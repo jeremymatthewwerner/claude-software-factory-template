@@ -44,47 +44,87 @@ export class StatusAnimator {
     optimizing: ['⚡', '🚀', '⚗️', '🔧', '⚙️', '🎯', '💫', '🎪', '🔋', '📈', '🌟', '⭐']
   };
 
-  // Comprehensive dynamic verbs inspired by Claude Code, ChatGPT, and Gemini
+  // Comprehensive dynamic verbs inspired by Claude Code, ChatGPT, Gemini, and OpenAI - now with more cute words!
   private static readonly CLAUDE_VERBS = {
     thinking: [
+      // Original professional words
       'cogitating', 'pondering', 'contemplating', 'ruminating', 'deliberating', 'reflecting',
       'reasoning', 'mulling', 'meditating', 'considering', 'introspecting', 'philosophizing',
-      'brainstorming', 'conceptualizing', 'theorizing', 'strategizing', 'envisioning', 'imagining'
+      'brainstorming', 'conceptualizing', 'theorizing', 'strategizing', 'envisioning', 'imagining',
+      // New cute additions
+      'daydreaming', 'wondering', 'musing', 'dreaming', 'puzzling', 'brewing ideas',
+      'having thoughts', 'mind-wandering', 'brain-storming', 'idea-cooking', 'thought-juggling',
+      'neural-networking', 'synapses-firing', 'creativity-flowing', 'wisdom-gathering', 'insight-hunting'
     ],
     analyzing: [
+      // Original professional words  
       'examining', 'scrutinizing', 'investigating', 'parsing', 'dissecting', 'evaluating',
       'inspecting', 'auditing', 'diagnosing', 'profiling', 'surveying', 'assessing',
-      'reviewing', 'studying', 'exploring', 'decoding', 'deciphering', 'interpreting'
+      'reviewing', 'studying', 'exploring', 'decoding', 'deciphering', 'interpreting',
+      // New cute additions
+      'detective-working', 'puzzle-solving', 'pattern-hunting', 'clue-gathering', 'mystery-unraveling',
+      'data-diving', 'info-sifting', 'detail-chasing', 'fact-finding', 'logic-weaving',
+      'code-sleuthing', 'bug-hunting', 'pixel-peeping', 'byte-browsing', 'algorithm-auditing'
     ],
     working: [
+      // Original professional words
       'processing', 'computing', 'calculating', 'synthesizing', 'organizing', 'structuring',
       'optimizing', 'refining', 'transforming', 'assembling', 'orchestrating', 'coordinating',
-      'implementing', 'executing', 'compiling', 'configuring', 'calibrating', 'fine-tuning'
+      'implementing', 'executing', 'compiling', 'configuring', 'calibrating', 'fine-tuning',
+      // New cute additions
+      'busy-beeing', 'magic-making', 'gear-turning', 'wheel-spinning', 'engine-humming',
+      'circuit-buzzing', 'byte-crunching', 'pixel-pushing', 'code-crafting', 'data-dancing',
+      'algorithm-weaving', 'function-flowing', 'variable-vibe-ing', 'loop-looping', 'stack-stacking'
     ],
     creating: [
+      // Original professional words
       'composing', 'crafting', 'generating', 'formulating', 'constructing', 'building',
       'designing', 'architecting', 'developing', 'producing', 'fabricating', 'manufacturing',
-      'authoring', 'drafting', 'sketching', 'modeling', 'prototyping', 'innovating'
+      'authoring', 'drafting', 'sketching', 'modeling', 'prototyping', 'innovating',
+      // New cute additions
+      'art-making', 'masterpiece-crafting', 'magic-weaving', 'dream-building', 'story-spinning',
+      'word-painting', 'idea-sculpting', 'creativity-flowing', 'inspiration-channeling', 'beauty-brewing',
+      'code-poetry-writing', 'digital-art-creating', 'syntax-singing', 'logic-painting', 'function-flowering'
     ],
     processing: [
+      // Original professional words
       'orchestrating', 'coordinating', 'executing', 'performing', 'operating', 'finalizing',
       'compiling', 'rendering', 'encoding', 'transforming', 'streaming', 'buffering',
-      'indexing', 'sorting', 'filtering', 'aggregating', 'consolidating', 'reconciling'
+      'indexing', 'sorting', 'filtering', 'aggregating', 'consolidating', 'reconciling',
+      // New cute additions
+      'data-dancing', 'bit-ballet', 'byte-boogie', 'algorithm-aerobics', 'code-choreography',
+      'digital-disco', 'cyber-spinning', 'tech-tap-dancing', 'silicon-salsa', 'binary-breakdancing',
+      'packet-prancing', 'signal-swaying', 'frequency-flowing', 'wave-waltzing', 'stream-streaming'
     ],
     reasoning: [
+      // Original professional words
       'deducing', 'inferring', 'concluding', 'deriving', 'extrapolating', 'correlating',
       'connecting', 'linking', 'associating', 'synthesizing', 'integrating', 'consolidating',
-      'cross-referencing', 'triangulating', 'validating', 'verifying', 'confirming', 'substantiating'
+      'cross-referencing', 'triangulating', 'validating', 'verifying', 'confirming', 'substantiating',
+      // New cute additions
+      'puzzle-piecing', 'dot-connecting', 'thread-following', 'logic-linking', 'pattern-matching',
+      'clue-connecting', 'mystery-solving', 'riddle-unraveling', 'brain-bridging', 'insight-weaving',
+      'thought-threading', 'idea-intertwining', 'concept-coupling', 'wisdom-weaving', 'truth-tracking'
     ],
     researching: [
+      // Original professional words
       'investigating', 'exploring', 'discovering', 'uncovering', 'mining', 'extracting',
       'gathering', 'collecting', 'sourcing', 'retrieving', 'indexing', 'cataloging',
-      'curating', 'surveying', 'mapping', 'documenting', 'chronicling', 'archiving'
+      'curating', 'surveying', 'mapping', 'documenting', 'chronicling', 'archiving',
+      // New cute additions
+      'treasure-hunting', 'knowledge-seeking', 'fact-fishing', 'info-adventuring', 'data-diving',
+      'wisdom-wandering', 'curiosity-following', 'discovery-dancing', 'learning-leaping', 'insight-seeking',
+      'truth-tracking', 'evidence-exploring', 'clue-chasing', 'answer-hunting', 'secret-searching'
     ],
     optimizing: [
+      // Original professional words
       'refining', 'enhancing', 'improving', 'streamlining', 'perfecting', 'polishing',
       'tuning', 'calibrating', 'adjusting', 'tweaking', 'fine-tuning', 'balancing',
-      'harmonizing', 'stabilizing', 'maximizing', 'minimizing', 'accelerating', 'upgrading'
+      'harmonizing', 'stabilizing', 'maximizing', 'minimizing', 'accelerating', 'upgrading',
+      // New cute additions
+      'sparkle-adding', 'shine-boosting', 'perfection-pursuing', 'beauty-buffing', 'elegance-enhancing',
+      'smoothness-sculpting', 'efficiency-elevating', 'performance-pampering', 'speed-sprucing', 'quality-quilting',
+      'precision-polishing', 'excellence-editing', 'flawless-finishing', 'magic-maximizing', 'awesome-amplifying'
     ]
   };
 
@@ -118,7 +158,7 @@ export class StatusAnimator {
   };
 
   static async start(config: StatusAnimatorConfig): Promise<string> {
-    const { channel, threadTs, client, phases, animationInterval = 500 } = config;
+    const { channel, threadTs, client, phases, animationInterval = 2000 } = config; // Changed to 2000ms (2 seconds)
     const key = `${channel}-${threadTs}`;
 
     // Stop any existing animator for this thread
@@ -143,7 +183,7 @@ export class StatusAnimator {
 
       this.instances.set(key, tracker);
 
-      // Start animation loop
+      // Start animation loop - now every 2 seconds for word changes
       tracker.intervalId = setInterval(async () => {
         await this.updateAnimation(key, client, channel, phases);
       }, animationInterval);
