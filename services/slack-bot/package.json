@@ -1,6 +1,6 @@
 {
   "name": "@claude-software-factory/slack-bot",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "Claude Software Factory Slack Bot - Conversational interface for the Claude-powered development workflow",
   "main": "dist/index.js",
   "type": "module",

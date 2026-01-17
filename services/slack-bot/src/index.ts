@@ -66,10 +66,10 @@ async function main(): Promise<void> {
     res.json({
       service: 'claude-software-factory-slack-bot',
       status: 'running',
-      version: '0.1.6',
+      version: '0.1.7',
       progressiveMessaging: 'enabled',
-      multiPostSystem: 'active',
-      threadedUpdates: 'fixed',
+      multiPostSystem: 'active-testing',
+      threadedUpdates: 'working',
       timestamp: new Date().toISOString(),
       deployment: {
         buildTime: new Date().toISOString(),
@@ -84,7 +84,8 @@ async function main(): Promise<void> {
         'thread-based-updates', 
         'timestamp-tracking',
         'multi-post-system',
-        'follow-through-fixes'
+        'follow-through-fixes',
+        'tested-multi-post-flow'
       ]
     });
   };
@@ -126,7 +127,7 @@ async function main(): Promise<void> {
       // Final results
       logger.info('📱 MESSAGE 4 (Completion - Final Separate Post):', {
         timestamp: new Date().toISOString(),
-        content: `:white_check_mark: **Multi-Post System Test Complete**\n\nVersion 0.1.6 now implements the requested multi-post progressive messaging! :rocket:`
+        content: `:white_check_mark: **Multi-Post System Test Complete**\n\nVersion 0.1.7 now implements the requested multi-post progressive messaging! :rocket:`
       });
 
       logger.info('=== Multi-Post Demo Complete ===');
@@ -138,7 +139,7 @@ async function main(): Promise<void> {
     res.json({
       success: true,
       message: 'Multi-post system demo started',
-      version: '0.1.6',
+      version: '0.1.7',
       feature: 'progressive-messaging-with-separate-posts'
     });
   });
@@ -164,8 +165,8 @@ async function main(): Promise<void> {
     webhookPort: config.server.webhookPort,
     githubRepo: config.github.repository,
     hasAnthropicKey: !!config.anthropic.apiKey,
-    version: '0.1.6',
-    features: ['progressive-messaging', 'thread-based-updates', 'multi-post-system', 'follow-through-fixes']
+    version: '0.1.7',
+    features: ['progressive-messaging', 'thread-based-updates', 'multi-post-system', 'follow-through-fixes', 'tested-multi-post-flow']
   });
 
   // Cleanup on shutdown
