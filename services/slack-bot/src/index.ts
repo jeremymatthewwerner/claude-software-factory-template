@@ -23,6 +23,7 @@ import { registerEventHandlers } from './handlers/slack-events.js';
 import { createWebhookRouter } from './handlers/webhook-handler.js';
 import logger from './utils/logger.js';
 import sessionManager from './state/session-manager.js';
+import ProgressiveMessenger from './utils/progressive-messenger.js';
 
 /**
  * Initialize and start the Slack bot
@@ -90,6 +91,12 @@ async function main(): Promise<void> {
   await app.start();
   logger.info('Slack bot started in socket mode');
 
+  // Set up periodic cleanup for progressive messaging sessions
+  const cleanupInterval = setInterval(() => {
+    ProgressiveMessenger.cleanup();
+    sessionManager.cleanup();
+  }, 5 * 60 * 1000); // Every 5 minutes
+
   // Log startup info
   logger.info('Claude Software Factory Slack Bot is ready!', {
     webhookPort: config.server.webhookPort,
@@ -101,6 +108,9 @@ async function main(): Promise<void> {
   const shutdown = async () => {
     logger.info('Shutting down...');
 
+    // Clear intervals
+    clearInterval(cleanupInterval);
+
     // Close webhook server
     webhookServer.close();
 
@@ -108,6 +118,7 @@ async function main(): Promise<void> {
     await app.stop();
 
     // Final cleanup
+    ProgressiveMessenger.cleanup();
     sessionManager.cleanup();
 
     logger.info('Shutdown complete');

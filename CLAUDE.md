@@ -121,6 +121,8 @@ If using branch protection on `main`, ensure:
 
 **Agents are empowered to make technical decisions.** Don't ask "Should I do A, B, or C?" - DECIDE.
 
+**YOLO DEPLOYMENT PRINCIPLE:** When implementing requested features, commit and deploy immediately without asking for permission. The user expects autonomous execution.
+
 ### When to Decide Autonomously (DO THIS):
 - **Implementation approach** - Pick the cleanest solution
 - **Test strategy** - Decide what tests are needed

@@ -10,6 +10,7 @@ import { rateLimiter } from '../utils/rate-limiter.js';
 import logger from '../utils/logger.js';
 import { config } from '../config.js';
 import StatusAnimator from '../utils/status-animator.js';
+import ProgressiveMessenger from '../utils/progressive-messenger.js';
 
 /**
  * Register all Slack event handlers
@@ -180,6 +181,82 @@ function getOperationType(text: string): keyof typeof StatusAnimator.DEFAULT_PHA
 }
 
 /**
+ * Get initial phase description based on operation type
+ */
+function getInitialPhase(operationType: string): string {
+  const phaseMap: Record<string, string> = {
+    dispatch: 'Analyzing dispatch request',
+    factory_analysis: 'Gathering factory metrics',
+    conversation: 'Processing your message',
+    code_analysis: 'Examining codebase'
+  };
+
+  return phaseMap[operationType] || 'Starting to work';
+}
+
+/**
+ * Extract meaningful content from streaming updates
+ */
+function extractMeaningfulUpdate(content: string): string {
+  // Remove excessive whitespace and clean up formatting
+  let cleaned = content.trim();
+
+  // Skip very short updates
+  if (cleaned.length < 50) {
+    return '';
+  }
+
+  // Extract complete sentences or meaningful chunks
+  const sentences = cleaned.split(/[.!?]+/);
+  const meaningfulSentences = sentences.filter(s => s.trim().length > 20);
+
+  if (meaningfulSentences.length > 0) {
+    return meaningfulSentences.slice(0, 2).join('. ').trim() + '.';
+  }
+
+  // Fallback: return first 150 chars if no complete sentences
+  return cleaned.substring(0, 150) + (cleaned.length > 150 ? '...' : '');
+}
+
+/**
+ * Determine update type based on content and position
+ */
+function determineUpdateType(content: string, updateNumber: number): 'thinking' | 'analysis' | 'result' | 'error' | 'progress' {
+  const lowerContent = content.toLowerCase();
+
+  if (lowerContent.includes('error') || lowerContent.includes('failed')) {
+    return 'error';
+  }
+
+  if (updateNumber === 1) {
+    return 'analysis';
+  }
+
+  if (lowerContent.includes('found') || lowerContent.includes('discovered') || lowerContent.includes('analyzing')) {
+    return 'analysis';
+  }
+
+  return 'progress';
+}
+
+/**
+ * Get phase description for update based on operation and step
+ */
+function getPhaseForUpdate(operationType: string, updateNumber: number): string {
+  const phasesByType: Record<string, string[]> = {
+    dispatch: ['Parsing request', 'Creating issue', 'Setting up workflow'],
+    factory_analysis: ['Collecting metrics', 'Analyzing patterns', 'Generating insights'],
+    conversation: ['Understanding context', 'Researching solution', 'Formulating response'],
+    code_analysis: ['Scanning codebase', 'Identifying patterns', 'Proposing solution']
+  };
+
+  const phases = phasesByType[operationType] || phasesByType.conversation;
+  const phaseIndex = Math.min(updateNumber - 1, phases.length - 1);
+
+  return phases[phaseIndex] || 'Processing';
+}
+
+/**
  * Handle an incoming message
  */
 async function handleMessage(
@@ -211,53 +288,59 @@ async function handleMessage(
   const session = sessionManager.getOrCreate(channelId, threadTs, userId);
 
   try {
-    // Determine operation type for appropriate status phases
+    // Determine operation type for initial phase
     const operationType = getOperationType(text);
-    const phases = StatusAnimator.getPhasesForOperation(operationType);
+    const initialPhase = getInitialPhase(operationType);
 
-    // Start dynamic status animation
-    const statusKey = `${channelId}-${threadTs}`;
-    await StatusAnimator.start({
-      channel: channelId,
-      threadTs: threadTs,
-      client: client,
-      phases: phases
-    });
+    // Start progressive messaging session
+    const sessionKey = await ProgressiveMessenger.startSession(
+      channelId,
+      threadTs,
+      client,
+      initialPhase
+    );
 
     try {
-      // Process the message
-      let fullResponse = '';
-
-      const startTime = Date.now();
+      // Track intermediate updates
+      let updateCount = 0;
+      let lastChunkLength = 0;
+      const chunkThreshold = 200; // Minimum chars for an update
 
       const result = await routeMessage(text, session, async (chunk) => {
-        fullResponse += chunk;
-        // Update the message in real-time for streaming
-        try {
-          const slackMessage = markdownToSlack(fullResponse);
-          await StatusAnimator.update(statusKey, slackMessage, client, channelId);
-        } catch (error) {
-          logger.warn('Failed to update streaming message', { error: error instanceof Error ? error.message : String(error) });
+        // Only post updates if we have substantial new content
+        if (chunk.length - lastChunkLength > chunkThreshold) {
+          updateCount++;
+
+          // Extract meaningful sections from the streaming content
+          const newContent = chunk.substring(lastChunkLength);
+          const cleanedContent = extractMeaningfulUpdate(newContent);
+
+          if (cleanedContent.trim()) {
+            await ProgressiveMessenger.postUpdate(sessionKey, {
+              id: `update-${updateCount}`,
+              type: determineUpdateType(cleanedContent, updateCount),
+              content: cleanedContent,
+              metadata: {
+                step: updateCount,
+                phase: getPhaseForUpdate(operationType, updateCount),
+                timestamp: Date.now()
+              }
+            });
+          }
+
+          lastChunkLength = chunk.length;
         }
       });
 
-      // Convert markdown to Slack format
-      const slackMessage = markdownToSlack(result.response);
-
-      // Ensure animation runs for at least 3 seconds to be visible
-      const elapsedTime = Date.now() - startTime;
-      const minDisplayTime = 3000; // 3 seconds minimum
-
-      if (elapsedTime < minDisplayTime) {
-        logger.debug('Waiting to ensure animation is visible', {
-          elapsedTime,
-          waitTime: minDisplayTime - elapsedTime
-        });
-        await new Promise(resolve => setTimeout(resolve, minDisplayTime - elapsedTime));
-      }
-
-      // Complete the status animation with the final response
-      await StatusAnimator.complete(statusKey, slackMessage, client, channelId);
+      // Complete the session with final result
+      await ProgressiveMessenger.completeSession(
+        sessionKey,
+        result.response,
+        {
+          success: !result.response.includes('error'),
+          summary: result.dispatchedAgent ? `Dispatched to ${result.dispatchedAgent} agent` : 'Conversation completed'
+        }
+      );
 
       // Track the response in session
       sessionManager.addMessage(channelId, threadTs, 'assistant', result.response, undefined);
@@ -274,15 +357,15 @@ async function handleMessage(
         channelId,
         threadTs,
         dispatchedAgent: result.dispatchedAgent,
+        totalUpdates: updateCount
       });
     } catch (processingError) {
-      // If processing fails, stop the status animation and show error
-      StatusAnimator.stop(statusKey);
-
-      await say({
-        text: "I encountered an error processing your message. Please try again.",
-        thread_ts: threadTs,
-      });
+      // If processing fails, complete with error
+      await ProgressiveMessenger.completeSession(
+        sessionKey,
+        "I encountered an error processing your message. Please try again.",
+        { success: false }
+      );
 
       throw processingError;
     }
