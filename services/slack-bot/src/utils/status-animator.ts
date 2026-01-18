@@ -34,91 +34,173 @@ export class StatusAnimator {
 
   // Diverse emoji animation frames inspired by modern AI tools
   private static readonly ANIMATION_FRAMES = {
-    thinking: ['🤔', '💭', '🧠', '⚡', '✨', '🎯', '💡', '🌟', '🔮', '🎨', '🧩', '⭐'],
-    analyzing: ['🔍', '📊', '📈', '🔎', '🧮', '📋', '🎯', '🔬', '📉', '🎪', '🔍', '📝'],
-    working: ['⚙️', '🔧', '⚡', '🛠️', '💫', '🎪', '🚀', '⚗️', '🎭', '🎯', '🔩', '⚖️'],
-    creating: ['📝', '✏️', '📄', '📋', '✍️', '📃', '🎨', '🖊️', '📐', '🎪', '📓', '🖼️'],
-    processing: ['🔄', '⚡', '🚀', '💫', '⭐', '🎯', '⚗️', '🎪', '🌊', '🔋', '📡', '⚡'],
-    reasoning: ['🧠', '💭', '🤔', '💡', '🎯', '✨', '🔮', '🧩', '⚖️', '🎪', '🌟', '🎨'],
-    researching: ['🔍', '🕵️', '📚', '🔎', '📊', '🗂️', '🔬', '🎯', '🧭', '📡', '🎪', '🗃️'],
-    optimizing: ['⚡', '🚀', '⚗️', '🔧', '⚙️', '🎯', '💫', '🎪', '🔋', '📈', '🌟', '⭐']
+    thinking: ['💭', '🤔', '💡', '🧠', '✨', '⭐', '🌟', '💫', '🎯', '🔮', '🎨', '🧩'],
+    analyzing: ['🔍', '🔎', '📊', '📈', '🧮', '📋', '🔬', '📉', '🎯', '🧪', '⚗️', '🔭'],
+    working: ['⚙️', '🔧', '🛠️', '⚡', '⚖️', '🔩', '🎪', '🚀', '💫', '🎭', '🎯', '⭐'],
+    creating: ['📝', '✏️', '🖊️', '📄', '📋', '✍️', '🎨', '🖼️', '📐', '📓', '🎪', '🌟'],
+    processing: ['🔄', '💫', '⚡', '🚀', '⭐', '🎯', '⚗️', '🌊', '🔋', '📡', '🎪', '🌟'],
+    reasoning: ['🧠', '💭', '🤔', '💡', '🎯', '✨', '🔮', '🧩', '⚖️', '🌟', '🎨', '⭐'],
+    researching: ['🔍', '🕵️', '📚', '🔎', '📊', '🗂️', '🔬', '🎯', '🧭', '📡', '🗃️', '🎪'],
+    optimizing: ['⚡', '🚀', '⚗️', '🔧', '⚙️', '🎯', '💫', '🔋', '📈', '🌟', '⭐', '🎪']
   };
 
-  // Comprehensive dynamic verbs inspired by Claude Code, ChatGPT, and Gemini
+  // Expanded Claude-style verbs for dynamic status messages - now with many more fun words!
   private static readonly CLAUDE_VERBS = {
     thinking: [
+      // Original professional words
       'cogitating', 'pondering', 'contemplating', 'ruminating', 'deliberating', 'reflecting',
       'reasoning', 'mulling', 'meditating', 'considering', 'introspecting', 'philosophizing',
-      'brainstorming', 'conceptualizing', 'theorizing', 'strategizing', 'envisioning', 'imagining'
+      'brainstorming', 'conceptualizing', 'theorizing', 'strategizing', 'envisioning', 'imagining',
+      // More cute additions
+      'daydreaming', 'wondering', 'musing', 'dreaming', 'puzzling', 'brewing ideas',
+      'having thoughts', 'mind-wandering', 'brain-storming', 'idea-cooking', 'thought-juggling',
+      'neural-networking', 'synapses-firing', 'creativity-flowing', 'wisdom-gathering', 'insight-hunting',
+      // Extra fun ones
+      'cloud-gazing', 'star-wishing', 'mind-melding', 'soul-searching', 'brain-dancing',
+      'thought-swimming', 'idea-surfing', 'wisdom-fishing', 'inspiration-catching', 'eureka-seeking',
+      'lightbulb-chasing', 'aha-moment-hunting', 'genius-brewing', 'brilliance-cooking', 'insight-baking'
     ],
     analyzing: [
+      // Original professional words  
       'examining', 'scrutinizing', 'investigating', 'parsing', 'dissecting', 'evaluating',
       'inspecting', 'auditing', 'diagnosing', 'profiling', 'surveying', 'assessing',
-      'reviewing', 'studying', 'exploring', 'decoding', 'deciphering', 'interpreting'
+      'reviewing', 'studying', 'exploring', 'decoding', 'deciphering', 'interpreting',
+      // More cute additions
+      'detective-working', 'puzzle-solving', 'pattern-hunting', 'clue-gathering', 'mystery-unraveling',
+      'data-diving', 'info-sifting', 'detail-chasing', 'fact-finding', 'logic-weaving',
+      'code-sleuthing', 'bug-hunting', 'pixel-peeping', 'byte-browsing', 'algorithm-auditing',
+      // Extra fun ones
+      'magnifying-glass-wielding', 'sherlock-holmesing', 'csi-investigating', 'truth-detecting',
+      'evidence-collecting', 'case-cracking', 'riddle-solving', 'secret-uncovering',
+      'microscope-peering', 'x-ray-visioning', 'radar-scanning', 'sonar-pinging'
     ],
     working: [
+      // Original professional words
       'processing', 'computing', 'calculating', 'synthesizing', 'organizing', 'structuring',
       'optimizing', 'refining', 'transforming', 'assembling', 'orchestrating', 'coordinating',
-      'implementing', 'executing', 'compiling', 'configuring', 'calibrating', 'fine-tuning'
+      'implementing', 'executing', 'compiling', 'configuring', 'calibrating', 'fine-tuning',
+      // More cute additions
+      'busy-beeing', 'magic-making', 'gear-turning', 'wheel-spinning', 'engine-humming',
+      'circuit-buzzing', 'byte-crunching', 'pixel-pushing', 'code-crafting', 'data-dancing',
+      'algorithm-weaving', 'function-flowing', 'variable-vibe-ing', 'loop-looping', 'stack-stacking',
+      // Extra fun ones
+      'hamster-wheel-running', 'coffee-machine-brewing', 'factory-line-moving', 'clockwork-ticking',
+      'workshop-hammering', 'forge-smithing', 'laboratory-experimenting', 'kitchen-cooking',
+      'assembly-line-rolling', 'conveyor-belt-moving', 'industrial-strength-working', 'turbo-charging'
     ],
     creating: [
+      // Original professional words
       'composing', 'crafting', 'generating', 'formulating', 'constructing', 'building',
       'designing', 'architecting', 'developing', 'producing', 'fabricating', 'manufacturing',
-      'authoring', 'drafting', 'sketching', 'modeling', 'prototyping', 'innovating'
+      'authoring', 'drafting', 'sketching', 'modeling', 'prototyping', 'innovating',
+      // More cute additions
+      'art-making', 'masterpiece-crafting', 'magic-weaving', 'dream-building', 'story-spinning',
+      'word-painting', 'idea-sculpting', 'creativity-flowing', 'inspiration-channeling', 'beauty-brewing',
+      'code-poetry-writing', 'digital-art-creating', 'syntax-singing', 'logic-painting', 'function-flowering',
+      // Extra fun ones
+      'rainbow-painting', 'unicorn-summoning', 'fairy-tale-writing', 'castle-building', 'garden-growing',
+      'symphony-composing', 'sculpture-chiseling', 'tapestry-weaving', 'origami-folding', 'mosaic-placing',
+      'stained-glass-making', 'pottery-throwing', 'jewelry-crafting', 'song-humming', 'dance-choreographing'
     ],
     processing: [
+      // Original professional words
       'orchestrating', 'coordinating', 'executing', 'performing', 'operating', 'finalizing',
       'compiling', 'rendering', 'encoding', 'transforming', 'streaming', 'buffering',
-      'indexing', 'sorting', 'filtering', 'aggregating', 'consolidating', 'reconciling'
+      'indexing', 'sorting', 'filtering', 'aggregating', 'consolidating', 'reconciling',
+      // More cute additions
+      'data-dancing', 'bit-ballet', 'byte-boogie', 'algorithm-aerobics', 'code-choreography',
+      'digital-disco', 'cyber-spinning', 'tech-tap-dancing', 'silicon-salsa', 'binary-breakdancing',
+      'packet-prancing', 'signal-swaying', 'frequency-flowing', 'wave-waltzing', 'stream-streaming',
+      // Extra fun ones
+      'cpu-conga-lining', 'ram-rumba-ing', 'gpu-grooving', 'ssd-swing-dancing', 'usb-upbeat-ing',
+      'wifi-waving', 'bluetooth-bebop-ing', 'ethernet-electric-sliding', 'fiber-optic-funking'
     ],
     reasoning: [
+      // Original professional words
       'deducing', 'inferring', 'concluding', 'deriving', 'extrapolating', 'correlating',
       'connecting', 'linking', 'associating', 'synthesizing', 'integrating', 'consolidating',
-      'cross-referencing', 'triangulating', 'validating', 'verifying', 'confirming', 'substantiating'
+      'cross-referencing', 'triangulating', 'validating', 'verifying', 'confirming', 'substantiating',
+      // More cute additions
+      'puzzle-piecing', 'dot-connecting', 'thread-following', 'logic-linking', 'pattern-matching',
+      'clue-connecting', 'mystery-solving', 'riddle-unraveling', 'brain-bridging', 'insight-weaving',
+      'thought-threading', 'idea-intertwining', 'concept-coupling', 'wisdom-weaving', 'truth-tracking',
+      // Extra fun ones
+      'sherlock-deducing', 'einstein-theorizing', 'aristotle-philosophizing', 'socrates-questioning',
+      'da-vinci-connecting', 'tesla-inventing', 'newton-discovering', 'galileo-observing'
     ],
     researching: [
+      // Original professional words
       'investigating', 'exploring', 'discovering', 'uncovering', 'mining', 'extracting',
       'gathering', 'collecting', 'sourcing', 'retrieving', 'indexing', 'cataloging',
-      'curating', 'surveying', 'mapping', 'documenting', 'chronicling', 'archiving'
+      'curating', 'surveying', 'mapping', 'documenting', 'chronicling', 'archiving',
+      // More cute additions
+      'treasure-hunting', 'knowledge-seeking', 'fact-fishing', 'info-adventuring', 'data-diving',
+      'wisdom-wandering', 'curiosity-following', 'discovery-dancing', 'learning-leaping', 'insight-seeking',
+      'truth-tracking', 'evidence-exploring', 'clue-chasing', 'answer-hunting', 'secret-searching',
+      // Extra fun ones
+      'library-spelunking', 'archive-archeology-ing', 'database-deep-diving', 'internet-archaeology',
+      'knowledge-base-spelunking', 'fact-fossil-hunting', 'info-expedition-leading', 'data-safari-guiding'
     ],
     optimizing: [
+      // Original professional words
       'refining', 'enhancing', 'improving', 'streamlining', 'perfecting', 'polishing',
       'tuning', 'calibrating', 'adjusting', 'tweaking', 'fine-tuning', 'balancing',
-      'harmonizing', 'stabilizing', 'maximizing', 'minimizing', 'accelerating', 'upgrading'
+      'harmonizing', 'stabilizing', 'maximizing', 'minimizing', 'accelerating', 'upgrading',
+      // More cute additions
+      'sparkle-adding', 'shine-boosting', 'perfection-pursuing', 'beauty-buffing', 'elegance-enhancing',
+      'smoothness-sculpting', 'efficiency-elevating', 'performance-pampering', 'speed-sprucing', 'quality-quilting',
+      'precision-polishing', 'excellence-editing', 'flawless-finishing', 'magic-maximizing', 'awesome-amplifying',
+      // Extra fun ones
+      'diamond-polishing', 'gold-refining', 'silk-smoothing', 'butter-softening', 'honey-sweetening',
+      'rainbow-brightening', 'star-shining', 'crystal-clarifying', 'pearl-lustening', 'gem-gleaming'
     ]
   };
+
+  // Progress completion messages with style
+  private static readonly COMPLETION_MESSAGES = [
+    '✨ All done!',
+    '🎉 Complete!', 
+    '🚀 Finished!',
+    '⭐ Ready!',
+    '🎯 Success!',
+    '💫 Perfect!',
+    '🌟 Brilliant!',
+    '🎪 Ta-da!',
+    '🏆 Nailed it!',
+    '💎 Flawless!'
+  ];
 
   // Default phases for different operations
   static readonly DEFAULT_PHASES: Record<string, StatusPhase[]> = {
     conversation: [
-      { name: 'analyzing', emoji: '🔍', message: 'Analyzing your message for context and intent', animationType: 'analyzing', estimatedDuration: 3000 },
-      { name: 'reasoning', emoji: '🧠', message: 'Reasoning through the problem space', animationType: 'reasoning', estimatedDuration: 4000 },
-      { name: 'researching', emoji: '🕵️', message: 'Researching relevant information', animationType: 'researching', estimatedDuration: 3500 },
-      { name: 'creating', emoji: '📝', message: 'Crafting comprehensive response', animationType: 'creating', estimatedDuration: 3000 },
-      { name: 'optimizing', emoji: '⚡', message: 'Optimizing for clarity and accuracy', animationType: 'optimizing', estimatedDuration: 2000 }
+      { name: 'analyzing', emoji: '🔍', message: 'Reading your message and understanding context', animationType: 'analyzing', estimatedDuration: 2500 },
+      { name: 'reasoning', emoji: '🧠', message: 'Thinking through the problem space', animationType: 'reasoning', estimatedDuration: 3500 },
+      { name: 'researching', emoji: '🕵️', message: 'Gathering relevant information and tools', animationType: 'researching', estimatedDuration: 3000 },
+      { name: 'creating', emoji: '📝', message: 'Crafting the perfect response', animationType: 'creating', estimatedDuration: 2000 },
+      { name: 'optimizing', emoji: '⚡', message: 'Adding final touches and polish', animationType: 'optimizing', estimatedDuration: 1500 }
     ],
     dispatch: [
-      { name: 'parsing', emoji: '🔍', message: 'Parsing dispatch request and requirements', animationType: 'analyzing', estimatedDuration: 2000 },
-      { name: 'reasoning', emoji: '🧩', message: 'Reasoning about best agent assignment', animationType: 'reasoning', estimatedDuration: 3000 },
-      { name: 'creating', emoji: '📋', message: 'Creating GitHub issue with full context', animationType: 'creating', estimatedDuration: 4000 },
-      { name: 'optimizing', emoji: '🎯', message: 'Optimizing agent workflow setup', animationType: 'optimizing', estimatedDuration: 2000 }
+      { name: 'parsing', emoji: '🔍', message: 'Understanding your dispatch requirements', animationType: 'analyzing', estimatedDuration: 1500 },
+      { name: 'reasoning', emoji: '🧩', message: 'Selecting the best agent for this task', animationType: 'reasoning', estimatedDuration: 2500 },
+      { name: 'creating', emoji: '📋', message: 'Creating GitHub issue with full context', animationType: 'creating', estimatedDuration: 3500 },
+      { name: 'optimizing', emoji: '🎯', message: 'Setting up optimal agent workflow', animationType: 'optimizing', estimatedDuration: 1500 }
     ],
     factory_analysis: [
-      { name: 'researching', emoji: '📊', message: 'Researching factory metrics and patterns', animationType: 'researching', estimatedDuration: 3500 },
-      { name: 'analyzing', emoji: '🔬', message: 'Analyzing system health indicators', animationType: 'analyzing', estimatedDuration: 5000 },
-      { name: 'reasoning', emoji: '🧠', message: 'Reasoning about correlations and trends', animationType: 'reasoning', estimatedDuration: 3000 },
-      { name: 'creating', emoji: '📋', message: 'Creating comprehensive status report', animationType: 'creating', estimatedDuration: 2000 }
+      { name: 'researching', emoji: '📊', message: 'Scanning factory metrics and health data', animationType: 'researching', estimatedDuration: 3000 },
+      { name: 'analyzing', emoji: '🔬', message: 'Deep-diving into system performance', animationType: 'analyzing', estimatedDuration: 4000 },
+      { name: 'reasoning', emoji: '🧠', message: 'Identifying patterns and correlations', animationType: 'reasoning', estimatedDuration: 2500 },
+      { name: 'creating', emoji: '📋', message: 'Compiling comprehensive status report', animationType: 'creating', estimatedDuration: 2000 }
     ],
     code_analysis: [
-      { name: 'researching', emoji: '🕵️', message: 'Researching codebase structure and patterns', animationType: 'researching', estimatedDuration: 4000 },
-      { name: 'analyzing', emoji: '🔬', message: 'Analyzing code quality and architecture', animationType: 'analyzing', estimatedDuration: 5000 },
-      { name: 'reasoning', emoji: '🧩', message: 'Reasoning about optimal solutions', animationType: 'reasoning', estimatedDuration: 3500 },
-      { name: 'creating', emoji: '🛠️', message: 'Creating implementation plan', animationType: 'creating', estimatedDuration: 3000 }
+      { name: 'researching', emoji: '🕵️', message: 'Exploring codebase structure and files', animationType: 'researching', estimatedDuration: 3500 },
+      { name: 'analyzing', emoji: '🔬', message: 'Reviewing code quality and patterns', animationType: 'analyzing', estimatedDuration: 4500 },
+      { name: 'reasoning', emoji: '🧩', message: 'Determining optimal solutions', animationType: 'reasoning', estimatedDuration: 3000 },
+      { name: 'creating', emoji: '🛠️', message: 'Building implementation strategy', animationType: 'creating', estimatedDuration: 2500 }
     ]
   };
 
   static async start(config: StatusAnimatorConfig): Promise<string> {
-    const { channel, threadTs, client, phases, animationInterval = 500 } = config;
+    const { channel, threadTs, client, phases, animationInterval = 1800 } = config; // Faster updates for more dynamic feel
     const key = `${channel}-${threadTs}`;
 
     // Stop any existing animator for this thread
@@ -143,7 +225,7 @@ export class StatusAnimator {
 
       this.instances.set(key, tracker);
 
-      // Start animation loop
+      // Start animation loop - faster for more lively feel
       tracker.intervalId = setInterval(async () => {
         await this.updateAnimation(key, client, channel, phases);
       }, animationInterval);
@@ -192,7 +274,7 @@ export class StatusAnimator {
     try {
       // Update message with partial content while keeping status animation
       const currentPhase = tracker.currentPhase;
-      const phases = StatusAnimator.DEFAULT_PHASES.message || [];
+      const phases = StatusAnimator.DEFAULT_PHASES.conversation || [];
       const phase = phases[Math.min(currentPhase, phases.length - 1)];
 
       if (phase) {
@@ -225,21 +307,27 @@ export class StatusAnimator {
     }
 
     try {
-      // Replace status message with final response
-      await client.chat.update({
+      // FIXED: Instead of updating the status message, post final result as NEW message
+      // This preserves the animated status history and adds the final result
+      const threadTs = key.split('-').pop(); // Extract threadTs from key format "channel-threadTs"
+      
+      await client.chat.postMessage({
         channel,
-        ts: tracker.messageTs,
+        thread_ts: threadTs,
         text: finalMessage,
+        unfurl_links: false,
+        unfurl_media: false
       });
 
-      logger.debug('Status animator completed', { key });
+      logger.debug('Status animator completed with new message', { key });
     } catch (error) {
       logger.error('Failed to complete status animator', { error, key });
-      // Fallback: post final message as new message
+      
+      // Fallback: try updating the original message if posting fails
       try {
-        await client.chat.postMessage({
+        await client.chat.update({
           channel,
-          thread_ts: key.split('-')[1], // Extract threadTs from key
+          ts: tracker.messageTs,
           text: finalMessage,
         });
       } catch (fallbackError) {
@@ -319,7 +407,6 @@ export class StatusAnimator {
     }
   }
 
-
   private static formatStatusMessage(phase: StatusPhase, phaseIndex: number, animationFrame: number, totalPhases: number): string {
     const animationType = phase.animationType || 'thinking';
     const animationFrames = this.ANIMATION_FRAMES[animationType];
@@ -331,27 +418,35 @@ export class StatusAnimator {
 
     const progress = `[${phaseIndex + 1}/${totalPhases}]`;
 
-    // Progress bar (like Claude Code)
+    // Progress bar like Claude Code with Unicode block characters
     const progressBar = this.createProgressBar(phaseIndex, totalPhases);
 
-    // Format like Claude Code with structured output
-    return `${animatedEmoji} *${dynamicVerb}...* ${progress}
+    // Random completion message if at final phase
+    const isLastPhase = phaseIndex === totalPhases - 1;
+    const completionMessage = isLastPhase ? 
+      this.COMPLETION_MESSAGES[animationFrame % this.COMPLETION_MESSAGES.length] : 
+      '';
+
+    // Format like Claude Code with clean structure
+    return `${animatedEmoji} **${dynamicVerb}...** ${progress}
 
 ${progressBar}
 
-_${phase.message}_`;
+${isLastPhase ? `${completionMessage} ` : ''}_${phase.message}_`;
   }
 
   private static createProgressBar(current: number, total: number): string {
-    const width = 20;
-    const filled = Math.floor((current / total) * width);
+    const width = 24; // Slightly wider for better visual
+    const filled = Math.floor(((current + 1) / total) * width);
     const empty = width - filled;
 
+    // Use different Unicode characters for a more polished look
     const filledBar = '█'.repeat(filled);
-    const emptyBar = '░'.repeat(empty);
+    const partialBar = current + 1 < total && filled < width ? '▓' : '';
+    const emptyBar = '░'.repeat(Math.max(0, empty - (partialBar ? 1 : 0)));
     const percentage = Math.round(((current + 1) / total) * 100);
 
-    return `\`${filledBar}${emptyBar}\` ${percentage}%`;
+    return `\`${filledBar}${partialBar}${emptyBar}\` ${percentage}%`;
   }
 
   // Utility method to get default phases for an operation type

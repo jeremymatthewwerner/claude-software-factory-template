@@ -1,5 +1,5 @@
 /**
- * Slack event handlers
+ * Slack event handlers with Claude Code style UI
  */
 
 import type { App, MessageEvent, AppMentionEvent } from '@slack/bolt';
@@ -7,6 +7,8 @@ import { routeMessage } from './message-router.js';
 import sessionManager from '../state/session-manager.js';
 import { markdownToSlack } from '../utils/markdown-to-slack.js';
 import { rateLimiter } from '../utils/rate-limiter.js';
+import ProgressiveMessenger from '../utils/progressive-messenger.js';
+import StatusAnimator from '../utils/status-animator.js';
 import logger from '../utils/logger.js';
 import { config } from '../config.js';
 import { fetchThreadHistory, formatHistoryForPrompt } from '../utils/thread-history.js';
@@ -88,7 +90,7 @@ export function registerEventHandlers(app: App): void {
 
     if (!text) {
       await say({
-        text: "Hi! How can I help? Say `help` to see what I can do.",
+        text: "Hi! 👋 How can I help? Say `help` to see what I can do.",
         thread_ts: mention.thread_ts || mention.ts,
       });
       return;
@@ -116,13 +118,16 @@ export function registerEventHandlers(app: App): void {
 
     logger.info('Reaction added', { reaction, user, channel: item.channel });
 
-    // Map reactions to actions
+    // Map reactions to actions with fun responses
     const reactionActions: Record<string, string> = {
-      'white_check_mark': 'approved',
-      'x': 'rejected',
-      'eyes': 'reviewing',
-      'rocket': 'deploy',
-      'bug': 'bug_report',
+      'white_check_mark': 'approved ✅',
+      'x': 'rejected ❌',
+      'eyes': 'reviewing 👀', 
+      'rocket': 'deploy 🚀',
+      'bug': 'bug_report 🐛',
+      'heart': 'loved ❤️',
+      'fire': 'amazing 🔥',
+      'tada': 'celebrated 🎉'
     };
 
     const action = reactionActions[reaction];
@@ -150,7 +155,7 @@ export function registerEventHandlers(app: App): void {
     if (text.startsWith('dispatch ')) {
       await respond({
         response_type: 'in_channel',
-        text: `Processing dispatch request...`,
+        text: `🚀 Processing dispatch request...`,
       });
 
       // Create a pseudo thread for tracking
@@ -172,7 +177,7 @@ export function registerEventHandlers(app: App): void {
     // Default: start conversation in thread
     await respond({
       response_type: 'in_channel',
-      text: `<@${user_id}> asked: ${text}\n\n_Starting conversation..._`,
+      text: `<@${user_id}> asked: ${text}\n\n✨ _Starting conversation..._`,
     });
   });
 
@@ -180,158 +185,133 @@ export function registerEventHandlers(app: App): void {
 }
 
 /**
- * Create a progressive messenger that posts SEPARATE messages for each update
- * Each update becomes its own Slack message with timestamp
+ * Create Claude Code style progressive messenger
  */
-function createProgressiveMessenger(
+function createClaudeCodeMessenger(
   client: any,
   channelId: string,
   threadTs: string,
+  messageText: string
 ) {
-  let thinkingTs: string | null = null;
-  let animationFrame = 0;
-  let animationInterval: NodeJS.Timeout | null = null;
-  const postedMessages: string[] = []; // Track all posted message timestamps
+  // Infer operation type from message content
+  const operationType = ProgressiveMessenger.inferOperationType(messageText);
+  
+  let progressiveSessionKey: string | null = null;
+  let isCompleted = false;
 
-  // Animation frames for the thinking indicator
-  const thinkingFrames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-
-  // Start the thinking animation as a NEW message
-  const startThinking = async () => {
-    // Stop any existing animation first
-    if (animationInterval) {
-      clearInterval(animationInterval);
-      animationInterval = null;
-    }
-
-    const frame = thinkingFrames[0];
-    const result = await client.chat.postMessage({
-      channel: channelId,
-      thread_ts: threadTs,
-      text: `${frame} _working..._`,
-    });
-    thinkingTs = result.ts;
-    animationFrame = 0;
-
-    // Animate the thinking indicator
-    animationInterval = setInterval(async () => {
-      if (!thinkingTs) return;
-      animationFrame++;
-      const frame = thinkingFrames[animationFrame % thinkingFrames.length];
-      try {
-        await client.chat.update({
-          channel: channelId,
-          ts: thinkingTs,
-          text: `${frame} _working..._`,
-        });
-      } catch (e) {
-        // Ignore update errors
-      }
-    }, 400);
-  };
-
-  // Update the thinking message with content, then it becomes a permanent post
-  const convertThinkingToPost = async (content: string) => {
-    if (animationInterval) {
-      clearInterval(animationInterval);
-      animationInterval = null;
-    }
-
-    if (thinkingTs && content.trim()) {
-      try {
-        await client.chat.update({
-          channel: channelId,
-          ts: thinkingTs,
-          text: markdownToSlack(content),
-        });
-        postedMessages.push(thinkingTs);
-        thinkingTs = null;
-      } catch (e) {
-        // If update fails, try posting new message
-        logger.warn('Failed to update thinking message, posting new', { error: e });
-        await client.chat.postMessage({
-          channel: channelId,
-          thread_ts: threadTs,
-          text: markdownToSlack(content),
-        });
-        thinkingTs = null;
-      }
+  // Start progressive session with Claude Code style animation
+  const initialize = async () => {
+    if (progressiveSessionKey) return progressiveSessionKey;
+    
+    try {
+      progressiveSessionKey = await ProgressiveMessenger.startSession(
+        channelId,
+        threadTs,
+        client,
+        operationType
+      );
+      return progressiveSessionKey;
+    } catch (error) {
+      logger.error('Failed to initialize Claude Code messenger', { error });
+      throw error;
     }
   };
-
-  // Delete the thinking message without converting
-  const deleteThinking = async () => {
-    if (animationInterval) {
-      clearInterval(animationInterval);
-      animationInterval = null;
-    }
-    if (thinkingTs) {
-      try {
-        await client.chat.delete({
-          channel: channelId,
-          ts: thinkingTs,
-        });
-      } catch (e) {
-        // Ignore delete errors
-      }
-      thinkingTs = null;
-    }
-  };
-
-  // Initialize with thinking message
-  startThinking();
-
-  // Queue for processing updates sequentially
-  let updateQueue: Promise<void> = Promise.resolve();
-  let pendingContent = '';
 
   return {
     /**
-     * Add content - queues for posting as separate message
+     * Start the Claude Code style status animation
      */
-    addChunk: (chunk: string) => {
-      pendingContent += chunk;
+    start: initialize,
 
-      // Check for natural break points to create separate messages
-      const hasBreakPoint = pendingContent.includes('\n\n') ||
-        pendingContent.length > 300;
+    /**
+     * Handle streaming chunks - accumulate and post meaningful updates
+     */
+    addChunk: async (chunk: string) => {
+      if (isCompleted) return;
+      
+      try {
+        if (!progressiveSessionKey) {
+          await initialize();
+        }
 
-      if (hasBreakPoint && pendingContent.trim().length > 30) {
-        const content = pendingContent;
-        pendingContent = '';
-
-        // Queue the update to ensure sequential processing
-        updateQueue = updateQueue.then(async () => {
-          // Convert current thinking message to this content
-          await convertThinkingToPost(content);
-          // Start new thinking message for next update
-          await startThinking();
-        }).catch(err => {
-          logger.error('Error posting update', { error: err });
-        });
+        // For now, we'll stream updates to the status message
+        // This could be enhanced to detect complete thoughts and post separate updates
+        if (progressiveSessionKey && chunk.trim().length > 0) {
+          await ProgressiveMessenger.streamUpdate(progressiveSessionKey, chunk);
+        }
+      } catch (error) {
+        logger.warn('Failed to add chunk to Claude Code messenger', { error });
       }
     },
 
     /**
-     * Get accumulated content
+     * Post intermediate update as separate message
      */
-    getContent: () => pendingContent,
+    postUpdate: async (content: string, type: 'analysis' | 'progress' | 'thinking' = 'progress') => {
+      if (isCompleted || !progressiveSessionKey) return;
+      
+      try {
+        await ProgressiveMessenger.postUpdate(progressiveSessionKey, {
+          id: Date.now().toString(),
+          type,
+          content,
+          metadata: {
+            operationType,
+            timestamp: Date.now()
+          }
+        });
+      } catch (error) {
+        logger.warn('Failed to post update', { error });
+      }
+    },
 
     /**
-     * Finalize - post any remaining content
+     * Advance to specific phase
      */
-    finalize: async (finalContent?: string) => {
-      // Wait for any pending updates
-      await updateQueue;
+    advanceToPhase: async (phaseIndex: number) => {
+      if (isCompleted || !progressiveSessionKey) return;
+      
+      try {
+        await ProgressiveMessenger.advanceToPhase(progressiveSessionKey, phaseIndex);
+      } catch (error) {
+        logger.warn('Failed to advance phase', { error });
+      }
+    },
 
-      const content = finalContent ?? pendingContent;
+    /**
+     * Complete with final response
+     */
+    complete: async (finalContent: string) => {
+      if (isCompleted) return;
+      isCompleted = true;
 
-      if (content.trim()) {
-        // Convert thinking to final content
-        await convertThinkingToPost(content);
-      } else {
-        // No content, just delete thinking
-        await deleteThinking();
+      try {
+        if (progressiveSessionKey) {
+          await ProgressiveMessenger.completeSession(
+            progressiveSessionKey,
+            finalContent,
+            { success: true }
+          );
+        } else {
+          // Fallback: post as regular message
+          await client.chat.postMessage({
+            channel: channelId,
+            thread_ts: threadTs,
+            text: markdownToSlack(finalContent),
+          });
+        }
+      } catch (error) {
+        logger.error('Failed to complete Claude Code messenger', { error });
+        // Try fallback
+        try {
+          await client.chat.postMessage({
+            channel: channelId,
+            thread_ts: threadTs,
+            text: markdownToSlack(finalContent),
+          });
+        } catch (fallbackError) {
+          logger.error('Fallback also failed', { fallbackError });
+        }
       }
     },
 
@@ -339,13 +319,31 @@ function createProgressiveMessenger(
      * Cancel and clean up
      */
     cancel: async () => {
-      await deleteThinking();
+      if (isCompleted) return;
+      isCompleted = true;
+
+      try {
+        if (progressiveSessionKey) {
+          await ProgressiveMessenger.cancelSession(progressiveSessionKey);
+        }
+      } catch (error) {
+        logger.warn('Failed to cancel Claude Code messenger', { error });
+      }
     },
+
+    /**
+     * Get current content for debugging
+     */
+    getSessionInfo: () => {
+      return progressiveSessionKey ? 
+        ProgressiveMessenger.getSessionInfo(progressiveSessionKey) : 
+        null;
+    }
   };
 }
 
 /**
- * Handle an incoming message
+ * Handle an incoming message with Claude Code style UI
  */
 async function handleMessage(
   text: string,
@@ -359,7 +357,7 @@ async function handleMessage(
   // Rate limiting
   if (!rateLimiter.check(userId)) {
     await say({
-      text: "You're sending messages too quickly. Please wait a moment.",
+      text: "⏱️ You're sending messages too quickly. Please wait a moment.",
       thread_ts: threadTs,
     });
     return;
@@ -375,7 +373,13 @@ async function handleMessage(
   // Get or create session
   const session = sessionManager.getOrCreate(channelId, threadTs, userId);
 
+  // Create Claude Code style messenger
+  const messenger = createClaudeCodeMessenger(client, channelId, threadTs, text);
+
   try {
+    // Start the Claude Code style animation
+    await messenger.start();
+
     // Get bot's user ID if not cached (needed to identify bot messages in history)
     if (!botUserId) {
       try {
@@ -406,22 +410,19 @@ async function handleMessage(
       truncated: threadHistory.truncated,
     });
 
-    // Create progressive messenger - posts separate messages for each update
-    const messenger = createProgressiveMessenger(client as any, channelId, threadTs);
-
-    // Process the message with progressive updates and full thread history
+    // Process the message with Claude Code style updates and full thread history
     const result = await routeMessage(text, session, {
       onChunk: (chunk) => {
+        // Stream chunks to the status animation
         messenger.addChunk(chunk);
       },
       conversationHistory,
     });
 
-    // Finalize with any remaining content
-    await messenger.finalize(result.response);
+    // Complete with final response, replacing the status animation
+    await messenger.complete(result.response);
 
     // Track both user message and assistant response in session history
-    // (also update in-memory for faster access within same deploy)
     sessionManager.addMessage(channelId, threadTs, 'user', text, messageTs);
     sessionManager.addMessage(channelId, threadTs, 'assistant', result.response, Date.now().toString());
 
@@ -441,27 +442,39 @@ async function handleMessage(
   } catch (error) {
     logger.error('Error processing message', { error, channelId, threadTs });
 
+    // Cancel the status animation and show error
+    await messenger.cancel();
+    
     await say({
-      text: "I encountered an error processing your message. Please try again.",
+      text: "❌ I encountered an error processing your message. Please try again.",
       thread_ts: threadTs,
     });
   }
 }
 
 /**
- * Get slash command help text
+ * Get enhanced slash command help text
  */
 function getSlashCommandHelp(): string {
-  return `*Claude Software Factory Bot - Slash Commands*
+  return `*🤖 Claude Software Factory Bot - Slash Commands*
 
+*Basic Commands:*
 \`/claude help\` - Show this help message
-\`/claude dispatch code <task>\` - Dispatch task to Code Agent
-\`/claude dispatch qa <task>\` - Dispatch task to QA Agent
-\`/claude dispatch devops <task>\` - Dispatch task to DevOps Agent
-\`/claude dispatch release <task>\` - Dispatch task to Release Agent
 \`/claude <question>\` - Start a conversation in channel
 
-For in-depth conversations, mention me in a thread: @Claude <your question>`;
+*Agent Dispatch:*
+\`/claude dispatch code <task>\` - 🔧 Dispatch task to Code Agent  
+\`/claude dispatch qa <task>\` - 🧪 Dispatch task to QA Agent
+\`/claude dispatch devops <task>\` - 🚀 Dispatch task to DevOps Agent
+\`/claude dispatch release <task>\` - 📦 Dispatch task to Release Agent
+
+*Tips:*
+• For detailed conversations, mention me in a thread: @Claude <your question>
+• I'll show live progress with Claude Code style status updates
+• Each operation type gets tailored animation phases
+
+*Reactions I understand:*
+✅ Approve • ❌ Reject • 👀 Review • 🚀 Deploy • 🐛 Bug Report • ❤️ Love it • 🔥 Amazing`;
 }
 
 export default {

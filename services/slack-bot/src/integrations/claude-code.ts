@@ -100,14 +100,13 @@ To deploy new code changes:
 - **Test endpoint:** POST /test-claude-code (requires x-test-secret header)
 - Railway auto-deploys within 1-2 minutes of push
 
-## Working Style
-- Be concise in Slack (it's chat, not a document)
-- Be direct and professional - avoid filler words like "Perfect!", "Excellent!", "Great!"
-- Don't narrate your process excessively - just do the work and report results
+## Slack Response Style
+- Keep responses concise and readable
+- Use simple formatting - avoid excessive decoration  
+- No excessive exclamation marks or emojis
+- Use line breaks appropriately for readability
 - Show file paths when making changes
-- For complex tasks, break them into steps
-- Commit frequently when making changes
-- Always check CI status after pushing
+- For complex tasks, break them into clear steps
 
 ## CRITICAL: Git Operations
 When doing git operations, you MUST:
@@ -178,7 +177,7 @@ export async function executeWithClaudeCode(
   const limitCheck = rateLimiter.checkLimit(userId);
   if (!limitCheck.allowed) {
     return {
-      content: `⏳ Rate limit reached. Please wait ${limitCheck.retryAfter} seconds.`,
+      content: `Rate limit reached. Please wait ${limitCheck.retryAfter} seconds.`,
       toolsUsed: [],
       error: 'rate_limit',
     };
@@ -370,7 +369,7 @@ export async function executeWithClaudeCode(
     }
 
     return {
-      content: `❌ Error: ${errorMessage}${errorDetails}`,
+      content: `Error: ${errorMessage}${errorDetails}`,
       toolsUsed,
       error: errorMessage,
     };

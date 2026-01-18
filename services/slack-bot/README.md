@@ -293,3 +293,5 @@ When improving this bot:
 2. Add tests for new functionality
 3. Update this README for new features
 4. The bot should remain a "meta-agent" - don't move agent logic here
+
+<!-- Test deployment trigger - 2025-01-17 23:26 -->
