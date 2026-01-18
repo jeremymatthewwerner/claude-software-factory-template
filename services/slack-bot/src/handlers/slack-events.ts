@@ -330,32 +330,41 @@ function createProgressiveMessenger(
         ? pendingContent + '\n\n' + finalContent
         : finalContent;
 
-      if (thinkingTs && fullContent.trim()) {
+      logger.info('Finalizing message', {
+        hasPendingContent: !!pendingContent.trim(),
+        hasThinkingTs: !!thinkingTs,
+        contentLength: fullContent.length,
+      });
+
+      // Always post something
+      const contentToPost = fullContent.trim() || 'Done.';
+
+      if (thinkingTs) {
         try {
           await client.chat.update({
             channel: channelId,
             ts: thinkingTs,
-            text: markdownToSlack(fullContent),
+            text: markdownToSlack(contentToPost),
           });
         } catch (error) {
-          // If update fails, post as new message
+          logger.error('Failed to update thinking message, posting new', { error });
           try {
             await client.chat.postMessage({
               channel: channelId,
               thread_ts: threadTs,
-              text: markdownToSlack(fullContent),
+              text: markdownToSlack(contentToPost),
             });
           } catch (e) {
             logger.error('Failed to post final message', { error: e });
           }
         }
-      } else if (fullContent.trim()) {
+      } else {
         // No thinking message, just post
         try {
           await client.chat.postMessage({
             channel: channelId,
             thread_ts: threadTs,
-            text: markdownToSlack(fullContent),
+            text: markdownToSlack(contentToPost),
           });
         } catch (error) {
           logger.error('Failed to post final message', { error });
