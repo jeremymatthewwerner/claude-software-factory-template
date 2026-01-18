@@ -307,21 +307,27 @@ export class StatusAnimator {
     }
 
     try {
-      // Replace status message with final response
-      await client.chat.update({
+      // FIXED: Instead of updating the status message, post final result as NEW message
+      // This preserves the animated status history and adds the final result
+      const threadTs = key.split('-').pop(); // Extract threadTs from key format "channel-threadTs"
+      
+      await client.chat.postMessage({
         channel,
-        ts: tracker.messageTs,
+        thread_ts: threadTs,
         text: finalMessage,
+        unfurl_links: false,
+        unfurl_media: false
       });
 
-      logger.debug('Status animator completed', { key });
+      logger.debug('Status animator completed with new message', { key });
     } catch (error) {
       logger.error('Failed to complete status animator', { error, key });
-      // Fallback: post final message as new message
+      
+      // Fallback: try updating the original message if posting fails
       try {
-        await client.chat.postMessage({
+        await client.chat.update({
           channel,
-          thread_ts: key.split('-')[1], // Extract threadTs from key
+          ts: tracker.messageTs,
           text: finalMessage,
         });
       } catch (fallbackError) {
