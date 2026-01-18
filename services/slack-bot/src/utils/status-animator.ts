@@ -235,7 +235,7 @@ export class StatusAnimator {
 
       logger.debug('Status animator started', { key, phases: phases.length });
 
-      return response.ts;
+      return key; // Return the key used to store the tracker, NOT response.ts
     } catch (error) {
       logger.error('Failed to start status animator', { error, key });
       throw error;
@@ -307,9 +307,10 @@ export class StatusAnimator {
     }
 
     try {
-      // FIXED: Instead of updating the status message, post final result as NEW message
-      // This preserves the animated status history and adds the final result
-      const threadTs = key.split('-').pop(); // Extract threadTs from key format "channel-threadTs"
+      // Post final result as NEW message, preserving the animated status history
+      // Key format is "channel-threadTs", extract threadTs after first hyphen
+      const hyphenIndex = key.indexOf('-');
+      const threadTs = hyphenIndex > 0 ? key.substring(hyphenIndex + 1) : key;
       
       await client.chat.postMessage({
         channel,
