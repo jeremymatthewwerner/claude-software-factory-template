@@ -103,19 +103,23 @@ If using branch protection on `main`, ensure:
 **Key Principles:**
 - **Human intervention = factory bug** - If a human needs to step in to fix something, that's a bug in the factory itself, not just a bug in the code
 - **Fix the factory, not the symptom** - When intervening, always ask: "How can I prevent needing to intervene for this type of issue again?"
+- **Workflow fixes over one-off fixes** - ALWAYS prefer updating workflows/agents to handle issues automatically rather than fixing issues manually. A one-off fix helps once; a workflow fix helps forever.
 - **Visibility enables autonomy** - Agents must post progress updates to issues so humans can monitor without intervening
 - **Self-healing over manual fixes** - CI failures auto-create issues, agents auto-fix them
+- **Immediate triggers over polling** - When possible, use webhooks/events (e.g., `push` to main) to trigger actions immediately rather than waiting for scheduled polls
 
 **When you (human or Claude) intervene:**
 1. Fix the immediate issue
 2. Update the relevant agent workflow to handle this case autonomously next time
 3. Document the improvement in this file
+4. **Update the template repo** - Make a generic version of the fix in [claude-software-factory-template](https://github.com/jeremymatthewwerner/claude-software-factory-template) so other projects benefit
+5. **Create a closed issue documenting the fix** - File an issue with `factory-improvement` label describing the problem, root cause, and solution. Close it immediately with a reference to the fixing PR. This creates a searchable audit trail of factory learnings.
+
+> **Template Repo:** When improving workflows, CLAUDE.md, or agent behavior, always create a generalized version of the improvement in the template repo at `jeremymatthewwerner/claude-software-factory-template`. This ensures learnings from this project benefit all future projects.
 
 ## Decision-Making Autonomy (CRITICAL)
 
 **Agents are empowered to make technical decisions.** Don't ask "Should I do A, B, or C?" - DECIDE.
-
-**YOLO DEPLOYMENT PRINCIPLE:** When implementing requested features, commit and deploy immediately without asking for permission. The user expects autonomous execution.
 
 ### When to Decide Autonomously (DO THIS):
 - **Implementation approach** - Pick the cleanest solution
@@ -254,6 +258,80 @@ cat /tmp/e2e-logs/backend.log | tail -200
 1. **Write tests for all new code** - Don't just test happy paths
 2. **Update existing tests** - If behavior changed, tests should change too
 3. **Run full test suite** - Verify nothing regressed
+
+### Testing Workflow Changes (CRITICAL)
+
+**Workflow changes need testing just like code changes.** A regex that looks right can fail silently. An API call that seems correct might have wrong permissions.
+
+**Before merging workflow changes:**
+
+1. **Test components locally first:**
+   ```bash
+   # Test regex patterns against real data
+   COMMENT_BODY=$(gh api .../issues/123/comments --jq '...')
+   echo "$COMMENT_BODY" | grep -E 'your-pattern' | wc -l
+
+   # Test shell commands
+   gh issue list --label "ai-ready" --json number,labels
+   ```
+
+2. **Know when a real issue test is required:**
+   - Changes to Code Agent trigger conditions (label handling, event types)
+   - Changes to progress comment format or update logic
+   - Changes to CI monitoring, auto-merge, or auto-close behavior
+   - Changes to agent prompts that affect behavior
+   - Any change to bug-fix.yml, triage.yml, or principal-engineer.yml
+
+3. **Create a trivial test issue when needed:**
+   ```bash
+   # Create a minimal test issue
+   gh issue create --title "Test: Verify workflow change [describe what]" \
+     --body "This is a test issue to verify [specific workflow change].
+
+     Expected behavior: [what should happen]
+
+     Delete this issue after verification." \
+     --label "bug" --label "ai-ready"
+   ```
+
+4. **Verify the workflow ran correctly:**
+   - Check Actions tab for the workflow run
+   - Verify progress comments were created/updated
+   - Check that labels were applied correctly
+   - Confirm the expected behavior occurred
+
+5. **Clean up test issues** - Close or delete after verification
+
+## Code Style
+
+- **Python**: ruff (format + lint + isort), mypy strict
+- **TypeScript**: ESLint + Prettier, strict mode
+
+### MANDATORY: Run Formatters and Linters Before Every Commit
+
+**NEVER commit code without running formatters and linters first.** This applies to ALL code changes.
+
+```bash
+# Frontend (REQUIRED before every commit that touches frontend/)
+cd frontend
+npm run format          # Run Prettier to auto-fix formatting
+npm run lint -- --fix   # Run ESLint with auto-fix
+npm run typecheck       # Verify TypeScript types
+
+# Backend (REQUIRED before every commit that touches backend/)
+cd backend
+uv run ruff format .    # Auto-format Python code
+uv run ruff check . --fix  # Lint and auto-fix Python code
+uv run mypy .           # Type check Python code
+```
+
+**The workflow is:**
+1. Make code changes
+2. Run formatters (`npm run format`, `uv run ruff format .`)
+3. Run linters with auto-fix (`npm run lint -- --fix`, `uv run ruff check . --fix`)
+4. Run type checking (`npm run typecheck`, `uv run mypy .`)
+5. If any issues remain, fix them manually
+6. THEN commit
 
 ## Git Workflow
 
@@ -772,34 +850,28 @@ When agents encounter these situations, apply these defaults instead of asking:
 - Create issue for proper resolution
 - Don't spend >30min on dependency issues
 
-## Slack Integration (Optional)
+**Transient CI failures (502, 503, timeouts):**
+- CI has retry logic for transient errors (3 attempts with exponential backoff)
+- Distinguish transient errors (retry) from real errors (fail fast)
+- If smoke test fails due to production blip, it will auto-retry
+- See `.github/workflows/ci.yml` smoke-test section for implementation
 
-This repo includes a Slack bot for a Claude Code-like experience in Slack:
+## Observability & DevOps Hygiene
 
-**Setup:**
-```bash
-./scripts/setup-slack.sh
-```
+**See `docs/OBSERVABILITY.md` for full standards.**
 
-**What the Slack bot provides:**
-- Conversational AI - Chat about your codebase in Slack
-- Agent dispatch - Say `dispatch code fix the bug` to create GitHub issues
-- Status updates - Receive notifications when agents complete work
+Key requirements:
+- **Health endpoints**: `/health` (basic) and `/health/ready` (deep with DB check)
+- **Four Golden Signals**: Track latency, traffic, errors, saturation
+- **Structured logging**: Include timestamp, level, service, request_id
+- **Alerting**: P1/P2/P3 severity levels with defined response times
 
-**How it works:**
-1. Slack bot provides human collaboration layer
-2. Dispatch commands create GitHub issues with `ai-ready` label
-3. Agent workflows run on GitHub (same as before)
-4. Agents POST status updates back to Slack threads (optional)
-
-**Secrets for Slack (if using):**
-- `SLACK_BOT_TOKEN` - Bot User OAuth Token (xoxb-...)
-- `SLACK_APP_TOKEN` - App-Level Token (xapp-...)
-- `SLACK_SIGNING_SECRET` - Signing Secret
-- `SLACK_WEBHOOK_URL` - URL where Slack bot is deployed
-- `SLACK_WEBHOOK_SECRET` - Secret for webhook authentication
-
-See `services/slack-bot/README.md` for complete documentation.
+When adding features, always consider:
+- [ ] Health endpoint updated if new dependencies added
+- [ ] Key operations logged at INFO level
+- [ ] Errors logged with full context
+- [ ] Metrics added for new endpoints
+- [ ] Failure scenarios have alerts
 
 ## Escalation
 
