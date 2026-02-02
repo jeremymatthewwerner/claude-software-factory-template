@@ -47,7 +47,7 @@ jobs:
 
       - name: Install backend dependencies
         working-directory: backend
-        run: uv sync --group dev
+        run: uv sync --extra dev
 
       - name: Install frontend dependencies
         working-directory: frontend
