@@ -12,7 +12,7 @@ Endpoints:
 - POST /api/hello - Personalized greeting
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import FastAPI
@@ -96,7 +96,7 @@ async def health_check() -> dict[str, Any]:
     """
     return {
         "status": "healthy",
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now(UTC).isoformat(),
     }
 
 
@@ -126,7 +126,7 @@ async def hello_world() -> dict[str, Any]:
     """
     return {
         "message": "Hello, World! Welcome to your Software Factory.",
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now(UTC).isoformat(),
     }
 
 
@@ -143,7 +143,7 @@ async def hello_name(request: HelloRequest) -> dict[str, Any]:
     """
     return {
         "message": f"Hello, {request.name}! Welcome to your Software Factory.",
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now(UTC).isoformat(),
     }
 
 
