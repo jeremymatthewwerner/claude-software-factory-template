@@ -4,6 +4,12 @@ import Home from '@/app/page';
 // Mock fetch
 global.fetch = jest.fn();
 
+const HEALTHY_RESPONSES = {
+  '/health': { status: 'healthy' },
+  '/api/version': { version: '0.1.0' },
+  '/api/hello': { message: 'Hello, World!' },
+};
+
 const mockFetch = (responses: { [key: string]: object }) => {
   (global.fetch as jest.Mock).mockImplementation((url: string) => {
     const endpoint = url.replace('http://localhost:8000', '');
@@ -25,51 +31,27 @@ describe('Home Page', () => {
   });
 
   describe('initial render', () => {
-    it('renders the title', async () => {
-      mockFetch({
-        '/health': { status: 'healthy' },
-        '/api/version': { version: '0.1.0' },
-        '/api/hello': { message: 'Hello, World!' },
-      });
+    beforeEach(() => {
+      mockFetch(HEALTHY_RESPONSES);
+    });
 
+    it('renders the title', () => {
       render(<Home />);
-
       expect(screen.getByText('Software Factory')).toBeInTheDocument();
     });
 
-    it('renders the subtitle', async () => {
-      mockFetch({
-        '/health': { status: 'healthy' },
-        '/api/version': { version: '0.1.0' },
-        '/api/hello': { message: 'Hello, World!' },
-      });
-
+    it('renders the subtitle', () => {
       render(<Home />);
-
       expect(screen.getByText('Autonomous development powered by Claude')).toBeInTheDocument();
     });
 
-    it('renders the API status section', async () => {
-      mockFetch({
-        '/health': { status: 'healthy' },
-        '/api/version': { version: '0.1.0' },
-        '/api/hello': { message: 'Hello, World!' },
-      });
-
+    it('renders the API status section', () => {
       render(<Home />);
-
       expect(screen.getByText('API Status')).toBeInTheDocument();
     });
 
-    it('renders the form', async () => {
-      mockFetch({
-        '/health': { status: 'healthy' },
-        '/api/version': { version: '0.1.0' },
-        '/api/hello': { message: 'Hello, World!' },
-      });
-
+    it('renders the form', () => {
       render(<Home />);
-
       expect(screen.getByPlaceholderText('Enter your name')).toBeInTheDocument();
       expect(screen.getByRole('button', { name: /say hello/i })).toBeInTheDocument();
     });
@@ -77,12 +59,7 @@ describe('Home Page', () => {
 
   describe('API status check', () => {
     it('shows connected status when API is healthy', async () => {
-      mockFetch({
-        '/health': { status: 'healthy' },
-        '/api/version': { version: '0.1.0' },
-        '/api/hello': { message: 'Hello, World!' },
-      });
-
+      mockFetch(HEALTHY_RESPONSES);
       render(<Home />);
 
       await waitFor(() => {
@@ -91,12 +68,7 @@ describe('Home Page', () => {
     });
 
     it('shows version when API is healthy', async () => {
-      mockFetch({
-        '/health': { status: 'healthy' },
-        '/api/version': { version: '0.1.0' },
-        '/api/hello': { message: 'Hello, World!' },
-      });
-
+      mockFetch(HEALTHY_RESPONSES);
       render(<Home />);
 
       await waitFor(() => {
@@ -106,7 +78,6 @@ describe('Home Page', () => {
 
     it('shows disconnected when API fails', async () => {
       (global.fetch as jest.Mock).mockRejectedValue(new Error('Network error'));
-
       render(<Home />);
 
       await waitFor(() => {
@@ -116,7 +87,6 @@ describe('Home Page', () => {
 
     it('shows error message when API fails', async () => {
       (global.fetch as jest.Mock).mockRejectedValue(new Error('Network error'));
-
       render(<Home />);
 
       await waitFor(() => {
@@ -126,13 +96,11 @@ describe('Home Page', () => {
   });
 
   describe('greeting form', () => {
-    it('allows typing a name', async () => {
-      mockFetch({
-        '/health': { status: 'healthy' },
-        '/api/version': { version: '0.1.0' },
-        '/api/hello': { message: 'Hello, World!' },
-      });
+    beforeEach(() => {
+      mockFetch(HEALTHY_RESPONSES);
+    });
 
+    it('allows typing a name', async () => {
       render(<Home />);
 
       await waitFor(() => {
@@ -147,11 +115,9 @@ describe('Home Page', () => {
 
     it('submits the form and shows greeting', async () => {
       mockFetch({
-        '/health': { status: 'healthy' },
-        '/api/version': { version: '0.1.0' },
+        ...HEALTHY_RESPONSES,
         '/api/hello': { message: 'Hello, Alice!' },
       });
-
       render(<Home />);
 
       await waitFor(() => {
@@ -169,81 +135,84 @@ describe('Home Page', () => {
       });
     });
 
+    it('shows error message when POST /api/hello fails', async () => {
+      (global.fetch as jest.Mock)
+        .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ status: 'healthy' }) })
+        .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ version: '0.1.0' }) })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve({ message: 'Hello, World!' }),
+        })
+        .mockRejectedValue(new Error('Network error'));
+
+      render(<Home />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Connected')).toBeInTheDocument();
+      });
+
+      const input = screen.getByPlaceholderText('Enter your name');
+      const button = screen.getByRole('button', { name: /say hello/i });
+
+      fireEvent.change(input, { target: { value: 'Alice' } });
+      fireEvent.click(button);
+
+      await waitFor(() => {
+        expect(screen.getByText('Error connecting to API')).toBeInTheDocument();
+      });
+    });
+
     it('disables input when API is disconnected', async () => {
       (global.fetch as jest.Mock).mockRejectedValue(new Error('Network error'));
-
       render(<Home />);
 
       await waitFor(() => {
         expect(screen.getByText('Disconnected')).toBeInTheDocument();
       });
 
-      const input = screen.getByPlaceholderText('Enter your name');
-      expect(input).toBeDisabled();
+      expect(screen.getByPlaceholderText('Enter your name')).toBeDisabled();
     });
 
     it('disables button when API is disconnected', async () => {
       (global.fetch as jest.Mock).mockRejectedValue(new Error('Network error'));
-
       render(<Home />);
 
       await waitFor(() => {
         expect(screen.getByText('Disconnected')).toBeInTheDocument();
       });
 
-      const button = screen.getByRole('button', { name: /say hello/i });
-      expect(button).toBeDisabled();
+      expect(screen.getByRole('button', { name: /say hello/i })).toBeDisabled();
     });
   });
 
   describe('info cards', () => {
-    it('renders Getting Started section', async () => {
-      mockFetch({
-        '/health': { status: 'healthy' },
-        '/api/version': { version: '0.1.0' },
-        '/api/hello': { message: 'Hello, World!' },
-      });
+    beforeEach(() => {
+      mockFetch(HEALTHY_RESPONSES);
+    });
 
+    it('renders Getting Started section', () => {
       render(<Home />);
-
       expect(screen.getByText('Getting Started')).toBeInTheDocument();
     });
 
-    it('renders Claude Code card', async () => {
-      mockFetch({
-        '/health': { status: 'healthy' },
-        '/api/version': { version: '0.1.0' },
-        '/api/hello': { message: 'Hello, World!' },
-      });
-
+    it('renders Claude Code card', () => {
       render(<Home />);
-
       expect(screen.getByText('Claude Code')).toBeInTheDocument();
     });
 
-    it('renders API Docs card', async () => {
-      mockFetch({
-        '/health': { status: 'healthy' },
-        '/api/version': { version: '0.1.0' },
-        '/api/hello': { message: 'Hello, World!' },
-      });
-
+    it('renders API Docs card', () => {
       render(<Home />);
-
       expect(screen.getByText('API Docs')).toBeInTheDocument();
     });
   });
 
   describe('footer', () => {
-    it('renders footer with technology links', async () => {
-      mockFetch({
-        '/health': { status: 'healthy' },
-        '/api/version': { version: '0.1.0' },
-        '/api/hello': { message: 'Hello, World!' },
-      });
+    beforeEach(() => {
+      mockFetch(HEALTHY_RESPONSES);
+    });
 
+    it('renders footer with technology links', () => {
       render(<Home />);
-
       expect(screen.getByText('Next.js')).toBeInTheDocument();
       expect(screen.getByText('FastAPI')).toBeInTheDocument();
       expect(screen.getByText('Claude')).toBeInTheDocument();
