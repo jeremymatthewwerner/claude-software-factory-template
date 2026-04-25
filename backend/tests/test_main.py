@@ -93,6 +93,123 @@ class TestHelloNameEndpoint:
         assert response.json()["timestamp"]
 
 
+class TestHelloNameEdgeCases:
+    """Edge case tests for the POST /api/hello endpoint."""
+
+    def test_hello_name_empty_string(self, client: TestClient) -> None:
+        """POST hello with empty string name returns 200 with empty name in message."""
+        response = client.post("/api/hello", json={"name": ""})
+        assert response.status_code == 200
+        assert "" in response.json()["message"]
+
+    def test_hello_name_whitespace_only(self, client: TestClient) -> None:
+        """POST hello with whitespace-only name returns 200 and includes it in message."""
+        response = client.post("/api/hello", json={"name": "   "})
+        assert response.status_code == 200
+        data = response.json()
+        assert "message" in data
+        assert "timestamp" in data
+
+    def test_hello_name_very_long(self, client: TestClient) -> None:
+        """POST hello with a 1000-character name returns 200 without truncating."""
+        long_name = "A" * 1000
+        response = client.post("/api/hello", json={"name": long_name})
+        assert response.status_code == 200
+        assert long_name in response.json()["message"]
+
+    def test_hello_name_newline_chars(self, client: TestClient) -> None:
+        """POST hello with newline characters in name returns 200 and includes the name."""
+        name = "Alice\nBob"
+        response = client.post("/api/hello", json={"name": name})
+        assert response.status_code == 200
+        assert name in response.json()["message"]
+
+    def test_hello_name_html_chars(self, client: TestClient) -> None:
+        """POST hello with HTML-like characters does not sanitize the name."""
+        name = "<script>alert('xss')</script>"
+        response = client.post("/api/hello", json={"name": name})
+        assert response.status_code == 200
+        assert name in response.json()["message"]
+
+    def test_hello_name_extra_fields_ignored(self, client: TestClient) -> None:
+        """POST hello ignores unknown extra fields in the JSON body."""
+        response = client.post("/api/hello", json={"name": "Alice", "extra": "ignored"})
+        assert response.status_code == 200
+        assert "Alice" in response.json()["message"]
+
+    def test_hello_name_null_name_rejected(self, client: TestClient) -> None:
+        """POST hello returns 422 when name is null."""
+        response = client.post("/api/hello", json={"name": None})
+        assert response.status_code == 422
+
+    def test_hello_name_integer_name_rejected(self, client: TestClient) -> None:
+        """POST hello returns 422 when name is an integer instead of a string."""
+        response = client.post("/api/hello", json={"name": 42})
+        assert response.status_code == 422
+
+    def test_hello_response_content_type_is_json(self, client: TestClient) -> None:
+        """POST hello response Content-Type is application/json."""
+        response = client.post("/api/hello", json={"name": "Alice"})
+        assert "application/json" in response.headers["content-type"]
+
+    def test_hello_get_response_content_type_is_json(self, client: TestClient) -> None:
+        """GET /api/hello response Content-Type is application/json."""
+        response = client.get("/api/hello")
+        assert "application/json" in response.headers["content-type"]
+
+
+class TestHealthEdgeCases:
+    """Edge case tests for the /health endpoint."""
+
+    def test_health_response_content_type_is_json(self, client: TestClient) -> None:
+        """Health endpoint response Content-Type is application/json."""
+        response = client.get("/health")
+        assert "application/json" in response.headers["content-type"]
+
+    def test_health_status_field_is_string(self, client: TestClient) -> None:
+        """Health endpoint status field is a string, not a number or boolean."""
+        response = client.get("/health")
+        assert isinstance(response.json()["status"], str)
+
+    def test_health_response_has_only_known_fields(self, client: TestClient) -> None:
+        """Health endpoint response contains exactly the expected fields."""
+        response = client.get("/health")
+        data = response.json()
+        assert set(data.keys()) == {"status", "timestamp"}
+
+
+class TestVersionEdgeCases:
+    """Edge case tests for the /api/version endpoint."""
+
+    def test_version_response_content_type_is_json(self, client: TestClient) -> None:
+        """Version endpoint response Content-Type is application/json."""
+        response = client.get("/api/version")
+        assert "application/json" in response.headers["content-type"]
+
+    def test_version_all_fields_are_strings(self, client: TestClient) -> None:
+        """Version endpoint all response fields are strings."""
+        response = client.get("/api/version")
+        data = response.json()
+        assert isinstance(data["version"], str)
+        assert isinstance(data["name"], str)
+        assert isinstance(data["environment"], str)
+
+    def test_version_response_has_only_known_fields(self, client: TestClient) -> None:
+        """Version endpoint response contains exactly the expected fields."""
+        response = client.get("/api/version")
+        data = response.json()
+        assert set(data.keys()) == {"version", "name", "environment"}
+
+    def test_version_string_is_semver_like(self, client: TestClient) -> None:
+        """Version string follows semver format (e.g. 0.1.0)."""
+        response = client.get("/api/version")
+        version = response.json()["version"]
+        parts = version.split(".")
+        assert len(parts) >= 2
+        for part in parts:
+            assert part.isdigit(), f"Version part '{part}' is not numeric"
+
+
 class TestOpenAPIDocumentation:
     """Tests for API documentation endpoints."""
 
