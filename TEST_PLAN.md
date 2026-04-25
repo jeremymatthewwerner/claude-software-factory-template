@@ -30,6 +30,35 @@ Documents test coverage, test descriptions, and quality improvements.
 | `test_hello_name_rejects_invalid_json` | POST /api/hello returns 422 when body is not valid JSON |
 | `test_hello_name_response_includes_timestamp` | POST /api/hello response includes a timestamp field |
 
+### `TestHelloNameEdgeCases`
+| Test | Description |
+|------|-------------|
+| `test_hello_name_empty_string` | POST /api/hello with empty string name returns 200 (FastAPI allows empty strings) |
+| `test_hello_name_whitespace_only` | POST /api/hello with whitespace-only name returns 200 with message and timestamp |
+| `test_hello_name_very_long` | POST /api/hello with 1000-char name returns 200 and includes full name in message |
+| `test_hello_name_newline_chars` | POST /api/hello with newline characters in name returns 200 and includes the name |
+| `test_hello_name_html_chars` | POST /api/hello with HTML-like characters does not sanitize the name |
+| `test_hello_name_extra_fields_ignored` | POST /api/hello ignores unknown extra JSON fields |
+| `test_hello_name_null_name_rejected` | POST /api/hello returns 422 when name is null |
+| `test_hello_name_integer_name_rejected` | POST /api/hello returns 422 when name is an integer |
+| `test_hello_response_content_type_is_json` | POST /api/hello Content-Type is application/json |
+| `test_hello_get_response_content_type_is_json` | GET /api/hello Content-Type is application/json |
+
+### `TestHealthEdgeCases`
+| Test | Description |
+|------|-------------|
+| `test_health_response_content_type_is_json` | GET /health Content-Type is application/json |
+| `test_health_status_field_is_string` | GET /health status field is a string (not number or boolean) |
+| `test_health_response_has_only_known_fields` | GET /health response has exactly `status` and `timestamp` fields |
+
+### `TestVersionEdgeCases`
+| Test | Description |
+|------|-------------|
+| `test_version_response_content_type_is_json` | GET /api/version Content-Type is application/json |
+| `test_version_all_fields_are_strings` | GET /api/version all three fields are strings |
+| `test_version_response_has_only_known_fields` | GET /api/version response has exactly `version`, `name`, `environment` fields |
+| `test_version_string_is_semver_like` | GET /api/version version string follows semver format with numeric parts |
+
 ### `TestOpenAPIDocumentation`
 | Test | Description |
 |------|-------------|
@@ -80,7 +109,19 @@ Documents test coverage, test descriptions, and quality improvements.
 |------|-------------|
 | `renders footer with technology links` | Footer contains Next.js, FastAPI, and Claude links |
 
-**Coverage:** 100% lines, 90.47% branches (async `useEffect` branches)
+### Edge Cases
+| Test | Description |
+|------|-------------|
+| `shows disconnected when health check returns non-ok status` | Mock health returning `ok: false` triggers unhealthy state (covers `page.tsx:30` branch) |
+| `shows error message when health check returns non-ok status` | "Could not connect to backend API" message shown when health returns non-ok |
+| `does not call POST /api/hello when name is empty` | Empty name submit triggers early return without fetch (covers `page.tsx:58` branch) |
+| `does not call POST /api/hello when name is whitespace only` | Whitespace-only name trimmed to empty, no POST made |
+| `shows checking status before API resolves` | "Checking..." badge shown while initial API calls are pending |
+| `does not show version badge while API is checking` | Version section hidden during initial API check |
+| `shows loading state during form submission` | Button shows "Sending..." and is disabled while POST is in-flight |
+| `renders the View Source card` | View Source card is present in the info cards section |
+
+**Coverage:** 100% statements, 100% branches, 100% functions, 100% lines
 
 ---
 
@@ -101,6 +142,22 @@ Tests for `RepositoryStatusManager` covering repo name extraction, emoji selecti
 ---
 
 ## Refactoring History
+
+### 2026-04-25 — QA Agent: edge-cases session (issue #142)
+**Backend edge cases added:**
+- `TestHelloNameEdgeCases`: 10 tests covering empty string, whitespace-only, very long name (1000 chars), newlines, HTML characters, extra fields ignored, null/integer name rejection, and Content-Type validation
+- `TestHealthEdgeCases`: 3 tests covering Content-Type, status field type, and exact response field set
+- `TestVersionEdgeCases`: 4 tests covering Content-Type, field types, exact field set, and semver format
+
+**Frontend edge cases added (closed 2 missing branches):**
+- Non-ok health response triggers unhealthy state (line 30 branch)
+- Empty name form submit triggers early return without POST (line 58 branch)
+- Whitespace-only name also triggers early return
+- "Checking..." initial state before API resolves
+- "Sending..." loading state during form submission
+- View Source card render test
+
+**Coverage change:** Backend 100% (unchanged, +17 tests); Frontend 90.47% → 100% branches (all metrics now 100%)
 
 ### 2026-04-24 — QA Agent: test-refactoring session (issue #139)
 **Backend refactoring:**

@@ -185,6 +185,118 @@ describe('Home Page', () => {
     });
   });
 
+  describe('edge cases', () => {
+    it('shows disconnected when health check returns non-ok status', async () => {
+      (global.fetch as jest.Mock).mockResolvedValue({
+        ok: false,
+        json: () => Promise.resolve({}),
+      });
+      render(<Home />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Disconnected')).toBeInTheDocument();
+      });
+    });
+
+    it('shows error message when health check returns non-ok status', async () => {
+      (global.fetch as jest.Mock).mockResolvedValue({
+        ok: false,
+        json: () => Promise.resolve({}),
+      });
+      render(<Home />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Could not connect to backend API')).toBeInTheDocument();
+      });
+    });
+
+    it('does not call POST /api/hello when name is empty', async () => {
+      mockFetch(HEALTHY_RESPONSES);
+      render(<Home />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Connected')).toBeInTheDocument();
+      });
+
+      const callCountBefore = (global.fetch as jest.Mock).mock.calls.length;
+      const button = screen.getByRole('button', { name: /say hello/i });
+      fireEvent.click(button);
+
+      expect((global.fetch as jest.Mock).mock.calls.length).toBe(callCountBefore);
+    });
+
+    it('does not call POST /api/hello when name is whitespace only', async () => {
+      mockFetch(HEALTHY_RESPONSES);
+      render(<Home />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Connected')).toBeInTheDocument();
+      });
+
+      const input = screen.getByPlaceholderText('Enter your name');
+      const button = screen.getByRole('button', { name: /say hello/i });
+
+      fireEvent.change(input, { target: { value: '   ' } });
+      const callCountBefore = (global.fetch as jest.Mock).mock.calls.length;
+      fireEvent.click(button);
+
+      expect((global.fetch as jest.Mock).mock.calls.length).toBe(callCountBefore);
+    });
+
+    it('shows checking status before API resolves', () => {
+      (global.fetch as jest.Mock).mockReturnValue(new Promise(() => {}));
+      render(<Home />);
+
+      expect(screen.getByText('Checking...')).toBeInTheDocument();
+    });
+
+    it('does not show version badge while API is checking', () => {
+      (global.fetch as jest.Mock).mockReturnValue(new Promise(() => {}));
+      render(<Home />);
+
+      expect(screen.queryByText('Version')).not.toBeInTheDocument();
+    });
+
+    it('shows loading state during form submission', async () => {
+      let resolvePost: (value: unknown) => void;
+      const postPromise = new Promise((res) => {
+        resolvePost = res;
+      });
+
+      (global.fetch as jest.Mock)
+        .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ status: 'healthy' }) })
+        .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ version: '0.1.0' }) })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve({ message: 'Hello, World!' }),
+        })
+        .mockReturnValueOnce(postPromise);
+
+      render(<Home />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Connected')).toBeInTheDocument();
+      });
+
+      const input = screen.getByPlaceholderText('Enter your name');
+      const button = screen.getByRole('button', { name: /say hello/i });
+
+      fireEvent.change(input, { target: { value: 'Alice' } });
+      fireEvent.click(button);
+
+      expect(screen.getByText('Sending...')).toBeInTheDocument();
+      expect(button).toBeDisabled();
+
+      resolvePost!({ ok: true, json: () => Promise.resolve({ message: 'Hello, Alice!' }) });
+    });
+
+    it('renders the View Source card', () => {
+      mockFetch(HEALTHY_RESPONSES);
+      render(<Home />);
+      expect(screen.getByText('View Source')).toBeInTheDocument();
+    });
+  });
+
   describe('info cards', () => {
     beforeEach(() => {
       mockFetch(HEALTHY_RESPONSES);
