@@ -1,7 +1,11 @@
 """Tests for the main API endpoints."""
 
+import asyncio
+
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from httpx import AsyncClient
 
 from app import __version__
 
@@ -226,3 +230,124 @@ class TestOpenAPIDocumentation:
         """Swagger UI and ReDoc documentation endpoints return 200."""
         response = client.get(path)
         assert response.status_code == 200
+
+
+class TestRegressionAsyncClient:
+    """Regression tests for the async_client fixture.
+
+    The async_client fixture return type was corrected in commit eab5c18 to
+    AsyncGenerator[AsyncClient, None]. No prior tests used this fixture, so a
+    regression would have been invisible. These tests exercise it directly.
+    """
+
+    async def test_health_endpoint_via_async_client(self, async_client: AsyncClient) -> None:
+        """Async client reaches /health and receives a healthy status."""
+        response = await async_client.get("/health")
+        assert response.status_code == 200
+        assert response.json()["status"] == "healthy"
+
+    async def test_hello_world_via_async_client(self, async_client: AsyncClient) -> None:
+        """Async client reaches GET /api/hello and receives a World greeting."""
+        response = await async_client.get("/api/hello")
+        assert response.status_code == 200
+        assert "World" in response.json()["message"]
+
+    async def test_hello_post_via_async_client(self, async_client: AsyncClient) -> None:
+        """Async client POSTs to /api/hello and receives the name back in the greeting."""
+        response = await async_client.post("/api/hello", json={"name": "AsyncUser"})
+        assert response.status_code == 200
+        assert "AsyncUser" in response.json()["message"]
+
+    async def test_concurrent_health_requests(self, async_client: AsyncClient) -> None:
+        """Three concurrent health requests all return 200 with healthy status."""
+        responses = await asyncio.gather(
+            async_client.get("/health"),
+            async_client.get("/health"),
+            async_client.get("/health"),
+        )
+        for response in responses:
+            assert response.status_code == 200
+            assert response.json()["status"] == "healthy"
+
+    async def test_invalid_post_body_returns_422_via_async_client(
+        self, async_client: AsyncClient
+    ) -> None:
+        """Async client correctly receives 422 when name field is null."""
+        response = await async_client.post("/api/hello", json={"name": None})
+        assert response.status_code == 422
+
+
+class TestRegressionUTCTimestamps:
+    """Regression tests for timezone-aware UTC timestamps.
+
+    Commit eab5c18 fixed the use of datetime.UTC (the modern Python 3.11+ alias)
+    instead of timezone.utc. These tests verify all timestamp fields are
+    timezone-aware and have a UTC offset of exactly zero.
+    """
+
+    def test_health_timestamp_is_timezone_aware(self, client: TestClient) -> None:
+        """Health timestamp parses as a timezone-aware datetime, not a naive one."""
+        from datetime import datetime
+
+        response = client.get("/health")
+        parsed = datetime.fromisoformat(response.json()["timestamp"])
+        assert parsed.tzinfo is not None
+
+    def test_health_timestamp_utc_offset_is_zero(self, client: TestClient) -> None:
+        """Health timestamp UTC offset is exactly zero seconds (true UTC, not local time)."""
+        from datetime import datetime
+
+        response = client.get("/health")
+        parsed = datetime.fromisoformat(response.json()["timestamp"])
+        offset = parsed.utcoffset()
+        assert offset is not None
+        assert offset.total_seconds() == 0
+
+    def test_hello_get_timestamp_is_utc_aware(self, client: TestClient) -> None:
+        """GET /api/hello timestamp is timezone-aware with a zero UTC offset."""
+        from datetime import datetime
+
+        response = client.get("/api/hello")
+        parsed = datetime.fromisoformat(response.json()["timestamp"])
+        assert parsed.tzinfo is not None
+        offset = parsed.utcoffset()
+        assert offset is not None
+        assert offset.total_seconds() == 0
+
+    def test_hello_post_timestamp_is_utc_aware(self, client: TestClient) -> None:
+        """POST /api/hello timestamp is timezone-aware with a zero UTC offset."""
+        from datetime import datetime
+
+        response = client.post("/api/hello", json={"name": "Test"})
+        parsed = datetime.fromisoformat(response.json()["timestamp"])
+        assert parsed.tzinfo is not None
+        offset = parsed.utcoffset()
+        assert offset is not None
+        assert offset.total_seconds() == 0
+
+
+class TestRegressionPackageStructure:
+    """Regression tests for correct Python package structure.
+
+    Commit eab5c18 added [tool.hatch.build.targets.wheel] packages = ["app"]
+    to pyproject.toml because hatchling could not discover the package
+    automatically (project name software-factory-backend != directory app).
+    These tests verify the package remains importable at runtime.
+    """
+
+    def test_app_package_is_importable(self) -> None:
+        """The app package can be imported without errors."""
+        import app
+
+        assert app is not None
+
+    def test_app_version_is_a_non_empty_string(self) -> None:
+        """app.__version__ is a non-empty string, confirming the package is intact."""
+        assert isinstance(__version__, str)
+        assert len(__version__) > 0
+
+    def test_app_main_exposes_fastapi_instance(self) -> None:
+        """app.main.app is a FastAPI instance, confirming submodule discovery works."""
+        from app.main import app as fastapi_app
+
+        assert isinstance(fastapi_app, FastAPI)

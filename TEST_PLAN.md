@@ -66,7 +66,31 @@ Documents test coverage, test descriptions, and quality improvements.
 | `test_documentation_endpoints_available[/docs]` | Swagger UI returns 200 |
 | `test_documentation_endpoints_available[/redoc]` | ReDoc returns 200 |
 
-**Coverage:** 100% (36/36 statements)
+### `TestRegressionAsyncClient`
+| Test | Description |
+|------|-------------|
+| `test_health_endpoint_via_async_client` | Async client reaches /health and receives healthy status (exercises async_client fixture) |
+| `test_hello_world_via_async_client` | Async client reaches GET /api/hello and receives World greeting |
+| `test_hello_post_via_async_client` | Async client POSTs to /api/hello and receives name back in greeting |
+| `test_concurrent_health_requests` | Three concurrent health requests all return 200 (exercises async_client concurrency) |
+| `test_invalid_post_body_returns_422_via_async_client` | Async client correctly receives 422 for null name |
+
+### `TestRegressionUTCTimestamps`
+| Test | Description |
+|------|-------------|
+| `test_health_timestamp_is_timezone_aware` | Health timestamp parses as a timezone-aware datetime (not naive) |
+| `test_health_timestamp_utc_offset_is_zero` | Health timestamp UTC offset is exactly zero seconds (true UTC) |
+| `test_hello_get_timestamp_is_utc_aware` | GET /api/hello timestamp is timezone-aware with zero UTC offset |
+| `test_hello_post_timestamp_is_utc_aware` | POST /api/hello timestamp is timezone-aware with zero UTC offset |
+
+### `TestRegressionPackageStructure`
+| Test | Description |
+|------|-------------|
+| `test_app_package_is_importable` | The app package imports without errors (validates hatch build config) |
+| `test_app_version_is_a_non_empty_string` | app.__version__ is a non-empty string (validates package integrity) |
+| `test_app_main_exposes_fastapi_instance` | app.main.app is a FastAPI instance (validates submodule discovery) |
+
+**Coverage:** 100% (36/36 statements, 44 tests)
 
 ---
 
@@ -142,6 +166,15 @@ Tests for `RepositoryStatusManager` covering repo name extraction, emoji selecti
 ---
 
 ## Refactoring History
+
+### 2026-04-26 — QA Agent: regression-prevention session (issue #145)
+**Regression tests added targeting three recent bug fixes in commit eab5c18:**
+
+- `TestRegressionAsyncClient`: 5 tests using the `async_client` fixture from conftest.py, which had its return type corrected but was never exercised by any test. Now catches regressions in both fixture setup and async endpoint behaviour, including concurrent request handling.
+- `TestRegressionUTCTimestamps`: 4 tests verifying that all timestamp fields returned by the API are timezone-aware datetimes with a UTC offset of exactly zero. Prevents regression of the `datetime.UTC` alias fix (previously used `timezone.utc`).
+- `TestRegressionPackageStructure`: 3 tests verifying the `app` package is importable, `__version__` is a non-empty string, and `app.main` exposes a FastAPI instance. Prevents regression of the hatch build config fix that added `packages = ["app"]`.
+
+**Coverage change:** 100% → 100% (maintained; 32 tests → 44 tests)
 
 ### 2026-04-25 — QA Agent: edge-cases session (issue #142)
 **Backend edge cases added:**
