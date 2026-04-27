@@ -90,7 +90,24 @@ Documents test coverage, test descriptions, and quality improvements.
 | `test_app_version_is_a_non_empty_string` | app.__version__ is a non-empty string (validates package integrity) |
 | `test_app_main_exposes_fastapi_instance` | app.main.app is a FastAPI instance (validates submodule discovery) |
 
-**Coverage:** 100% (36/36 statements, 44 tests)
+### `TestCORSMiddleware`
+| Test | Description |
+|------|-------------|
+| `test_cors_preflight_returns_ok_for_allowed_origin` | OPTIONS preflight for localhost:3000 returns 200 with CORS headers |
+| `test_cors_get_response_includes_allow_origin_for_allowed_origin` | GET /health with localhost:3000 Origin returns Access-Control-Allow-Origin: http://localhost:3000 |
+| `test_cors_get_response_includes_allow_origin_for_127_origin` | GET /health with 127.0.0.1:3000 Origin returns the correct CORS header |
+| `test_cors_preflight_allows_post_method` | OPTIONS preflight for POST on /api/hello returns 200 with CORS headers |
+
+### `TestHTTPMethodNotAllowed`
+| Test | Description |
+|------|-------------|
+| `test_delete_health_returns_405` | DELETE /health returns 405 Method Not Allowed |
+| `test_put_health_returns_405` | PUT /health returns 405 Method Not Allowed |
+| `test_delete_api_version_returns_405` | DELETE /api/version returns 405 Method Not Allowed |
+| `test_put_api_hello_returns_405` | PUT /api/hello returns 405 (only GET and POST are defined) |
+| `test_delete_api_hello_returns_405` | DELETE /api/hello returns 405 Method Not Allowed |
+
+**Coverage:** 100% (36/36 statements, 53 tests)
 
 ---
 
@@ -145,6 +162,14 @@ Documents test coverage, test descriptions, and quality improvements.
 | `shows loading state during form submission` | Button shows "Sending..." and is disabled while POST is in-flight |
 | `renders the View Source card` | View Source card is present in the info cards section |
 
+### Behavioral Tests
+| Test | Description |
+|------|-------------|
+| `shows "Backend says:" prefix when API is healthy` | When API is healthy the message paragraph contains the "Backend says:" prefix text |
+| `does not show "Backend says:" prefix when API is unhealthy` | When API is unhealthy the "Backend says:" prefix is not rendered |
+| `submits the form on Enter key in the name input` | Submitting the form element (keyboard Enter) calls POST /api/hello and shows the greeting |
+| `sends the correct JSON body in POST /api/hello` | POST /api/hello is called with `{"name": "..."}` as the JSON body, verifying correct request construction |
+
 **Coverage:** 100% statements, 100% branches, 100% functions, 100% lines
 
 ---
@@ -166,6 +191,21 @@ Tests for `RepositoryStatusManager` covering repo name extraction, emoji selecti
 ---
 
 ## Refactoring History
+
+### 2026-04-27 — QA Agent: coverage-sprint session (issue #149)
+**Behavioral gap tests added (coverage already at 100%; tests improve behavioral confidence):**
+
+**Backend:**
+- `TestCORSMiddleware`: 4 tests verifying CORS middleware is wired up correctly — OPTIONS preflight returns 200, GET with allowed Origin returns `Access-Control-Allow-Origin` header for both localhost:3000 and 127.0.0.1:3000, POST method allowed in preflight.
+- `TestHTTPMethodNotAllowed`: 5 tests verifying unsupported methods (DELETE, PUT) return 405 on /health, /api/version, and /api/hello.
+
+**Frontend:**
+- "Backend says:" prefix rendered when API is healthy (verifies the ternary in the JSX `apiMessage` paragraph)
+- "Backend says:" prefix absent when API is unhealthy
+- Enter-key (form submit event) triggers POST /api/hello and renders greeting
+- POST body contains correct `{"name": "..."}` JSON (verifies `JSON.stringify({name})` in handleSubmit)
+
+**Coverage change:** 100% → 100% (maintained; backend 44 tests → 53 tests; frontend 25 tests → 29 tests)
 
 ### 2026-04-26 — QA Agent: regression-prevention session (issue #145)
 **Regression tests added targeting three recent bug fixes in commit eab5c18:**

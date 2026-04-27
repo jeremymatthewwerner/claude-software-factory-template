@@ -351,3 +351,80 @@ class TestRegressionPackageStructure:
         from app.main import app as fastapi_app
 
         assert isinstance(fastapi_app, FastAPI)
+
+
+class TestCORSMiddleware:
+    """Tests for CORS middleware configuration.
+
+    The app explicitly allows localhost:3000 for frontend communication.
+    These tests verify the middleware is wired up correctly.
+    """
+
+    def test_cors_preflight_returns_ok_for_allowed_origin(self, client: TestClient) -> None:
+        """OPTIONS preflight for an allowed origin returns 200 with CORS headers."""
+        response = client.options(
+            "/health",
+            headers={
+                "Origin": "http://localhost:3000",
+                "Access-Control-Request-Method": "GET",
+            },
+        )
+        assert response.status_code == 200
+        assert "access-control-allow-origin" in response.headers
+
+    def test_cors_get_response_includes_allow_origin_for_allowed_origin(
+        self, client: TestClient
+    ) -> None:
+        """GET /health with an allowed origin includes Access-Control-Allow-Origin header."""
+        response = client.get("/health", headers={"Origin": "http://localhost:3000"})
+        assert response.status_code == 200
+        assert response.headers.get("access-control-allow-origin") == "http://localhost:3000"
+
+    def test_cors_get_response_includes_allow_origin_for_127_origin(
+        self, client: TestClient
+    ) -> None:
+        """GET /health with 127.0.0.1:3000 origin also receives the CORS header."""
+        response = client.get("/health", headers={"Origin": "http://127.0.0.1:3000"})
+        assert response.status_code == 200
+        assert response.headers.get("access-control-allow-origin") == "http://127.0.0.1:3000"
+
+    def test_cors_preflight_allows_post_method(self, client: TestClient) -> None:
+        """OPTIONS preflight for POST method on allowed origin returns CORS headers."""
+        response = client.options(
+            "/api/hello",
+            headers={
+                "Origin": "http://localhost:3000",
+                "Access-Control-Request-Method": "POST",
+            },
+        )
+        assert response.status_code == 200
+        assert "access-control-allow-origin" in response.headers
+
+
+class TestHTTPMethodNotAllowed:
+    """Tests that unsupported HTTP methods return 405 Method Not Allowed."""
+
+    def test_delete_health_returns_405(self, client: TestClient) -> None:
+        """DELETE /health returns 405 since only GET is defined."""
+        response = client.delete("/health")
+        assert response.status_code == 405
+
+    def test_put_health_returns_405(self, client: TestClient) -> None:
+        """PUT /health returns 405 since only GET is defined."""
+        response = client.put("/health")
+        assert response.status_code == 405
+
+    def test_delete_api_version_returns_405(self, client: TestClient) -> None:
+        """DELETE /api/version returns 405 since only GET is defined."""
+        response = client.delete("/api/version")
+        assert response.status_code == 405
+
+    def test_put_api_hello_returns_405(self, client: TestClient) -> None:
+        """PUT /api/hello returns 405 since only GET and POST are defined."""
+        response = client.put("/api/hello", json={"name": "test"})
+        assert response.status_code == 405
+
+    def test_delete_api_hello_returns_405(self, client: TestClient) -> None:
+        """DELETE /api/hello returns 405 since only GET and POST are defined."""
+        response = client.delete("/api/hello")
+        assert response.status_code == 405

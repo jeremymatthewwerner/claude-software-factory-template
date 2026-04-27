@@ -330,4 +330,77 @@ describe('Home Page', () => {
       expect(screen.getByText('Claude')).toBeInTheDocument();
     });
   });
+
+  describe('behavioral tests', () => {
+    it('shows "Backend says:" prefix when API is healthy', async () => {
+      mockFetch(HEALTHY_RESPONSES);
+      render(<Home />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Connected')).toBeInTheDocument();
+      });
+
+      expect(screen.getByText(/Backend says:/)).toBeInTheDocument();
+    });
+
+    it('does not show "Backend says:" prefix when API is unhealthy', async () => {
+      (global.fetch as jest.Mock).mockRejectedValue(new Error('Network error'));
+      render(<Home />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Disconnected')).toBeInTheDocument();
+      });
+
+      expect(screen.queryByText(/Backend says:/)).not.toBeInTheDocument();
+    });
+
+    it('submits the form on Enter key in the name input', async () => {
+      mockFetch({
+        ...HEALTHY_RESPONSES,
+        '/api/hello': { message: 'Hello, Alice!' },
+      });
+      render(<Home />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Connected')).toBeInTheDocument();
+      });
+
+      const input = screen.getByPlaceholderText('Enter your name');
+      fireEvent.change(input, { target: { value: 'Alice' } });
+      fireEvent.submit(input.closest('form')!);
+
+      await waitFor(() => {
+        expect(screen.getByText('Hello, Alice!')).toBeInTheDocument();
+      });
+    });
+
+    it('sends the correct JSON body in POST /api/hello', async () => {
+      mockFetch({
+        ...HEALTHY_RESPONSES,
+        '/api/hello': { message: 'Hello, TestUser!' },
+      });
+      render(<Home />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Connected')).toBeInTheDocument();
+      });
+
+      const input = screen.getByPlaceholderText('Enter your name');
+      const button = screen.getByRole('button', { name: /say hello/i });
+
+      fireEvent.change(input, { target: { value: 'TestUser' } });
+      fireEvent.click(button);
+
+      await waitFor(() => {
+        expect(screen.getByText('Hello, TestUser!')).toBeInTheDocument();
+      });
+
+      const postCall = (global.fetch as jest.Mock).mock.calls.find(
+        ([url, opts]: [string, RequestInit]) =>
+          url.includes('/api/hello') && opts?.method === 'POST'
+      );
+      expect(postCall).toBeDefined();
+      expect(JSON.parse(postCall[1].body as string)).toEqual({ name: 'TestUser' });
+    });
+  });
 });
