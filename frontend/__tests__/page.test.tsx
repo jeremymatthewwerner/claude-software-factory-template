@@ -331,6 +331,110 @@ describe('Home Page', () => {
     });
   });
 
+  describe('flakiness prevention', () => {
+    it('fetches health, version, and hello in that order on mount', async () => {
+      mockFetch(HEALTHY_RESPONSES);
+      render(<Home />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Connected')).toBeInTheDocument();
+      });
+
+      const urls = (global.fetch as jest.Mock).mock.calls.map(([url]: [string]) =>
+        url.replace('http://localhost:8000', '')
+      );
+      expect(urls[0]).toBe('/health');
+      expect(urls[1]).toBe('/api/version');
+      expect(urls[2]).toBe('/api/hello');
+    });
+
+    it('clears loading state after successful submission', async () => {
+      mockFetch({ ...HEALTHY_RESPONSES, '/api/hello': { message: 'Hello, Alice!' } });
+      render(<Home />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Connected')).toBeInTheDocument();
+      });
+
+      const input = screen.getByPlaceholderText('Enter your name');
+      const button = screen.getByRole('button', { name: /say hello/i });
+
+      fireEvent.change(input, { target: { value: 'Alice' } });
+      fireEvent.click(button);
+
+      await waitFor(() => {
+        expect(screen.queryByText('Sending...')).not.toBeInTheDocument();
+        expect(button).not.toBeDisabled();
+      });
+    });
+
+    it('button is disabled during submission preventing double-submit', async () => {
+      let resolveSubmit!: (value: unknown) => void;
+      const pendingPost = new Promise((res) => {
+        resolveSubmit = res;
+      });
+
+      (global.fetch as jest.Mock)
+        .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ status: 'healthy' }) })
+        .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ version: '0.1.0' }) })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve({ message: 'Hello, World!' }),
+        })
+        .mockReturnValueOnce(pendingPost);
+
+      render(<Home />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Connected')).toBeInTheDocument();
+      });
+
+      const input = screen.getByPlaceholderText('Enter your name');
+      const button = screen.getByRole('button', { name: /say hello/i });
+
+      fireEvent.change(input, { target: { value: 'Alice' } });
+      fireEvent.click(button);
+
+      expect(button).toBeDisabled();
+
+      resolveSubmit({ ok: true, json: () => Promise.resolve({ message: 'Hello, Alice!' }) });
+
+      await waitFor(() => {
+        expect(button).not.toBeDisabled();
+      });
+    });
+
+    it('clears loading state after failed submission', async () => {
+      (global.fetch as jest.Mock)
+        .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ status: 'healthy' }) })
+        .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ version: '0.1.0' }) })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve({ message: 'Hello, World!' }),
+        })
+        .mockRejectedValueOnce(new Error('Network error'));
+
+      render(<Home />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Connected')).toBeInTheDocument();
+      });
+
+      const input = screen.getByPlaceholderText('Enter your name');
+      const button = screen.getByRole('button', { name: /say hello/i });
+
+      fireEvent.change(input, { target: { value: 'Alice' } });
+      fireEvent.click(button);
+
+      await waitFor(() => {
+        expect(screen.getByText('Error connecting to API')).toBeInTheDocument();
+      });
+
+      expect(screen.queryByText('Sending...')).not.toBeInTheDocument();
+      expect(button).not.toBeDisabled();
+    });
+  });
+
   describe('behavioral tests', () => {
     it('shows "Backend says:" prefix when API is healthy', async () => {
       mockFetch(HEALTHY_RESPONSES);

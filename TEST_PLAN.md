@@ -107,7 +107,20 @@ Documents test coverage, test descriptions, and quality improvements.
 | `test_put_api_hello_returns_405` | PUT /api/hello returns 405 (only GET and POST are defined) |
 | `test_delete_api_hello_returns_405` | DELETE /api/hello returns 405 Method Not Allowed |
 
-**Coverage:** 100% (36/36 statements, 53 tests)
+### `TestTimestampOrdering`
+| Test | Description |
+|------|-------------|
+| `test_health_timestamps_are_non_decreasing` | Two successive /health calls return timestamps where the second is not earlier than the first (catches clock drift or response caching) |
+| `test_hello_get_timestamps_are_non_decreasing` | Two successive GET /api/hello calls return non-decreasing timestamps |
+| `test_hello_post_timestamp_within_request_window` | POST /api/hello timestamp falls strictly between the request start time and response receipt time (catches stale clocks) |
+
+### `TestRequestIsolation`
+| Test | Description |
+|------|-------------|
+| `test_hello_name_responses_are_independent` | Two POST /api/hello calls with different names return fully independent responses with no cross-contamination |
+| `test_concurrent_hello_posts_are_independent` | Three concurrent async POST /api/hello calls each receive only their own name in the response (catches shared mutable state) |
+
+**Coverage:** 100% (36/36 statements, 58 tests)
 
 ---
 
@@ -162,6 +175,14 @@ Documents test coverage, test descriptions, and quality improvements.
 | `shows loading state during form submission` | Button shows "Sending..." and is disabled while POST is in-flight |
 | `renders the View Source card` | View Source card is present in the info cards section |
 
+### Flakiness Prevention
+| Test | Description |
+|------|-------------|
+| `fetches health, version, and hello in that order on mount` | Verifies the component calls /health → /api/version → /api/hello in that exact order on mount (prevents order-dependent mock regressions) |
+| `clears loading state after successful submission` | After a successful POST, the button is no longer disabled and "Sending..." is not shown (catches loading-state leaks) |
+| `button is disabled during submission preventing double-submit` | While a POST is in-flight, the submit button is disabled; re-enables after resolution (prevents double-submit race conditions) |
+| `clears loading state after failed submission` | After a failed POST, loading state is cleared and the button re-enables (ensures finally{} cleanup path is exercised) |
+
 ### Behavioral Tests
 | Test | Description |
 |------|-------------|
@@ -170,7 +191,7 @@ Documents test coverage, test descriptions, and quality improvements.
 | `submits the form on Enter key in the name input` | Submitting the form element (keyboard Enter) calls POST /api/hello and shows the greeting |
 | `sends the correct JSON body in POST /api/hello` | POST /api/hello is called with `{"name": "..."}` as the JSON body, verifying correct request construction |
 
-**Coverage:** 100% statements, 100% branches, 100% functions, 100% lines
+**Coverage:** 100% statements, 100% branches, 100% functions, 100% lines (33 tests)
 
 ---
 
@@ -191,6 +212,18 @@ Tests for `RepositoryStatusManager` covering repo name extraction, emoji selecti
 ---
 
 ## Refactoring History
+
+### 2026-04-28 — QA Agent: flaky-hunt session (issue #153)
+**Flakiness prevention tests added (no flaky tests found; suite stable across 5 runs):**
+
+**Backend (53 → 58 tests):**
+- `TestTimestampOrdering`: 3 tests verifying timestamps are non-decreasing across successive calls and that POST timestamps fall within the request window. Catches accidental caching of timestamps or clock drift.
+- `TestRequestIsolation`: 2 tests — one verifying sequential POSTs with different names return independent responses, one verifying three concurrent async POSTs don't cross-contaminate each other's messages.
+
+**Frontend (29 → 33 tests):**
+- `flakiness prevention` describe block: 4 tests — fetch call order on mount (health→version→hello), loading state clears after success, button disabled during in-flight POST to prevent double-submit, and loading state clears after failed POST.
+
+**Coverage change:** 100% → 100% (maintained; backend 53 tests → 58 tests; frontend 29 tests → 33 tests)
 
 ### 2026-04-27 — QA Agent: coverage-sprint session (issue #149)
 **Behavioral gap tests added (coverage already at 100%; tests improve behavioral confidence):**
