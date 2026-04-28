@@ -1,6 +1,7 @@
 """Tests for the main API endpoints."""
 
 import asyncio
+from datetime import UTC
 
 import pytest
 from fastapi import FastAPI
@@ -428,3 +429,67 @@ class TestHTTPMethodNotAllowed:
         """DELETE /api/hello returns 405 since only GET and POST are defined."""
         response = client.delete("/api/hello")
         assert response.status_code == 405
+
+
+class TestTimestampOrdering:
+    """Flakiness prevention: timestamps must advance, never go backwards or be cached."""
+
+    def test_health_timestamps_are_non_decreasing(self, client: TestClient) -> None:
+        """Two successive /health calls return timestamps where the second is not earlier."""
+        from datetime import datetime
+
+        r1 = client.get("/health")
+        r2 = client.get("/health")
+        ts1 = datetime.fromisoformat(r1.json()["timestamp"])
+        ts2 = datetime.fromisoformat(r2.json()["timestamp"])
+        assert ts2 >= ts1, f"Second timestamp {ts2} must not precede first {ts1}"
+
+    def test_hello_get_timestamps_are_non_decreasing(self, client: TestClient) -> None:
+        """Two successive GET /api/hello calls return non-decreasing timestamps."""
+        from datetime import datetime
+
+        r1 = client.get("/api/hello")
+        r2 = client.get("/api/hello")
+        ts1 = datetime.fromisoformat(r1.json()["timestamp"])
+        ts2 = datetime.fromisoformat(r2.json()["timestamp"])
+        assert ts2 >= ts1, f"Second timestamp {ts2} must not precede first {ts1}"
+
+    def test_hello_post_timestamp_within_request_window(self, client: TestClient) -> None:
+        """POST /api/hello timestamp falls between the start and end of the request."""
+        from datetime import datetime
+
+        before = datetime.now(UTC)
+        response = client.post("/api/hello", json={"name": "TimestampWindow"})
+        after = datetime.now(UTC)
+        ts = datetime.fromisoformat(response.json()["timestamp"])
+        assert before <= ts <= after, f"Timestamp {ts} not in [{before}, {after}]"
+
+
+class TestRequestIsolation:
+    """Flakiness prevention: requests must not share mutable state."""
+
+    def test_hello_name_responses_are_independent(self, client: TestClient) -> None:
+        """Two POST /api/hello calls with different names return independent responses."""
+        r1 = client.post("/api/hello", json={"name": "Alpha"})
+        r2 = client.post("/api/hello", json={"name": "Beta"})
+        msg1 = r1.json()["message"]
+        msg2 = r2.json()["message"]
+        assert "Alpha" in msg1
+        assert "Beta" in msg2
+        assert "Alpha" not in msg2
+        assert "Beta" not in msg1
+
+    async def test_concurrent_hello_posts_are_independent(self, async_client: AsyncClient) -> None:
+        """Concurrent POST /api/hello calls each receive only their own name."""
+        responses = await asyncio.gather(
+            async_client.post("/api/hello", json={"name": "Concurrent_Alice"}),
+            async_client.post("/api/hello", json={"name": "Concurrent_Bob"}),
+            async_client.post("/api/hello", json={"name": "Concurrent_Charlie"}),
+        )
+        names = ["Concurrent_Alice", "Concurrent_Bob", "Concurrent_Charlie"]
+        for i, resp in enumerate(responses):
+            msg = resp.json()["message"]
+            assert names[i] in msg, f"Response {i} missing own name {names[i]}"
+            for j, other_name in enumerate(names):
+                if i != j:
+                    assert other_name not in msg, f"Name {other_name} leaked into response {i}"
