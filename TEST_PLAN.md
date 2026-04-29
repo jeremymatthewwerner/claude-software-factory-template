@@ -191,7 +191,69 @@ Documents test coverage, test descriptions, and quality improvements.
 | `submits the form on Enter key in the name input` | Submitting the form element (keyboard Enter) calls POST /api/hello and shows the greeting |
 | `sends the correct JSON body in POST /api/hello` | POST /api/hello is called with `{"name": "..."}` as the JSON body, verifying correct request construction |
 
-**Coverage:** 100% statements, 100% branches, 100% functions, 100% lines (33 tests)
+**Coverage:** 100% statements, 100% branches, 100% functions, 100% lines (38 tests)
+
+### API Contract Integration Tests (added 2026-04-29)
+| Test | Description |
+|------|-------------|
+| `shows error message when POST /api/hello returns HTTP 422` | HTTP 422 from POST (backend validation error) shows "Error connecting to API" — validates the `res.ok` check added to the POST handler (bug fix) |
+| `shows error message when POST /api/hello returns HTTP 500` | HTTP 500 from POST shows "Error connecting to API" — confirms non-ok responses are handled, not just network rejections |
+| `displays version from version response (not name or environment fields)` | Frontend reads only `versionData.version`; other fields (`name`, `environment`) are ignored and not rendered |
+| `displays message from hello response (not timestamp field)` | Frontend reads only `helloData.message`; the `timestamp` field is not rendered as visible text |
+| `handles API responses with extra unexpected fields gracefully` | Frontend tolerates extra unknown fields (uptime, build, requestId, etc.) in all three API responses — validates forward compatibility |
+
+---
+
+## Backend Integration Tests (`backend/tests/test_integration.py`)
+
+### `TestFullWorkflow`
+| Test | Description |
+|------|-------------|
+| `test_full_page_load_sequence` | Simulates the frontend initialization sequence: GET /health → GET /api/version → GET /api/hello all succeed in order |
+| `test_full_user_interaction_flow` | Full user session: page load init sequence followed by POST /api/hello with a name |
+| `test_multiple_users_get_distinct_greetings` | Two POST /api/hello calls with different names return correctly personalized, distinct responses |
+| `test_health_check_after_hello_calls` | /health remains 200 healthy after handling multiple /api/hello requests (checks no side effects) |
+
+### `TestAPIContractHealth`
+| Test | Description |
+|------|-------------|
+| `test_health_response_has_status_field` | /health response JSON contains a `status` key (frontend contract) |
+| `test_health_status_field_is_string` | `status` is a string, not a boolean or number |
+| `test_health_response_is_200` | /health returns HTTP 200 (frontend uses `response.ok`) |
+| `test_health_response_has_timestamp` | /health response includes a non-empty `timestamp` string |
+
+### `TestAPIContractVersion`
+| Test | Description |
+|------|-------------|
+| `test_version_response_has_version_field` | /api/version response contains the `version` key read by the frontend |
+| `test_version_field_is_non_empty_string` | `version` is a non-empty string suitable for display |
+| `test_version_response_contains_extra_fields` | /api/version returns `name` and `environment` alongside `version` — extra fields do not displace the required one |
+| `test_version_response_is_200` | /api/version returns HTTP 200 |
+
+### `TestAPIContractHello`
+| Test | Description |
+|------|-------------|
+| `test_get_hello_response_has_message_field` | GET /api/hello response contains the `message` key read by the frontend |
+| `test_get_hello_message_is_non_empty_string` | GET hello `message` is a non-empty string |
+| `test_post_hello_response_has_message_field` | POST /api/hello response contains the `message` key read by the frontend |
+| `test_post_hello_message_is_non_empty_string` | POST hello `message` is a non-empty string |
+| `test_post_hello_message_contains_submitted_name` | POST hello `message` includes the submitted name (frontend displays this verbatim) |
+| `test_get_hello_response_has_timestamp` | GET /api/hello includes a `timestamp` field (observability; not displayed) |
+| `test_post_hello_response_has_timestamp` | POST /api/hello includes a `timestamp` field (observability; not displayed) |
+
+### `TestValidationErrorFormat`
+| Test | Description |
+|------|-------------|
+| `test_missing_name_field_returns_422` | POST /api/hello without `name` returns HTTP 422 |
+| `test_422_response_has_detail_key` | 422 response body has top-level `detail` key (FastAPI standard) |
+| `test_422_detail_is_a_list` | `detail` is a non-empty list of error objects |
+| `test_422_each_error_has_loc_msg_type` | Each error object has `loc`, `msg`, and `type` fields |
+| `test_422_loc_points_to_name_field` | Validation error location includes `name` when the `name` field is missing |
+| `test_invalid_json_body_returns_422` | Non-JSON body returns 422 (not 500) |
+| `test_null_name_returns_422` | `name: null` returns 422 |
+| `test_integer_name_returns_422` | `name: 42` returns 422 |
+
+**Backend total:** 85 tests (58 unit + 27 integration), 100% coverage
 
 ---
 
@@ -212,6 +274,28 @@ Tests for `RepositoryStatusManager` covering repo name extraction, emoji selecti
 ---
 
 ## Refactoring History
+
+### 2026-04-29 — QA Agent: integration-gaps session (issue #156)
+**Integration gap tests added (both backend and frontend at 100% unit coverage; this session adds integration layer):**
+
+**Bug fixed:**
+- `frontend/src/app/page.tsx`: POST handler now checks `res.ok` before reading `data.message`. Previously, HTTP 422/500 responses would silently set greeting to `undefined`.
+
+**Backend — new file `backend/tests/test_integration.py` (27 tests):**
+- `TestFullWorkflow`: 4 tests simulating the frontend's full page-load and user-interaction API call sequences
+- `TestAPIContractHealth`: 4 tests verifying /health returns HTTP 200 with `status` (string) and `timestamp` fields
+- `TestAPIContractVersion`: 4 tests verifying /api/version returns HTTP 200 with `version` (non-empty string)
+- `TestAPIContractHello`: 7 tests verifying GET and POST /api/hello return `message` (non-empty string) containing submitted name
+- `TestValidationErrorFormat`: 8 tests verifying FastAPI's 422 response has `detail` list with `loc`/`msg`/`type` per error
+
+**Frontend — `TestAPIContractIntegration` describe block (5 tests):**
+- HTTP 422 from POST shows error message (validates `res.ok` bug fix)
+- HTTP 500 from POST shows error message
+- Frontend reads only `version` from version response (ignores `name`/`environment`)
+- Frontend reads only `message` from hello response (ignores `timestamp`)
+- Frontend handles extra unknown fields in API responses gracefully (forward compatibility)
+
+**Coverage change:** 100% → 100% (maintained); backend 58 tests → 85 tests; frontend 33 tests → 38 tests
 
 ### 2026-04-28 — QA Agent: flaky-hunt session (issue #153)
 **Flakiness prevention tests added (no flaky tests found; suite stable across 5 runs):**

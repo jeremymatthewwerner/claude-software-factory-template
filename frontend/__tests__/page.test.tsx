@@ -507,4 +507,202 @@ describe('Home Page', () => {
       expect(JSON.parse(postCall[1].body as string)).toEqual({ name: 'TestUser' });
     });
   });
+
+  describe('API contract integration', () => {
+    it('shows error message when POST /api/hello returns HTTP 422', async () => {
+      // The backend returns 422 when the request body is invalid.
+      // The frontend must handle non-ok HTTP responses, not just network errors.
+      (global.fetch as jest.Mock)
+        .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ status: 'healthy' }) })
+        .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ version: '0.1.0' }) })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve({ message: 'Hello, World!' }),
+        })
+        .mockResolvedValueOnce({
+          ok: false,
+          status: 422,
+          json: () =>
+            Promise.resolve({
+              detail: [{ loc: ['body', 'name'], msg: 'Field required', type: 'missing' }],
+            }),
+        });
+
+      render(<Home />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Connected')).toBeInTheDocument();
+      });
+
+      const input = screen.getByPlaceholderText('Enter your name');
+      const button = screen.getByRole('button', { name: /say hello/i });
+
+      fireEvent.change(input, { target: { value: 'Alice' } });
+      fireEvent.click(button);
+
+      await waitFor(() => {
+        expect(screen.getByText('Error connecting to API')).toBeInTheDocument();
+      });
+    });
+
+    it('shows error message when POST /api/hello returns HTTP 500', async () => {
+      // Server errors must also show the error message, not a blank greeting.
+      (global.fetch as jest.Mock)
+        .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ status: 'healthy' }) })
+        .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ version: '0.1.0' }) })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve({ message: 'Hello, World!' }),
+        })
+        .mockResolvedValueOnce({
+          ok: false,
+          status: 500,
+          json: () => Promise.resolve({ error: 'Internal Server Error' }),
+        });
+
+      render(<Home />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Connected')).toBeInTheDocument();
+      });
+
+      const input = screen.getByPlaceholderText('Enter your name');
+      const button = screen.getByRole('button', { name: /say hello/i });
+
+      fireEvent.change(input, { target: { value: 'Alice' } });
+      fireEvent.click(button);
+
+      await waitFor(() => {
+        expect(screen.getByText('Error connecting to API')).toBeInTheDocument();
+      });
+    });
+
+    it('displays version from version response (not name or environment fields)', async () => {
+      // The backend /api/version returns {version, name, environment}.
+      // The frontend must only display the 'version' field.
+      (global.fetch as jest.Mock).mockImplementation((url: string) => {
+        const endpoint = url.replace('http://localhost:8000', '');
+        if (endpoint === '/health') {
+          return Promise.resolve({ ok: true, json: () => Promise.resolve({ status: 'healthy' }) });
+        }
+        if (endpoint === '/api/version') {
+          return Promise.resolve({
+            ok: true,
+            json: () =>
+              Promise.resolve({
+                version: '1.2.3',
+                name: 'software-factory-api',
+                environment: 'production',
+              }),
+          });
+        }
+        if (endpoint === '/api/hello') {
+          return Promise.resolve({
+            ok: true,
+            json: () =>
+              Promise.resolve({ message: 'Hello, World!', timestamp: '2026-01-01T00:00:00Z' }),
+          });
+        }
+        return Promise.reject(new Error('Not found'));
+      });
+
+      render(<Home />);
+
+      await waitFor(() => {
+        expect(screen.getByText('1.2.3')).toBeInTheDocument();
+      });
+
+      // 'name' and 'environment' fields must NOT appear as version display
+      expect(screen.queryByText('software-factory-api')).not.toBeInTheDocument();
+      expect(screen.queryByText('production')).not.toBeInTheDocument();
+    });
+
+    it('displays message from hello response (not timestamp field)', async () => {
+      // The backend /api/hello returns {message, timestamp}.
+      // The frontend must only display the 'message' field.
+      (global.fetch as jest.Mock).mockImplementation((url: string) => {
+        const endpoint = url.replace('http://localhost:8000', '');
+        if (endpoint === '/health') {
+          return Promise.resolve({ ok: true, json: () => Promise.resolve({ status: 'healthy' }) });
+        }
+        if (endpoint === '/api/version') {
+          return Promise.resolve({ ok: true, json: () => Promise.resolve({ version: '0.1.0' }) });
+        }
+        if (endpoint === '/api/hello') {
+          return Promise.resolve({
+            ok: true,
+            json: () =>
+              Promise.resolve({
+                message: 'Hello, World! Welcome to your Software Factory.',
+                timestamp: '2026-01-01T00:00:00Z',
+              }),
+          });
+        }
+        return Promise.reject(new Error('Not found'));
+      });
+
+      render(<Home />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Connected')).toBeInTheDocument();
+      });
+
+      // Message is displayed
+      expect(screen.getByText(/Hello, World!/)).toBeInTheDocument();
+      // Timestamp is NOT displayed as standalone text
+      expect(screen.queryByText('2026-01-01T00:00:00Z')).not.toBeInTheDocument();
+    });
+
+    it('handles API responses with extra unexpected fields gracefully', async () => {
+      // Forward-compatible: if the backend adds new fields, the frontend must not break.
+      (global.fetch as jest.Mock).mockImplementation((url: string) => {
+        const endpoint = url.replace('http://localhost:8000', '');
+        if (endpoint === '/health') {
+          return Promise.resolve({
+            ok: true,
+            json: () =>
+              Promise.resolve({
+                status: 'healthy',
+                timestamp: '2026-01-01T00:00:00Z',
+                uptime: 12345,
+                region: 'us-east-1',
+              }),
+          });
+        }
+        if (endpoint === '/api/version') {
+          return Promise.resolve({
+            ok: true,
+            json: () =>
+              Promise.resolve({
+                version: '0.2.0',
+                name: 'api',
+                environment: 'staging',
+                build: 'abc123',
+                commit: 'def456',
+              }),
+          });
+        }
+        if (endpoint === '/api/hello') {
+          return Promise.resolve({
+            ok: true,
+            json: () =>
+              Promise.resolve({
+                message: 'Hello, World!',
+                timestamp: '2026-01-01T00:00:00Z',
+                requestId: 'xyz',
+              }),
+          });
+        }
+        return Promise.reject(new Error('Not found'));
+      });
+
+      render(<Home />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Connected')).toBeInTheDocument();
+        expect(screen.getByText('0.2.0')).toBeInTheDocument();
+        expect(screen.getByText(/Hello, World!/)).toBeInTheDocument();
+      });
+    });
+  });
 });
