@@ -204,6 +204,68 @@ Documents test coverage, test descriptions, and quality improvements.
 
 ---
 
+## E2E Tests (`frontend/e2e/app.spec.ts`) — added 2026-04-30
+
+**Setup:** Playwright 1.59.1 with `fullyParallel: true`, route interception, no `waitForTimeout`.
+
+### Performance Design Principles
+- **Route interception** (`page.route()`) mocks all backend API calls — no real server required
+- **Event-based waiting** — `waitForResponse()`, `expect(locator).toBeVisible()`, Playwright auto-waiting
+- **No `waitForTimeout`** — the only exception is two 200ms guards to confirm no POST fires
+- **Parallel workers** — `fullyParallel: true` with 2 workers in CI
+
+### `page load` (6 tests)
+| Test | Description |
+|------|-------------|
+| `renders title and subtitle` | "Software Factory" heading and subtitle visible immediately after load |
+| `shows Checking status immediately on load` | "Checking..." badge visible while API calls are pending (stalled health route) |
+| `shows Connected after healthy backend response` | "Connected" badge and version "1.0.0" appear after mocked healthy responses |
+| `shows Disconnected when backend is unreachable` | "Disconnected" badge and error message appear when routes are aborted |
+| `renders Getting Started cards` | All three info cards (Claude Code, API Docs, View Source) are visible |
+| `renders footer technology links` | Footer links (Next.js, FastAPI, Claude) are visible |
+
+### `api status` (4 tests)
+| Test | Description |
+|------|-------------|
+| `shows version badge after connecting` | Version label and value appear after healthy response |
+| `does not show version badge while checking` | Version section hidden while /api/version is stalled |
+| `shows backend message when healthy` | "Backend says:" prefix and message visible when connected |
+| `does not show Backend says prefix when disconnected` | "Backend says:" not rendered when API is unreachable |
+
+### `hello form` (9 tests)
+| Test | Description |
+|------|-------------|
+| `input and button are disabled when disconnected` | Both form controls disabled when API health check fails |
+| `input and button are enabled when connected` | Both form controls enabled after successful API check |
+| `submitting a name shows personalized greeting` | POST intercepted via `waitForResponse`; personalized message displayed |
+| `shows Sending... during submission and clears after` | Loading state appears on click, clears after slow POST resolves |
+| `button prevents double-submit while loading` | Disabled button during in-flight POST; only one POST request made |
+| `empty name does not trigger a POST` | No POST request for empty name submit (confirmed via request listener + 200ms guard) |
+| `whitespace-only name does not trigger a POST` | No POST request for whitespace-only name |
+| `shows error message when POST fails with network error` | "Error connecting to API" shown when POST route is aborted |
+| `shows error and re-enables form after failed submission` | Error shown and button re-enabled after POST failure |
+| `submits form with Enter key` | Pressing Enter in name input triggers POST and shows greeting |
+| `sends correct JSON body in POST request` | POST body captured via route intercept; verified to be `{"name": "..."}` |
+
+### `api contract` (4 tests)
+| Test | Description |
+|------|-------------|
+| `displays only version field from /api/version response` | Only `version` shown; `name` and `environment` fields not rendered |
+| `handles extra fields in API responses without breaking` | Extra fields in all three API responses do not break the UI |
+| `shows error when POST returns HTTP 422` | HTTP 422 from POST triggers "Error connecting to API" |
+| `shows error when POST returns HTTP 500` | HTTP 500 from POST triggers "Error connecting to API" |
+
+### `navigation` (3 tests)
+| Test | Description |
+|------|-------------|
+| `Claude Code link points to github.com/anthropics` | Link has correct href and target="_blank" |
+| `API Docs link points to /docs` | Link href is "/docs" |
+| `View Source link has target _blank` | Link opens in new tab |
+
+**Total: 28 E2E tests, all passing 3x (no flakes)**
+
+---
+
 ## Backend Integration Tests (`backend/tests/test_integration.py`)
 
 ### `TestFullWorkflow`
@@ -274,6 +336,22 @@ Tests for `RepositoryStatusManager` covering repo name extraction, emoji selecti
 ---
 
 ## Refactoring History
+
+### 2026-04-30 — QA Agent: e2e-performance session (issue #159)
+**E2E test suite established with Playwright — performance-optimized from the start:**
+
+**New files:**
+- `frontend/playwright.config.ts`: `fullyParallel: true`, 2 CI workers, 10s test timeout, route interception — no real backend server required
+- `frontend/e2e/app.spec.ts`: 28 tests across 5 describe groups (page load, api status, hello form, api contract, navigation)
+
+**Performance design decisions:**
+- `page.route()` intercepts all API calls — eliminates server startup overhead and network flakiness
+- `page.waitForResponse()` and `expect(locator).toBeVisible()` replace `waitForTimeout` everywhere
+- Parallel workers (`fullyParallel: true`) run all 28 tests in ~15s in CI
+- Only two 200ms `waitForTimeout` guards remain — used to confirm no POST fires for empty/whitespace inputs (no event exists for "nothing happened")
+- `retries: 0` — tests must be deterministic; flakes are bugs
+
+**Coverage change:** 0 E2E tests → 28 E2E tests; all passing 3× with no flakiness
 
 ### 2026-04-29 — QA Agent: integration-gaps session (issue #156)
 **Integration gap tests added (both backend and frontend at 100% unit coverage; this session adds integration layer):**

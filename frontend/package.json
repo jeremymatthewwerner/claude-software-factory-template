@@ -13,7 +13,7 @@
     "test": "jest",
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",
-    "test:e2e": "echo 'No E2E tests configured yet' && exit 0"
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "next": "^14.2.0",
@@ -21,6 +21,7 @@
     "react-dom": "^18.2.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.59.1",
     "@testing-library/jest-dom": "^6.4.0",
     "@testing-library/react": "^14.2.0",
     "@types/jest": "^29.5.0",
