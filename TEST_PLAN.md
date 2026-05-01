@@ -78,8 +78,7 @@ Documents test coverage, test descriptions, and quality improvements.
 ### `TestRegressionUTCTimestamps`
 | Test | Description |
 |------|-------------|
-| `test_health_timestamp_is_timezone_aware` | Health timestamp parses as a timezone-aware datetime (not naive) |
-| `test_health_timestamp_utc_offset_is_zero` | Health timestamp UTC offset is exactly zero seconds (true UTC) |
+| `test_health_timestamp_is_utc_aware` | Health timestamp is timezone-aware and has a UTC offset of exactly zero (merged from two previously separate assertions) |
 | `test_hello_get_timestamp_is_utc_aware` | GET /api/hello timestamp is timezone-aware with zero UTC offset |
 | `test_hello_post_timestamp_is_utc_aware` | POST /api/hello timestamp is timezone-aware with zero UTC offset |
 
@@ -94,18 +93,18 @@ Documents test coverage, test descriptions, and quality improvements.
 | Test | Description |
 |------|-------------|
 | `test_cors_preflight_returns_ok_for_allowed_origin` | OPTIONS preflight for localhost:3000 returns 200 with CORS headers |
-| `test_cors_get_response_includes_allow_origin_for_allowed_origin` | GET /health with localhost:3000 Origin returns Access-Control-Allow-Origin: http://localhost:3000 |
-| `test_cors_get_response_includes_allow_origin_for_127_origin` | GET /health with 127.0.0.1:3000 Origin returns the correct CORS header |
+| `test_cors_get_response_includes_allow_origin[http://localhost:3000]` | GET /health with localhost:3000 Origin returns Access-Control-Allow-Origin: http://localhost:3000 |
+| `test_cors_get_response_includes_allow_origin[http://127.0.0.1:3000]` | GET /health with 127.0.0.1:3000 Origin returns the correct CORS header |
 | `test_cors_preflight_allows_post_method` | OPTIONS preflight for POST on /api/hello returns 200 with CORS headers |
 
 ### `TestHTTPMethodNotAllowed`
 | Test | Description |
 |------|-------------|
-| `test_delete_health_returns_405` | DELETE /health returns 405 Method Not Allowed |
-| `test_put_health_returns_405` | PUT /health returns 405 Method Not Allowed |
-| `test_delete_api_version_returns_405` | DELETE /api/version returns 405 Method Not Allowed |
-| `test_put_api_hello_returns_405` | PUT /api/hello returns 405 (only GET and POST are defined) |
-| `test_delete_api_hello_returns_405` | DELETE /api/hello returns 405 Method Not Allowed |
+| `test_unsupported_method_returns_405[DELETE-health]` | DELETE /health returns 405 Method Not Allowed |
+| `test_unsupported_method_returns_405[PUT-health]` | PUT /health returns 405 Method Not Allowed |
+| `test_unsupported_method_returns_405[DELETE-version]` | DELETE /api/version returns 405 Method Not Allowed |
+| `test_unsupported_method_returns_405[PUT-hello]` | PUT /api/hello returns 405 (only GET and POST are defined) |
+| `test_unsupported_method_returns_405[DELETE-hello]` | DELETE /api/hello returns 405 Method Not Allowed |
 
 ### `TestTimestampOrdering`
 | Test | Description |
@@ -120,7 +119,7 @@ Documents test coverage, test descriptions, and quality improvements.
 | `test_hello_name_responses_are_independent` | Two POST /api/hello calls with different names return fully independent responses with no cross-contamination |
 | `test_concurrent_hello_posts_are_independent` | Three concurrent async POST /api/hello calls each receive only their own name in the response (catches shared mutable state) |
 
-**Coverage:** 100% (36/36 statements, 58 tests)
+**Coverage:** 100% (36/36 statements, 57 tests)
 
 ---
 
@@ -253,7 +252,7 @@ Documents test coverage, test descriptions, and quality improvements.
 | `test_null_name_returns_422` | `name: null` returns 422 |
 | `test_integer_name_returns_422` | `name: 42` returns 422 |
 
-**Backend total:** 85 tests (58 unit + 27 integration), 100% coverage
+**Backend total:** 84 tests (57 unit + 27 integration), 100% coverage
 
 ---
 
@@ -274,6 +273,22 @@ Tests for `RepositoryStatusManager` covering repo name extraction, emoji selecti
 ---
 
 ## Refactoring History
+
+### 2026-05-01 — QA Agent: test-refactoring session (issue #162)
+**No new tests; suite restructured for readability and duplication reduction. Both backend and frontend remain at 100% coverage.**
+
+**Backend — `backend/tests/test_main.py`:**
+- Moved `from datetime import datetime` to top-level import (was repeated inline in 8 test methods)
+- Added `_assert_utc_timestamp(timestamp_str)` module-level helper — eliminates 6 lines of duplicated UTC assertion logic; used in `TestRegressionUTCTimestamps` and `TestTimestampOrdering`
+- `TestRegressionUTCTimestamps`: merged `test_health_timestamp_is_timezone_aware` + `test_health_timestamp_utc_offset_is_zero` into `test_health_timestamp_is_utc_aware` (consistent with the other endpoint tests which already combined both assertions)
+- `TestHTTPMethodNotAllowed`: replaced 5 individual test methods with one `@pytest.mark.parametrize` covering all 5 method/path combinations — same 5 test cases, clearer intent
+- `TestCORSMiddleware`: replaced two CORS GET origin tests with one `@pytest.mark.parametrize` over `[localhost:3000, 127.0.0.1:3000]` — same 2 runs, explicit enumeration at the call site
+
+**Frontend — `frontend/__tests__/page.test.tsx`:**
+- Extracted `mockInitialLoad()` helper that queues the three `mockResolvedValueOnce` calls for the component's mount sequence (health → version → hello) and returns the mock for chaining — used in 6 tests that previously duplicated this 3-call boilerplate
+- Refactored `'shows error message when POST /api/hello fails'`, `'shows loading state during form submission'`, `'button is disabled during submission preventing double-submit'`, `'clears loading state after failed submission'`, `'shows error message when POST /api/hello returns HTTP 422'`, and `'shows error message when POST /api/hello returns HTTP 500'` to use `mockInitialLoad()`
+
+**Coverage change:** 100% → 100% (maintained); backend 85 tests → 84 tests (one merged); frontend 38 tests → 38 tests (unchanged count)
 
 ### 2026-04-29 — QA Agent: integration-gaps session (issue #156)
 **Integration gap tests added (both backend and frontend at 100% unit coverage; this session adds integration layer):**

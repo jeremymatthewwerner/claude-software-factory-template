@@ -1,7 +1,7 @@
 """Tests for the main API endpoints."""
 
 import asyncio
-from datetime import UTC
+from datetime import UTC, datetime
 
 import pytest
 from fastapi import FastAPI
@@ -9,6 +9,15 @@ from fastapi.testclient import TestClient
 from httpx import AsyncClient
 
 from app import __version__
+
+
+def _assert_utc_timestamp(timestamp_str: str) -> None:
+    """Assert a timestamp string is ISO 8601, timezone-aware, and has a zero UTC offset."""
+    parsed = datetime.fromisoformat(timestamp_str)
+    assert parsed.tzinfo is not None, f"Timestamp {timestamp_str!r} is not timezone-aware"
+    offset = parsed.utcoffset()
+    assert offset is not None
+    assert offset.total_seconds() == 0, f"Timestamp {timestamp_str!r} UTC offset is not zero"
 
 
 class TestHealthEndpoint:
@@ -24,11 +33,8 @@ class TestHealthEndpoint:
 
     def test_health_timestamp_is_iso_format(self, client: TestClient) -> None:
         """Health check timestamp is a non-empty ISO 8601 string."""
-        from datetime import datetime
-
         response = client.get("/health")
         timestamp = response.json()["timestamp"]
-        # Verify it parses as a valid ISO datetime
         parsed = datetime.fromisoformat(timestamp)
         assert parsed is not None
 
@@ -286,45 +292,20 @@ class TestRegressionUTCTimestamps:
     timezone-aware and have a UTC offset of exactly zero.
     """
 
-    def test_health_timestamp_is_timezone_aware(self, client: TestClient) -> None:
-        """Health timestamp parses as a timezone-aware datetime, not a naive one."""
-        from datetime import datetime
-
+    def test_health_timestamp_is_utc_aware(self, client: TestClient) -> None:
+        """Health timestamp is timezone-aware and has a UTC offset of exactly zero."""
         response = client.get("/health")
-        parsed = datetime.fromisoformat(response.json()["timestamp"])
-        assert parsed.tzinfo is not None
-
-    def test_health_timestamp_utc_offset_is_zero(self, client: TestClient) -> None:
-        """Health timestamp UTC offset is exactly zero seconds (true UTC, not local time)."""
-        from datetime import datetime
-
-        response = client.get("/health")
-        parsed = datetime.fromisoformat(response.json()["timestamp"])
-        offset = parsed.utcoffset()
-        assert offset is not None
-        assert offset.total_seconds() == 0
+        _assert_utc_timestamp(response.json()["timestamp"])
 
     def test_hello_get_timestamp_is_utc_aware(self, client: TestClient) -> None:
         """GET /api/hello timestamp is timezone-aware with a zero UTC offset."""
-        from datetime import datetime
-
         response = client.get("/api/hello")
-        parsed = datetime.fromisoformat(response.json()["timestamp"])
-        assert parsed.tzinfo is not None
-        offset = parsed.utcoffset()
-        assert offset is not None
-        assert offset.total_seconds() == 0
+        _assert_utc_timestamp(response.json()["timestamp"])
 
     def test_hello_post_timestamp_is_utc_aware(self, client: TestClient) -> None:
         """POST /api/hello timestamp is timezone-aware with a zero UTC offset."""
-        from datetime import datetime
-
         response = client.post("/api/hello", json={"name": "Test"})
-        parsed = datetime.fromisoformat(response.json()["timestamp"])
-        assert parsed.tzinfo is not None
-        offset = parsed.utcoffset()
-        assert offset is not None
-        assert offset.total_seconds() == 0
+        _assert_utc_timestamp(response.json()["timestamp"])
 
 
 class TestRegressionPackageStructure:
@@ -373,21 +354,15 @@ class TestCORSMiddleware:
         assert response.status_code == 200
         assert "access-control-allow-origin" in response.headers
 
-    def test_cors_get_response_includes_allow_origin_for_allowed_origin(
-        self, client: TestClient
-    ) -> None:
-        """GET /health with an allowed origin includes Access-Control-Allow-Origin header."""
-        response = client.get("/health", headers={"Origin": "http://localhost:3000"})
+    @pytest.mark.parametrize(
+        "origin",
+        ["http://localhost:3000", "http://127.0.0.1:3000"],
+    )
+    def test_cors_get_response_includes_allow_origin(self, client: TestClient, origin: str) -> None:
+        """GET /health with an allowed origin includes the correct Access-Control-Allow-Origin header."""
+        response = client.get("/health", headers={"Origin": origin})
         assert response.status_code == 200
-        assert response.headers.get("access-control-allow-origin") == "http://localhost:3000"
-
-    def test_cors_get_response_includes_allow_origin_for_127_origin(
-        self, client: TestClient
-    ) -> None:
-        """GET /health with 127.0.0.1:3000 origin also receives the CORS header."""
-        response = client.get("/health", headers={"Origin": "http://127.0.0.1:3000"})
-        assert response.status_code == 200
-        assert response.headers.get("access-control-allow-origin") == "http://127.0.0.1:3000"
+        assert response.headers.get("access-control-allow-origin") == origin
 
     def test_cors_preflight_allows_post_method(self, client: TestClient) -> None:
         """OPTIONS preflight for POST method on allowed origin returns CORS headers."""
@@ -405,29 +380,22 @@ class TestCORSMiddleware:
 class TestHTTPMethodNotAllowed:
     """Tests that unsupported HTTP methods return 405 Method Not Allowed."""
 
-    def test_delete_health_returns_405(self, client: TestClient) -> None:
-        """DELETE /health returns 405 since only GET is defined."""
-        response = client.delete("/health")
-        assert response.status_code == 405
-
-    def test_put_health_returns_405(self, client: TestClient) -> None:
-        """PUT /health returns 405 since only GET is defined."""
-        response = client.put("/health")
-        assert response.status_code == 405
-
-    def test_delete_api_version_returns_405(self, client: TestClient) -> None:
-        """DELETE /api/version returns 405 since only GET is defined."""
-        response = client.delete("/api/version")
-        assert response.status_code == 405
-
-    def test_put_api_hello_returns_405(self, client: TestClient) -> None:
-        """PUT /api/hello returns 405 since only GET and POST are defined."""
-        response = client.put("/api/hello", json={"name": "test"})
-        assert response.status_code == 405
-
-    def test_delete_api_hello_returns_405(self, client: TestClient) -> None:
-        """DELETE /api/hello returns 405 since only GET and POST are defined."""
-        response = client.delete("/api/hello")
+    @pytest.mark.parametrize(
+        "method,path,kwargs",
+        [
+            ("delete", "/health", {}),
+            ("put", "/health", {}),
+            ("delete", "/api/version", {}),
+            ("put", "/api/hello", {"json": {"name": "test"}}),
+            ("delete", "/api/hello", {}),
+        ],
+        ids=["DELETE-health", "PUT-health", "DELETE-version", "PUT-hello", "DELETE-hello"],
+    )
+    def test_unsupported_method_returns_405(
+        self, client: TestClient, method: str, path: str, kwargs: dict
+    ) -> None:
+        """Unsupported HTTP method on a defined endpoint returns 405 Method Not Allowed."""
+        response = getattr(client, method)(path, **kwargs)
         assert response.status_code == 405
 
 
@@ -436,8 +404,6 @@ class TestTimestampOrdering:
 
     def test_health_timestamps_are_non_decreasing(self, client: TestClient) -> None:
         """Two successive /health calls return timestamps where the second is not earlier."""
-        from datetime import datetime
-
         r1 = client.get("/health")
         r2 = client.get("/health")
         ts1 = datetime.fromisoformat(r1.json()["timestamp"])
@@ -446,8 +412,6 @@ class TestTimestampOrdering:
 
     def test_hello_get_timestamps_are_non_decreasing(self, client: TestClient) -> None:
         """Two successive GET /api/hello calls return non-decreasing timestamps."""
-        from datetime import datetime
-
         r1 = client.get("/api/hello")
         r2 = client.get("/api/hello")
         ts1 = datetime.fromisoformat(r1.json()["timestamp"])
@@ -456,8 +420,6 @@ class TestTimestampOrdering:
 
     def test_hello_post_timestamp_within_request_window(self, client: TestClient) -> None:
         """POST /api/hello timestamp falls between the start and end of the request."""
-        from datetime import datetime
-
         before = datetime.now(UTC)
         response = client.post("/api/hello", json={"name": "TimestampWindow"})
         after = datetime.now(UTC)

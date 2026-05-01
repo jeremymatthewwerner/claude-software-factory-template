@@ -25,6 +25,21 @@ const mockFetch = (responses: { [key: string]: object }) => {
   });
 };
 
+/**
+ * Mock the three sequential fetches the component makes on mount
+ * (health → version → hello). Returns the mock so callers can chain
+ * additional `.mockResolvedValueOnce()` or `.mockRejectedValueOnce()` calls
+ * for the POST /api/hello that follows a form submission.
+ */
+const mockInitialLoad = () =>
+  (global.fetch as jest.Mock)
+    .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ status: 'healthy' }) })
+    .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ version: '0.1.0' }) })
+    .mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve({ message: 'Hello, World!' }),
+    });
+
 describe('Home Page', () => {
   beforeEach(() => {
     jest.clearAllMocks();
@@ -136,14 +151,7 @@ describe('Home Page', () => {
     });
 
     it('shows error message when POST /api/hello fails', async () => {
-      (global.fetch as jest.Mock)
-        .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ status: 'healthy' }) })
-        .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ version: '0.1.0' }) })
-        .mockResolvedValueOnce({
-          ok: true,
-          json: () => Promise.resolve({ message: 'Hello, World!' }),
-        })
-        .mockRejectedValue(new Error('Network error'));
+      mockInitialLoad().mockRejectedValue(new Error('Network error'));
 
       render(<Home />);
 
@@ -263,14 +271,7 @@ describe('Home Page', () => {
         resolvePost = res;
       });
 
-      (global.fetch as jest.Mock)
-        .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ status: 'healthy' }) })
-        .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ version: '0.1.0' }) })
-        .mockResolvedValueOnce({
-          ok: true,
-          json: () => Promise.resolve({ message: 'Hello, World!' }),
-        })
-        .mockReturnValueOnce(postPromise);
+      mockInitialLoad().mockReturnValueOnce(postPromise);
 
       render(<Home />);
 
@@ -374,14 +375,7 @@ describe('Home Page', () => {
         resolveSubmit = res;
       });
 
-      (global.fetch as jest.Mock)
-        .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ status: 'healthy' }) })
-        .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ version: '0.1.0' }) })
-        .mockResolvedValueOnce({
-          ok: true,
-          json: () => Promise.resolve({ message: 'Hello, World!' }),
-        })
-        .mockReturnValueOnce(pendingPost);
+      mockInitialLoad().mockReturnValueOnce(pendingPost);
 
       render(<Home />);
 
@@ -405,14 +399,7 @@ describe('Home Page', () => {
     });
 
     it('clears loading state after failed submission', async () => {
-      (global.fetch as jest.Mock)
-        .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ status: 'healthy' }) })
-        .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ version: '0.1.0' }) })
-        .mockResolvedValueOnce({
-          ok: true,
-          json: () => Promise.resolve({ message: 'Hello, World!' }),
-        })
-        .mockRejectedValueOnce(new Error('Network error'));
+      mockInitialLoad().mockRejectedValueOnce(new Error('Network error'));
 
       render(<Home />);
 
@@ -512,21 +499,14 @@ describe('Home Page', () => {
     it('shows error message when POST /api/hello returns HTTP 422', async () => {
       // The backend returns 422 when the request body is invalid.
       // The frontend must handle non-ok HTTP responses, not just network errors.
-      (global.fetch as jest.Mock)
-        .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ status: 'healthy' }) })
-        .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ version: '0.1.0' }) })
-        .mockResolvedValueOnce({
-          ok: true,
-          json: () => Promise.resolve({ message: 'Hello, World!' }),
-        })
-        .mockResolvedValueOnce({
-          ok: false,
-          status: 422,
-          json: () =>
-            Promise.resolve({
-              detail: [{ loc: ['body', 'name'], msg: 'Field required', type: 'missing' }],
-            }),
-        });
+      mockInitialLoad().mockResolvedValueOnce({
+        ok: false,
+        status: 422,
+        json: () =>
+          Promise.resolve({
+            detail: [{ loc: ['body', 'name'], msg: 'Field required', type: 'missing' }],
+          }),
+      });
 
       render(<Home />);
 
@@ -547,18 +527,11 @@ describe('Home Page', () => {
 
     it('shows error message when POST /api/hello returns HTTP 500', async () => {
       // Server errors must also show the error message, not a blank greeting.
-      (global.fetch as jest.Mock)
-        .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ status: 'healthy' }) })
-        .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ version: '0.1.0' }) })
-        .mockResolvedValueOnce({
-          ok: true,
-          json: () => Promise.resolve({ message: 'Hello, World!' }),
-        })
-        .mockResolvedValueOnce({
-          ok: false,
-          status: 500,
-          json: () => Promise.resolve({ error: 'Internal Server Error' }),
-        });
+      mockInitialLoad().mockResolvedValueOnce({
+        ok: false,
+        status: 500,
+        json: () => Promise.resolve({ error: 'Internal Server Error' }),
+      });
 
       render(<Home />);
 
