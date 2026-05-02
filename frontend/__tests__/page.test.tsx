@@ -705,4 +705,226 @@ describe('Home Page', () => {
       });
     });
   });
+
+  describe('mid-sequence API failure edge cases', () => {
+    it('shows unhealthy when version fetch fails after health succeeds', async () => {
+      (global.fetch as jest.Mock)
+        .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ status: 'healthy' }) })
+        .mockRejectedValueOnce(new Error('Version network error'));
+
+      render(<Home />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Disconnected')).toBeInTheDocument();
+      });
+
+      expect(screen.getByText('Could not connect to backend API')).toBeInTheDocument();
+    });
+
+    it('shows unhealthy when hello GET fetch fails after health and version succeed', async () => {
+      (global.fetch as jest.Mock)
+        .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ status: 'healthy' }) })
+        .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ version: '0.1.0' }) })
+        .mockRejectedValueOnce(new Error('Hello network error'));
+
+      render(<Home />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Disconnected')).toBeInTheDocument();
+      });
+
+      expect(screen.getByText('Could not connect to backend API')).toBeInTheDocument();
+    });
+  });
+
+  describe('form state edge cases', () => {
+    it('name input retains value after successful greeting', async () => {
+      mockFetch({ ...HEALTHY_RESPONSES, '/api/hello': { message: 'Hello, Alice!' } });
+      render(<Home />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Connected')).toBeInTheDocument();
+      });
+
+      const input = screen.getByPlaceholderText('Enter your name');
+      const button = screen.getByRole('button', { name: /say hello/i });
+
+      fireEvent.change(input, { target: { value: 'Alice' } });
+      fireEvent.click(button);
+
+      await waitFor(() => {
+        expect(screen.getByText('Hello, Alice!')).toBeInTheDocument();
+      });
+
+      expect(input).toHaveValue('Alice');
+    });
+
+    it('name input retains value after a failed submission', async () => {
+      (global.fetch as jest.Mock)
+        .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ status: 'healthy' }) })
+        .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ version: '0.1.0' }) })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve({ message: 'Hello, World!' }),
+        })
+        .mockRejectedValueOnce(new Error('Network error'));
+
+      render(<Home />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Connected')).toBeInTheDocument();
+      });
+
+      const input = screen.getByPlaceholderText('Enter your name');
+      fireEvent.change(input, { target: { value: 'Alice' } });
+      fireEvent.click(screen.getByRole('button', { name: /say hello/i }));
+
+      await waitFor(() => {
+        expect(screen.getByText('Error connecting to API')).toBeInTheDocument();
+      });
+
+      expect(input).toHaveValue('Alice');
+    });
+
+    it('second submission overwrites previous greeting', async () => {
+      (global.fetch as jest.Mock)
+        .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ status: 'healthy' }) })
+        .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ version: '0.1.0' }) })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve({ message: 'Hello, World!' }),
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve({ message: 'Hello, Alice!' }),
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve({ message: 'Hello, Bob!' }),
+        });
+
+      render(<Home />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Connected')).toBeInTheDocument();
+      });
+
+      const input = screen.getByPlaceholderText('Enter your name');
+      const button = screen.getByRole('button', { name: /say hello/i });
+
+      fireEvent.change(input, { target: { value: 'Alice' } });
+      fireEvent.click(button);
+
+      await waitFor(() => {
+        expect(screen.getByText('Hello, Alice!')).toBeInTheDocument();
+      });
+
+      fireEvent.change(input, { target: { value: 'Bob' } });
+      fireEvent.click(button);
+
+      await waitFor(() => {
+        expect(screen.getByText('Hello, Bob!')).toBeInTheDocument();
+      });
+
+      expect(screen.queryByText('Hello, Alice!')).not.toBeInTheDocument();
+    });
+
+    it('error message is replaced by successful greeting on retry', async () => {
+      (global.fetch as jest.Mock)
+        .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ status: 'healthy' }) })
+        .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ version: '0.1.0' }) })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve({ message: 'Hello, World!' }),
+        })
+        .mockRejectedValueOnce(new Error('Network error'))
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve({ message: 'Hello, Alice!' }),
+        });
+
+      render(<Home />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Connected')).toBeInTheDocument();
+      });
+
+      const input = screen.getByPlaceholderText('Enter your name');
+      const button = screen.getByRole('button', { name: /say hello/i });
+
+      fireEvent.change(input, { target: { value: 'Alice' } });
+      fireEvent.click(button);
+
+      await waitFor(() => {
+        expect(screen.getByText('Error connecting to API')).toBeInTheDocument();
+      });
+
+      fireEvent.click(button);
+
+      await waitFor(() => {
+        expect(screen.getByText('Hello, Alice!')).toBeInTheDocument();
+      });
+
+      expect(screen.queryByText('Error connecting to API')).not.toBeInTheDocument();
+    });
+  });
+
+  describe('version badge edge cases', () => {
+    it('does not show version badge when version field is absent from version response', async () => {
+      (global.fetch as jest.Mock).mockImplementation((url: string) => {
+        const endpoint = url.replace('http://localhost:8000', '');
+        if (endpoint === '/health') {
+          return Promise.resolve({ ok: true, json: () => Promise.resolve({ status: 'healthy' }) });
+        }
+        if (endpoint === '/api/version') {
+          // Response has no 'version' key — versionData.version will be undefined
+          return Promise.resolve({ ok: true, json: () => Promise.resolve({ name: 'api' }) });
+        }
+        if (endpoint === '/api/hello') {
+          return Promise.resolve({
+            ok: true,
+            json: () => Promise.resolve({ message: 'Hello, World!' }),
+          });
+        }
+        return Promise.reject(new Error('Not found'));
+      });
+
+      render(<Home />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Connected')).toBeInTheDocument();
+      });
+
+      // The {apiStatus.version && ...} conditional is falsy when version is undefined
+      expect(screen.queryByText('Version')).not.toBeInTheDocument();
+    });
+
+    it('does not show version badge when version field is an empty string', async () => {
+      (global.fetch as jest.Mock).mockImplementation((url: string) => {
+        const endpoint = url.replace('http://localhost:8000', '');
+        if (endpoint === '/health') {
+          return Promise.resolve({ ok: true, json: () => Promise.resolve({ status: 'healthy' }) });
+        }
+        if (endpoint === '/api/version') {
+          return Promise.resolve({ ok: true, json: () => Promise.resolve({ version: '' }) });
+        }
+        if (endpoint === '/api/hello') {
+          return Promise.resolve({
+            ok: true,
+            json: () => Promise.resolve({ message: 'Hello, World!' }),
+          });
+        }
+        return Promise.reject(new Error('Not found'));
+      });
+
+      render(<Home />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Connected')).toBeInTheDocument();
+      });
+
+      // Empty string is falsy — the version badge conditional evaluates to false
+      expect(screen.queryByText('Version')).not.toBeInTheDocument();
+    });
+  });
 });

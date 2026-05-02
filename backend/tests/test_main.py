@@ -493,3 +493,94 @@ class TestRequestIsolation:
             for j, other_name in enumerate(names):
                 if i != j:
                     assert other_name not in msg, f"Name {other_name} leaked into response {i}"
+
+
+class TestPATCHMethodNotAllowed:
+    """Tests that PATCH returns 405 on all defined endpoints."""
+
+    def test_patch_health_returns_405(self, client: TestClient) -> None:
+        """PATCH /health returns 405 since only GET is defined."""
+        response = client.patch("/health")
+        assert response.status_code == 405
+
+    def test_patch_api_version_returns_405(self, client: TestClient) -> None:
+        """PATCH /api/version returns 405 since only GET is defined."""
+        response = client.patch("/api/version")
+        assert response.status_code == 405
+
+    def test_patch_api_hello_returns_405(self, client: TestClient) -> None:
+        """PATCH /api/hello returns 405 since only GET and POST are defined."""
+        response = client.patch("/api/hello")
+        assert response.status_code == 405
+
+
+class TestNotFoundRoutes:
+    """Tests that requests to undefined routes return 404."""
+
+    def test_unknown_api_route_returns_404(self, client: TestClient) -> None:
+        """GET to an undefined route under /api/ returns 404."""
+        response = client.get("/api/nonexistent")
+        assert response.status_code == 404
+
+    def test_unknown_route_404_response_has_detail_key(self, client: TestClient) -> None:
+        """FastAPI 404 responses include a JSON body with a 'detail' key."""
+        response = client.get("/api/nonexistent")
+        assert "detail" in response.json()
+
+    def test_root_path_returns_404(self, client: TestClient) -> None:
+        """GET / returns 404 since no route is registered at the root."""
+        response = client.get("/")
+        assert response.status_code == 404
+
+
+class TestCORSDisallowedOrigin:
+    """Tests that CORS middleware withholds headers for origins not in the allowlist."""
+
+    def test_cors_get_does_not_expose_allow_origin_for_disallowed_origin(
+        self, client: TestClient
+    ) -> None:
+        """GET /health from a disallowed origin does NOT receive Access-Control-Allow-Origin."""
+        response = client.get("/health", headers={"Origin": "https://evil.example.com"})
+        assert response.status_code == 200
+        assert response.headers.get("access-control-allow-origin") is None
+
+    def test_cors_preflight_does_not_expose_allow_origin_for_disallowed_origin(
+        self, client: TestClient
+    ) -> None:
+        """OPTIONS preflight from a disallowed origin does NOT expose Access-Control-Allow-Origin."""
+        response = client.options(
+            "/health",
+            headers={
+                "Origin": "https://evil.example.com",
+                "Access-Control-Request-Method": "GET",
+            },
+        )
+        assert response.headers.get("access-control-allow-origin") is None
+
+
+class TestHEADMethod:
+    """Tests for HEAD method behavior.
+
+    Starlette 1.0 does NOT auto-handle HEAD for GET routes — HEAD returns 405.
+    HTTP semantics still apply: HEAD responses have no body regardless of status.
+    """
+
+    def test_head_health_returns_405(self, client: TestClient) -> None:
+        """HEAD /health returns 405: Starlette 1.0 does not auto-register HEAD for GET routes."""
+        response = client.head("/health")
+        assert response.status_code == 405
+
+    def test_head_health_response_has_no_body(self, client: TestClient) -> None:
+        """HEAD /health response body is empty per HTTP HEAD semantics, even for 405."""
+        response = client.head("/health")
+        assert response.content == b""
+
+    def test_head_api_version_returns_405(self, client: TestClient) -> None:
+        """HEAD /api/version returns 405."""
+        response = client.head("/api/version")
+        assert response.status_code == 405
+
+    def test_head_api_hello_returns_405(self, client: TestClient) -> None:
+        """HEAD /api/hello returns 405."""
+        response = client.head("/api/hello")
+        assert response.status_code == 405

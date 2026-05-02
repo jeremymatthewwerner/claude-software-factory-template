@@ -120,7 +120,35 @@ Documents test coverage, test descriptions, and quality improvements.
 | `test_hello_name_responses_are_independent` | Two POST /api/hello calls with different names return fully independent responses with no cross-contamination |
 | `test_concurrent_hello_posts_are_independent` | Three concurrent async POST /api/hello calls each receive only their own name in the response (catches shared mutable state) |
 
-**Coverage:** 100% (36/36 statements, 58 tests)
+### `TestPATCHMethodNotAllowed`
+| Test | Description |
+|------|-------------|
+| `test_patch_health_returns_405` | PATCH /health returns 405 (only DELETE and PUT were previously covered for this endpoint) |
+| `test_patch_api_version_returns_405` | PATCH /api/version returns 405 |
+| `test_patch_api_hello_returns_405` | PATCH /api/hello returns 405 (only GET and POST are defined) |
+
+### `TestNotFoundRoutes`
+| Test | Description |
+|------|-------------|
+| `test_unknown_api_route_returns_404` | GET to an undefined route under /api/ returns 404 |
+| `test_unknown_route_404_response_has_detail_key` | FastAPI 404 response includes a JSON body with a `detail` key |
+| `test_root_path_returns_404` | GET / returns 404 since no route is registered at the root |
+
+### `TestCORSDisallowedOrigin`
+| Test | Description |
+|------|-------------|
+| `test_cors_get_does_not_expose_allow_origin_for_disallowed_origin` | GET /health from an origin not in the allowlist does NOT receive the Access-Control-Allow-Origin header (security boundary) |
+| `test_cors_preflight_does_not_expose_allow_origin_for_disallowed_origin` | OPTIONS preflight from a disallowed origin does NOT expose Access-Control-Allow-Origin |
+
+### `TestHEADMethod`
+| Test | Description |
+|------|-------------|
+| `test_head_health_returns_405` | HEAD /health returns 405 — Starlette 1.0 does NOT auto-register HEAD for GET routes (documents potential gotcha for clients expecting auto-HEAD) |
+| `test_head_health_response_has_no_body` | HEAD /health response body is empty even for 405 (HTTP HEAD semantics require no body regardless of status) |
+| `test_head_api_version_returns_405` | HEAD /api/version returns 405 |
+| `test_head_api_hello_returns_405` | HEAD /api/hello returns 405 |
+
+**Coverage:** 100% (36/36 statements, 97 tests)
 
 ---
 
@@ -191,7 +219,27 @@ Documents test coverage, test descriptions, and quality improvements.
 | `submits the form on Enter key in the name input` | Submitting the form element (keyboard Enter) calls POST /api/hello and shows the greeting |
 | `sends the correct JSON body in POST /api/hello` | POST /api/hello is called with `{"name": "..."}` as the JSON body, verifying correct request construction |
 
-**Coverage:** 100% statements, 100% branches, 100% functions, 100% lines (38 tests)
+**Coverage:** 100% statements, 100% branches, 100% functions, 100% lines (46 tests)
+
+### Mid-Sequence API Failure Edge Cases (added 2026-05-02)
+| Test | Description |
+|------|-------------|
+| `shows unhealthy when version fetch fails after health succeeds` | If /health OK but /api/version rejects, the catch block runs and shows Disconnected — tests the mid-sequence failure path not covered by the health-only failure tests |
+| `shows unhealthy when hello GET fetch fails after health and version succeed` | If /health and /api/version OK but GET /api/hello rejects, shows Disconnected — tests the third position in the init sequence failing |
+
+### Form State Edge Cases (added 2026-05-02)
+| Test | Description |
+|------|-------------|
+| `name input retains value after successful greeting` | After a successful POST, the name input retains its typed value (component does not clear it) |
+| `name input retains value after a failed submission` | After a failed POST, the name input retains its typed value |
+| `second submission overwrites previous greeting` | Submitting a second time replaces the first greeting with the new one (state is replaced, not accumulated) |
+| `error message is replaced by successful greeting on retry` | After an error, a successful retry replaces the error message with the greeting |
+
+### Version Badge Edge Cases (added 2026-05-02)
+| Test | Description |
+|------|-------------|
+| `does not show version badge when version field is absent from version response` | If /api/version returns JSON without a `version` key, `versionData.version` is undefined (falsy) and the version badge is not rendered |
+| `does not show version badge when version field is an empty string` | If `version` is an empty string (falsy), the `{apiStatus.version && ...}` conditional is false and the badge is hidden |
 
 ### API Contract Integration Tests (added 2026-04-29)
 | Test | Description |
@@ -274,6 +322,22 @@ Tests for `RepositoryStatusManager` covering repo name extraction, emoji selecti
 ---
 
 ## Refactoring History
+
+### 2026-05-02 — QA Agent: edge-cases session (issue #165)
+**Edge case tests added (coverage maintained at 100%; tests improve behavioral confidence in untested scenarios):**
+
+**Backend — new test classes in `backend/tests/test_main.py` (12 tests):**
+- `TestPATCHMethodNotAllowed`: 3 tests verifying PATCH returns 405 on /health, /api/version, and /api/hello (completes method coverage alongside existing DELETE/PUT tests)
+- `TestNotFoundRoutes`: 3 tests verifying unknown routes return 404 with a JSON body containing a `detail` key
+- `TestCORSDisallowedOrigin`: 2 tests verifying that GET requests and OPTIONS preflights from origins NOT in the allowlist do NOT receive the Access-Control-Allow-Origin header (security boundary)
+- `TestHEADMethod`: 4 tests documenting that Starlette 1.0 returns 405 for HEAD on GET-only routes (no auto-HEAD support); also verifies HEAD responses have no body per HTTP semantics
+
+**Frontend — new describe blocks in `frontend/__tests__/page.test.tsx` (8 tests):**
+- `mid-sequence API failure edge cases`: 2 tests — version fetch fails after health OK (catch block exercised mid-sequence), hello GET fails after health+version OK (third init call failing)
+- `form state edge cases`: 4 tests — input retains value after success, input retains value after error, second submission replaces first greeting, error replaced by successful retry
+- `version badge edge cases`: 2 tests — version badge absent when version field missing from response (undefined is falsy), version badge absent when version is empty string (also falsy)
+
+**Coverage change:** 100% → 100% (maintained); backend 85 tests → 97 tests; frontend 38 tests → 46 tests
 
 ### 2026-04-29 — QA Agent: integration-gaps session (issue #156)
 **Integration gap tests added (both backend and frontend at 100% unit coverage; this session adds integration layer):**
