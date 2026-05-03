@@ -927,4 +927,64 @@ describe('Home Page', () => {
       expect(screen.queryByText('Version')).not.toBeInTheDocument();
     });
   });
+
+  describe('regression-prevention', () => {
+    it('fetches from the correct full URLs on mount', async () => {
+      // Pins the exact endpoint paths so a rename (/health → /api/health,
+      // /api/hello → /api/greet, etc.) is caught immediately.
+      mockFetch(HEALTHY_RESPONSES);
+      render(<Home />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Connected')).toBeInTheDocument();
+      });
+
+      const calledUrls = (global.fetch as jest.Mock).mock.calls.map(
+        (c: [string, ...unknown[]]) => c[0]
+      );
+      expect(calledUrls).toContain('http://localhost:8000/health');
+      expect(calledUrls).toContain('http://localhost:8000/api/version');
+      expect(calledUrls).toContain('http://localhost:8000/api/hello');
+    });
+
+    it('POST /api/hello is called with the correct full URL', async () => {
+      // Ensures the submit handler uses the same base URL and path as the
+      // init sequence — catches a copy-paste typo in the POST URL.
+      mockFetch({ ...HEALTHY_RESPONSES, '/api/hello': { message: 'Hello, Alice!' } });
+      render(<Home />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Connected')).toBeInTheDocument();
+      });
+
+      const input = screen.getByPlaceholderText('Enter your name');
+      fireEvent.change(input, { target: { value: 'Alice' } });
+      fireEvent.click(screen.getByRole('button', { name: /say hello/i }));
+
+      await waitFor(() => {
+        expect(screen.getByText('Hello, Alice!')).toBeInTheDocument();
+      });
+
+      const postCalls = (global.fetch as jest.Mock).mock.calls.filter(
+        (c: [string, RequestInit]) => c[1]?.method === 'POST'
+      );
+      expect(postCalls).toHaveLength(1);
+      expect(postCalls[0][0]).toBe('http://localhost:8000/api/hello');
+    });
+
+    it('every fetch on mount uses the same base URL (no mixed origins)', async () => {
+      // Guards against one call accidentally using a different host or protocol.
+      mockFetch(HEALTHY_RESPONSES);
+      render(<Home />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Connected')).toBeInTheDocument();
+      });
+
+      const calls = (global.fetch as jest.Mock).mock.calls as [string, ...unknown[]][];
+      calls.forEach(([url]) => {
+        expect(url).toMatch(/^http:\/\/localhost:8000\//);
+      });
+    });
+  });
 });
