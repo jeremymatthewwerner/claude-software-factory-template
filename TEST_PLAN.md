@@ -148,7 +148,16 @@ Documents test coverage, test descriptions, and quality improvements.
 | `test_head_api_version_returns_405` | HEAD /api/version returns 405 |
 | `test_head_api_hello_returns_405` | HEAD /api/hello returns 405 |
 
-**Coverage:** 100% (36/36 statements, 97 tests)
+### `TestRegressionMessageFormat`
+| Test | Description |
+|------|-------------|
+| `test_get_hello_exact_message` | GET /api/hello message is exactly "Hello, World! Welcome to your Software Factory." — pins the full string so a template change is caught immediately |
+| `test_post_hello_exact_message_format` | POST /api/hello with name "Alice" returns exactly "Hello, Alice! Welcome to your Software Factory." — pins the surrounding template text |
+| `test_version_environment_is_development` | GET /api/version environment field equals "development" — catches a hard-coded "staging" or "production" slip (field presence tested elsewhere) |
+| `test_openapi_title_is_software_factory_api` | OpenAPI title is exactly "Software Factory API" — prevents accidental renames propagating to generated clients |
+| `test_openapi_version_matches_app_version` | OpenAPI version matches `__version__` — ensures the FastAPI `version=__version__` wiring is never removed or overridden |
+
+**Coverage:** 100% (36/36 statements, 102 tests)
 
 ---
 
@@ -219,7 +228,7 @@ Documents test coverage, test descriptions, and quality improvements.
 | `submits the form on Enter key in the name input` | Submitting the form element (keyboard Enter) calls POST /api/hello and shows the greeting |
 | `sends the correct JSON body in POST /api/hello` | POST /api/hello is called with `{"name": "..."}` as the JSON body, verifying correct request construction |
 
-**Coverage:** 100% statements, 100% branches, 100% functions, 100% lines (46 tests)
+**Coverage:** 100% statements, 100% branches, 100% functions, 100% lines (49 tests)
 
 ### Mid-Sequence API Failure Edge Cases (added 2026-05-02)
 | Test | Description |
@@ -240,6 +249,13 @@ Documents test coverage, test descriptions, and quality improvements.
 |------|-------------|
 | `does not show version badge when version field is absent from version response` | If /api/version returns JSON without a `version` key, `versionData.version` is undefined (falsy) and the version badge is not rendered |
 | `does not show version badge when version field is an empty string` | If `version` is an empty string (falsy), the `{apiStatus.version && ...}` conditional is false and the badge is hidden |
+
+### Regression-Prevention Tests (added 2026-05-03)
+| Test | Description |
+|------|-------------|
+| `fetches from the correct full URLs on mount` | Verifies that the three mount-time fetches use exactly `http://localhost:8000/health`, `http://localhost:8000/api/version`, and `http://localhost:8000/api/hello` — catches endpoint path renames silently breaking the init sequence |
+| `POST /api/hello is called with the correct full URL` | Verifies the form submit handler POSTs to `http://localhost:8000/api/hello` — catches a copy-paste typo in the POST URL that would break greetings while leaving the init sequence healthy |
+| `every fetch on mount uses the same base URL (no mixed origins)` | Verifies that all mount-time fetch calls start with `http://localhost:8000/` — guards against one call accidentally using a different host or protocol |
 
 ### API Contract Integration Tests (added 2026-04-29)
 | Test | Description |
@@ -322,6 +338,23 @@ Tests for `RepositoryStatusManager` covering repo name extraction, emoji selecti
 ---
 
 ## Refactoring History
+
+### 2026-05-03 — QA Agent: regression-prevention session (issue #168)
+**Regression-prevention tests added (both backend and frontend at 100% coverage; this session pins exact content that existing tests only check at substring/presence level):**
+
+**Backend — new `TestRegressionMessageFormat` class in `backend/tests/test_main.py` (5 tests):**
+- `test_get_hello_exact_message`: Pins the exact GET /api/hello message "Hello, World! Welcome to your Software Factory." — existing test only checks `"Hello" in message` and `"World" in message`
+- `test_post_hello_exact_message_format`: Pins the exact POST /api/hello template "Hello, {name}! Welcome to your Software Factory." — existing test only checks name is present in message
+- `test_version_environment_is_development`: Pins the environment value to "development" — existing test only checks the field exists (not its value)
+- `test_openapi_title_is_software_factory_api`: Pins the OpenAPI title "Software Factory API" — no prior test verified this
+- `test_openapi_version_matches_app_version`: Verifies OpenAPI version == `__version__` — no prior test verified the FastAPI `version=__version__` wiring
+
+**Frontend — new `regression-prevention` describe block in `frontend/__tests__/page.test.tsx` (3 tests):**
+- `fetches from the correct full URLs on mount`: Verifies the three init fetches use `/health`, `/api/version`, `/api/hello` paths — existing tests rely on mock matching these paths but never assert the URLs explicitly
+- `POST /api/hello is called with the correct full URL`: Verifies the submit handler POSTs to the correct URL — catches a copy-paste typo in the POST URL
+- `every fetch on mount uses the same base URL (no mixed origins)`: Verifies all mount-time fetches start with `http://localhost:8000/` — guards against one call accidentally using a different host
+
+**Coverage change:** 100% → 100% (maintained); backend 97 tests → 102 tests; frontend 46 tests → 49 tests
 
 ### 2026-05-02 — QA Agent: edge-cases session (issue #165)
 **Edge case tests added (coverage maintained at 100%; tests improve behavioral confidence in untested scenarios):**

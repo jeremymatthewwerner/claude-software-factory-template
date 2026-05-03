@@ -584,3 +584,57 @@ class TestHEADMethod:
         """HEAD /api/hello returns 405."""
         response = client.head("/api/hello")
         assert response.status_code == 405
+
+
+class TestRegressionMessageFormat:
+    """Regression tests locking in the exact API message content.
+
+    These catch unintentional changes to message strings, the API name, the
+    environment label, and OpenAPI metadata — all things that existing tests
+    only check at the substring/presence level.
+    """
+
+    def test_get_hello_exact_message(self, client: TestClient) -> None:
+        """GET /api/hello message is exactly the expected string.
+
+        Pins the full greeting so a template change (e.g. dropping 'Welcome to
+        your Software Factory.') is detected immediately.
+        """
+        response = client.get("/api/hello")
+        assert response.json()["message"] == "Hello, World! Welcome to your Software Factory."
+
+    def test_post_hello_exact_message_format(self, client: TestClient) -> None:
+        """POST /api/hello message follows 'Hello, {name}! Welcome to your Software Factory.'
+
+        Pins the surrounding template text so a refactor that changes the prefix
+        or suffix (e.g. 'Hi, Alice!' or 'Greetings Alice') is detected.
+        """
+        response = client.post("/api/hello", json={"name": "Alice"})
+        assert response.json()["message"] == "Hello, Alice! Welcome to your Software Factory."
+
+    def test_version_environment_is_development(self, client: TestClient) -> None:
+        """GET /api/version environment field is 'development'.
+
+        The field presence is tested elsewhere; this pins the VALUE so that a
+        hard-coded 'production' or 'staging' slip doesn't silently pass.
+        """
+        response = client.get("/api/version")
+        assert response.json()["environment"] == "development"
+
+    def test_openapi_title_is_software_factory_api(self, client: TestClient) -> None:
+        """OpenAPI title is 'Software Factory API'.
+
+        Prevents accidental renames from propagating to generated clients and
+        public docs before anyone notices.
+        """
+        response = client.get("/openapi.json")
+        assert response.json()["info"]["title"] == "Software Factory API"
+
+    def test_openapi_version_matches_app_version(self, client: TestClient) -> None:
+        """OpenAPI version matches app.__version__ (no drift allowed).
+
+        FastAPI is configured with version=__version__; this test ensures the
+        wiring is never accidentally removed or overridden.
+        """
+        response = client.get("/openapi.json")
+        assert response.json()["info"]["version"] == __version__
