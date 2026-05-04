@@ -339,6 +339,27 @@ Tests for `RepositoryStatusManager` covering repo name extraction, emoji selecti
 
 ## Refactoring History
 
+### 2026-05-04 — QA Agent: coverage-sprint session (issue #172)
+**Security and contract tests added (both backend and frontend at 100% coverage; this session adds behavioral confidence for adversarial inputs and security-relevant properties):**
+
+**Backend — two new classes in `backend/tests/test_main.py` (6 tests):**
+
+`TestSecurityInputs` (4 tests):
+- `test_sql_injection_in_name_returned_verbatim`: SQL injection string `'; DROP TABLE users; --` is echoed back in JSON unchanged — documents the echo contract and confirms no unintended sanitisation
+- `test_emoji_in_name_round_trips_correctly`: Emoji (🎉🤖) in name are correctly serialised/deserialised through JSON; catches encoding regressions
+- `test_rtl_unicode_in_name_round_trips_correctly`: Arabic right-to-left text returned correctly; guards against codec issues in HTTP body handling
+- `test_zero_width_chars_in_name_returned_verbatim`: Zero-width Unicode characters (U+200B, U+200C) echo verbatim; edge case for invisible characters that could cause display discrepancies
+
+`TestContentTypeNegotiation` (2 tests):
+- `test_post_hello_with_form_encoded_body_returns_422`: `application/x-www-form-urlencoded` body returns 422 — FastAPI only parses JSON; documents the API is JSON-only
+- `test_post_hello_with_text_plain_body_returns_422`: `text/plain` body returns 422 for the same reason
+
+**Frontend — new `security` describe block in `frontend/__tests__/page.test.tsx` (2 tests):**
+- `renders XSS payload in greeting as escaped text, not as a DOM script element`: If the backend returns a message containing `<script>alert('xss')</script>`, React's JSX renders it as an escaped text node inside a `<p>` element — verifies the element tagName is `P`, not `SCRIPT`
+- `external links have rel="noopener noreferrer" to prevent tab-nabbing`: All `target="_blank"` anchor elements must have both `noopener` and `noreferrer` in their `rel` attribute to prevent the opener from navigating the parent tab
+
+**Coverage change:** 100% → 100% (maintained); backend 102 tests → 108 tests; frontend 49 tests → 51 tests
+
 ### 2026-05-03 — QA Agent: regression-prevention session (issue #168)
 **Regression-prevention tests added (both backend and frontend at 100% coverage; this session pins exact content that existing tests only check at substring/presence level):**
 
