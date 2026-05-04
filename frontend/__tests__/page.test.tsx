@@ -987,4 +987,56 @@ describe('Home Page', () => {
       });
     });
   });
+
+  describe('security', () => {
+    it('renders XSS payload in greeting as escaped text, not as a DOM script element', async () => {
+      // The backend echoes the name verbatim in the greeting JSON.  If a
+      // response message contains a <script> tag, React's JSX must render it as
+      // escaped text — not inject it as a live DOM element.
+      const xssMessage = "<script>alert('xss')</script>";
+      (global.fetch as jest.Mock)
+        .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ status: 'healthy' }) })
+        .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ version: '0.1.0' }) })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve({ message: 'Hello, World!' }),
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve({ message: xssMessage }),
+        });
+
+      render(<Home />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Connected')).toBeInTheDocument();
+      });
+
+      const input = screen.getByPlaceholderText('Enter your name');
+      fireEvent.change(input, { target: { value: 'Alice' } });
+      fireEvent.click(screen.getByRole('button', { name: /say hello/i }));
+
+      await waitFor(() => {
+        // React renders the string as a text node inside a <p> element — not as a script tag.
+        const greetingEl = screen.getByText(xssMessage);
+        expect(greetingEl).toBeInTheDocument();
+        expect(greetingEl.tagName).toBe('P');
+      });
+    });
+
+    it('external links have rel="noopener noreferrer" to prevent tab-nabbing', () => {
+      // target="_blank" links can be exploited (tab-nabbing) unless
+      // rel="noopener noreferrer" is present.
+      mockFetch(HEALTHY_RESPONSES);
+      render(<Home />);
+
+      const externalLinks = document.querySelectorAll('a[target="_blank"]');
+      expect(externalLinks.length).toBeGreaterThan(0);
+      externalLinks.forEach((link) => {
+        const rel = link.getAttribute('rel') ?? '';
+        expect(rel).toContain('noopener');
+        expect(rel).toContain('noreferrer');
+      });
+    });
+  });
 });

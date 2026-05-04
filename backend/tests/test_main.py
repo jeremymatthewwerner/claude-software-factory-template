@@ -638,3 +638,68 @@ class TestRegressionMessageFormat:
         """
         response = client.get("/openapi.json")
         assert response.json()["info"]["version"] == __version__
+
+
+class TestSecurityInputs:
+    """Tests verifying the API handles adversarial name inputs correctly.
+
+    These tests complement TestHelloNameEdgeCases by focusing on inputs that
+    carry security significance — injection patterns, non-ASCII encodings, and
+    binary-adjacent strings.  The endpoint echoes names verbatim inside JSON, so
+    no server-side sanitisation is expected; the test documents that contract.
+    """
+
+    def test_sql_injection_in_name_returned_verbatim(self, client: TestClient) -> None:
+        """SQL injection pattern in name echoed back unchanged (no DB, so no injection risk)."""
+        payload = "'; DROP TABLE users; --"
+        response = client.post("/api/hello", json={"name": payload})
+        assert response.status_code == 200
+        assert payload in response.json()["message"]
+
+    def test_emoji_in_name_round_trips_correctly(self, client: TestClient) -> None:
+        """Emoji characters in name are serialised and deserialised through JSON correctly."""
+        payload = "Alice \U0001f389\U0001f916"  # 🎉🤖
+        response = client.post("/api/hello", json={"name": payload})
+        assert response.status_code == 200
+        assert payload in response.json()["message"]
+
+    def test_rtl_unicode_in_name_round_trips_correctly(self, client: TestClient) -> None:
+        """Right-to-left Unicode text (Arabic) in name is returned correctly."""
+        payload = "مرحبا"  # مرحبا (Arabic "Hello")
+        response = client.post("/api/hello", json={"name": payload})
+        assert response.status_code == 200
+        assert payload in response.json()["message"]
+
+    def test_zero_width_chars_in_name_returned_verbatim(self, client: TestClient) -> None:
+        """Zero-width joiner and non-joiner characters in name are echoed back unchanged."""
+        payload = "Alice​‌Bob"  # zero-width space + zero-width non-joiner
+        response = client.post("/api/hello", json={"name": payload})
+        assert response.status_code == 200
+        assert payload in response.json()["message"]
+
+
+class TestContentTypeNegotiation:
+    """Tests verifying that the API correctly rejects non-JSON request bodies.
+
+    FastAPI parses POST body as JSON when a Pydantic model is declared.  Clients
+    sending form-encoded or plain-text bodies receive 422 because those payloads
+    are not valid JSON, ensuring the API contract is strictly JSON-only.
+    """
+
+    def test_post_hello_with_form_encoded_body_returns_422(self, client: TestClient) -> None:
+        """POST with application/x-www-form-urlencoded body returns 422 (expects JSON)."""
+        response = client.post(
+            "/api/hello",
+            content=b"name=Alice",
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        assert response.status_code == 422
+
+    def test_post_hello_with_text_plain_body_returns_422(self, client: TestClient) -> None:
+        """POST with text/plain body returns 422 (expects JSON)."""
+        response = client.post(
+            "/api/hello",
+            content=b"Alice",
+            headers={"Content-Type": "text/plain"},
+        )
+        assert response.status_code == 422
