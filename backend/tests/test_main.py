@@ -464,6 +464,24 @@ class TestTimestampOrdering:
         ts = datetime.fromisoformat(response.json()["timestamp"])
         assert before <= ts <= after, f"Timestamp {ts} not in [{before}, {after}]"
 
+    def test_health_timestamps_monotone_across_10_sequential_calls(
+        self, client: TestClient
+    ) -> None:
+        """Ten sequential /health calls return a strictly non-decreasing timestamp sequence.
+
+        Extends the two-call ordering test to a longer run so that any cached or
+        coarsely-rounded timestamp implementation fails quickly rather than occasionally.
+        """
+        from datetime import datetime
+
+        timestamps = [
+            datetime.fromisoformat(client.get("/health").json()["timestamp"]) for _ in range(10)
+        ]
+        for i in range(1, len(timestamps)):
+            assert timestamps[i] >= timestamps[i - 1], (
+                f"Timestamp regression at position {i}: {timestamps[i]} < {timestamps[i - 1]}"
+            )
+
 
 class TestRequestIsolation:
     """Flakiness prevention: requests must not share mutable state."""
@@ -676,6 +694,48 @@ class TestSecurityInputs:
         response = client.post("/api/hello", json={"name": payload})
         assert response.status_code == 200
         assert payload in response.json()["message"]
+
+
+class TestLargeScaleConcurrency:
+    """Stress-test the async server under a burst of concurrent requests.
+
+    The smaller concurrent tests (3 requests in TestRegressionAsyncClient and
+    TestRequestIsolation) catch obvious race conditions.  These 20-request
+    variants amplify any resource exhaustion, shared-state, or scheduling
+    non-determinism that only manifests under higher load.
+    """
+
+    async def test_20_concurrent_health_requests_all_return_200(
+        self, async_client: AsyncClient
+    ) -> None:
+        """20 simultaneous GET /health requests all return 200 with healthy status."""
+        responses = await asyncio.gather(*[async_client.get("/health") for _ in range(20)])
+        for i, resp in enumerate(responses):
+            assert resp.status_code == 200, f"Request {i} returned {resp.status_code}"
+            assert resp.json()["status"] == "healthy", f"Request {i} not healthy"
+
+    async def test_20_concurrent_hello_posts_have_no_name_crosscontamination(
+        self, async_client: AsyncClient
+    ) -> None:
+        """20 concurrent POST /api/hello calls each receive only their own name.
+
+        Each response must contain exactly its own submitted name and must not
+        contain any of the other 19 names — catching any global mutable state
+        that could cause responses to bleed across concurrent handlers.
+        """
+        names = [f"Stress_{i:02d}" for i in range(20)]
+        responses = await asyncio.gather(
+            *[async_client.post("/api/hello", json={"name": name}) for name in names]
+        )
+        for i, resp in enumerate(responses):
+            assert resp.status_code == 200, f"Request {i} returned {resp.status_code}"
+            msg = resp.json()["message"]
+            assert names[i] in msg, f"Response {i} missing own name {names[i]!r}"
+            for j, other in enumerate(names):
+                if i != j:
+                    assert other not in msg, (
+                        f"Name {other!r} from request {j} leaked into response {i}"
+                    )
 
 
 class TestContentTypeNegotiation:

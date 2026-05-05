@@ -113,12 +113,19 @@ Documents test coverage, test descriptions, and quality improvements.
 | `test_health_timestamps_are_non_decreasing` | Two successive /health calls return timestamps where the second is not earlier than the first (catches clock drift or response caching) |
 | `test_hello_get_timestamps_are_non_decreasing` | Two successive GET /api/hello calls return non-decreasing timestamps |
 | `test_hello_post_timestamp_within_request_window` | POST /api/hello timestamp falls strictly between the request start time and response receipt time (catches stale clocks) |
+| `test_health_timestamps_monotone_across_10_sequential_calls` | Ten sequential /health calls produce a non-decreasing timestamp sequence — extends the two-call ordering test to catch rare timestamp caching or coarse-granularity regressions that the two-call test might miss |
 
 ### `TestRequestIsolation`
 | Test | Description |
 |------|-------------|
 | `test_hello_name_responses_are_independent` | Two POST /api/hello calls with different names return fully independent responses with no cross-contamination |
 | `test_concurrent_hello_posts_are_independent` | Three concurrent async POST /api/hello calls each receive only their own name in the response (catches shared mutable state) |
+
+### `TestLargeScaleConcurrency`
+| Test | Description |
+|------|-------------|
+| `test_20_concurrent_health_requests_all_return_200` | 20 simultaneous GET /health requests all return 200 with healthy status — amplifies any resource exhaustion or scheduling non-determinism that only manifests under higher load than the 3-request concurrent tests |
+| `test_20_concurrent_hello_posts_have_no_name_crosscontamination` | 20 concurrent POST /api/hello calls each receive only their own name — at this scale, any global mutable state that could cause cross-contamination becomes far more likely to trigger |
 
 ### `TestPATCHMethodNotAllowed`
 | Test | Description |
@@ -157,7 +164,7 @@ Documents test coverage, test descriptions, and quality improvements.
 | `test_openapi_title_is_software_factory_api` | OpenAPI title is exactly "Software Factory API" — prevents accidental renames propagating to generated clients |
 | `test_openapi_version_matches_app_version` | OpenAPI version matches `__version__` — ensures the FastAPI `version=__version__` wiring is never removed or overridden |
 
-**Coverage:** 100% (36/36 statements, 102 tests)
+**Coverage:** 100% (36/36 statements, 111 tests)
 
 ---
 
@@ -200,6 +207,11 @@ Documents test coverage, test descriptions, and quality improvements.
 |------|-------------|
 | `renders footer with technology links` | Footer contains Next.js, FastAPI, and Claude links |
 
+### Test Isolation Guardrail
+| Test | Description |
+|------|-------------|
+| `fetch mock has no prior calls before this test begins` | Verifies `jest.clearAllMocks()` in the outer `beforeEach` resets the mock call history before every test — if this ever fails, mock call-count assertions in subsequent tests will produce misleading results |
+
 ### Edge Cases
 | Test | Description |
 |------|-------------|
@@ -211,6 +223,7 @@ Documents test coverage, test descriptions, and quality improvements.
 | `does not show version badge while API is checking` | Version section hidden during initial API check |
 | `shows loading state during form submission` | Button shows "Sending..." and is disabled while POST is in-flight |
 | `renders the View Source card` | View Source card is present in the info cards section |
+| `unmounts cleanly before fetch resolves without React state update warnings` | Mounts the component with perpetually-pending fetches, then unmounts immediately — verifies no `useEffect` state updates fire on an unmounted instance, which would log React warnings and could cause test interference |
 
 ### Flakiness Prevention
 | Test | Description |
@@ -228,7 +241,7 @@ Documents test coverage, test descriptions, and quality improvements.
 | `submits the form on Enter key in the name input` | Submitting the form element (keyboard Enter) calls POST /api/hello and shows the greeting |
 | `sends the correct JSON body in POST /api/hello` | POST /api/hello is called with `{"name": "..."}` as the JSON body, verifying correct request construction |
 
-**Coverage:** 100% statements, 100% branches, 100% functions, 100% lines (49 tests)
+**Coverage:** 100% statements, 100% branches, 100% functions, 100% lines (53 tests)
 
 ### Mid-Sequence API Failure Edge Cases (added 2026-05-02)
 | Test | Description |
@@ -317,7 +330,7 @@ Documents test coverage, test descriptions, and quality improvements.
 | `test_null_name_returns_422` | `name: null` returns 422 |
 | `test_integer_name_returns_422` | `name: 42` returns 422 |
 
-**Backend total:** 85 tests (58 unit + 27 integration), 100% coverage
+**Backend total:** 111 tests (84 unit + 27 integration), 100% coverage
 
 ---
 
@@ -338,6 +351,24 @@ Tests for `RepositoryStatusManager` covering repo name extraction, emoji selecti
 ---
 
 ## Refactoring History
+
+### 2026-05-05 — QA Agent: flaky-hunt session (issue #176)
+**No flaky tests found across 10 runs (5 default order + 5 randomized seed). Suite is stable. New hardening tests added for latent flakiness risks:**
+
+**Backend — new `TestLargeScaleConcurrency` class + extended `TestTimestampOrdering` (3 tests):**
+
+`TestLargeScaleConcurrency` (2 async tests):
+- `test_20_concurrent_health_requests_all_return_200`: 20 simultaneous GET /health requests all return 200. Amplifies any resource exhaustion or scheduling non-determinism invisible at the 3-request scale used by existing concurrent tests.
+- `test_20_concurrent_hello_posts_have_no_name_crosscontamination`: 20 concurrent POST /api/hello calls each receive only their own name with no cross-contamination. At this scale, any global mutable state causing response leakage becomes far more likely to trigger than at 3 requests.
+
+`TestTimestampOrdering` (1 new test):
+- `test_health_timestamps_monotone_across_10_sequential_calls`: 10 sequential /health calls produce a non-decreasing timestamp sequence. Extends the existing 2-call ordering test to catch cached or coarsely-rounded timestamp implementations that the 2-call test might miss.
+
+**Frontend — new `test isolation guardrail` describe block + 1 edge case test (2 tests):**
+- `fetch mock has no prior calls before this test begins`: Verifies `jest.clearAllMocks()` in the outer `beforeEach` resets mock call history before every test. If this ever fails, other mock-count assertions will produce misleading results silently.
+- `unmounts cleanly before fetch resolves without React state update warnings`: Mounts the component with perpetually-pending fetches, then unmounts immediately. Verifies no `useEffect` state updates fire on an unmounted instance (which would log React warnings and could cause test pollution).
+
+**Coverage change:** 100% → 100% (maintained); backend 108 tests → 111 tests; frontend 51 tests → 53 tests
 
 ### 2026-05-04 — QA Agent: coverage-sprint session (issue #172)
 **Security and contract tests added (both backend and frontend at 100% coverage; this session adds behavioral confidence for adversarial inputs and security-relevant properties):**
