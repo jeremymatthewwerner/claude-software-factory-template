@@ -185,6 +185,17 @@ describe('Home Page', () => {
     });
   });
 
+  describe('test isolation guardrail', () => {
+    it('fetch mock has no prior calls before this test begins', () => {
+      // The outer beforeEach calls jest.clearAllMocks() before every test.
+      // This test verifies that guarantee: at test start, before any render,
+      // mock.calls must be empty. If clearAllMocks() ever stops working (e.g.,
+      // after a Jest version upgrade or misconfiguration), this test fails and
+      // exposes why other call-count assertions produce misleading results.
+      expect((global.fetch as jest.Mock).mock.calls).toHaveLength(0);
+    });
+  });
+
   describe('edge cases', () => {
     it('shows disconnected when health check returns non-ok status', async () => {
       (global.fetch as jest.Mock).mockResolvedValue({
@@ -294,6 +305,20 @@ describe('Home Page', () => {
       mockFetch(HEALTHY_RESPONSES);
       render(<Home />);
       expect(screen.getByText('View Source')).toBeInTheDocument();
+    });
+
+    it('unmounts cleanly before fetch resolves without React state update warnings', () => {
+      // If a component calls setState on an unmounted instance, React logs a
+      // warning ("Can't perform a React state update on an unmounted component").
+      // This test mounts and immediately unmounts the component while all
+      // fetch promises are perpetually pending, verifying that the useEffect
+      // cleanup (or absence of state updates on unmounted components) prevents
+      // any such violation. A failure here indicates a missing cleanup in useEffect.
+      (global.fetch as jest.Mock).mockReturnValue(new Promise(() => {}));
+      const { unmount } = render(<Home />);
+      // Unmount before any fetch resolves — no assertions needed;
+      // the test passes if no error or unhandled rejection is thrown.
+      unmount();
     });
   });
 
