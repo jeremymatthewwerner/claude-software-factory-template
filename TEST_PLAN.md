@@ -330,7 +330,30 @@ Documents test coverage, test descriptions, and quality improvements.
 | `test_null_name_returns_422` | `name: null` returns 422 |
 | `test_integer_name_returns_422` | `name: 42` returns 422 |
 
-**Backend total:** 111 tests (84 unit + 27 integration), 100% coverage
+### `TestOpenAPISchemaContract`
+| Test | Description |
+|------|-------------|
+| `test_openapi_documents_all_defined_routes` | Every defined route+method (GET /health, GET /api/version, GET+POST /api/hello) appears in /openapi.json paths — catches routes accidentally hidden via include_in_schema=False or missed by FastAPI introspection |
+| `test_openapi_post_hello_request_body_requires_name_string` | OpenAPI POST /api/hello body schema marks `name` as required and declares its type as `string` — pins the contract consumed by frontend TypeScript types and SDK generators |
+| `test_openapi_health_response_schema_matches_actual_response` | OpenAPI HealthResponse fields equal the fields actually emitted by /health — catches drift if a field is added to the response but not the model (or vice versa) |
+| `test_openapi_version_response_schema_matches_actual_response` | OpenAPI VersionResponse fields equal the fields actually emitted by /api/version |
+| `test_openapi_get_hello_response_schema_matches_actual_response` | OpenAPI HelloResponse fields equal the fields actually emitted by GET /api/hello |
+| `test_openapi_post_hello_response_schema_matches_actual_response` | OpenAPI HelloResponse fields equal the fields actually emitted by POST /api/hello |
+
+### `TestCrossEndpointContract`
+| Test | Description |
+|------|-------------|
+| `test_all_success_responses_are_json` | All four 200 responses (/health, /api/version, GET+POST /api/hello) emit Content-Type: application/json — catches a future endpoint that mistakenly returns a non-JSON content-type |
+| `test_all_endpoint_timestamps_share_utc_iso8601_format` | Timestamps from /health, GET /api/hello, and POST /api/hello are all timezone-aware ISO 8601 with zero UTC offset — catches a future endpoint emitting a naive or non-UTC timestamp |
+| `test_all_4xx_responses_have_detail_key` | 404 (unknown route), 405 (wrong method on /health and /api/hello), and 422 (missing/invalid name) all include a top-level `detail` key — catches a custom handler that bypasses FastAPI's error envelope |
+
+### `TestFrontendInitSequenceCORS`
+| Test | Description |
+|------|-------------|
+| `test_init_sequence_all_responses_carry_cors_for_localhost_3000` | All three init endpoints (/health, /api/version, /api/hello) return Access-Control-Allow-Origin: http://localhost:3000 when the request includes that Origin — catches CORS misconfiguration on any single init endpoint that would freeze the frontend on "Checking..." |
+| `test_post_hello_response_carries_cors_for_localhost_3000` | POST /api/hello returns Access-Control-Allow-Origin for localhost:3000 — catches a regression where the form submission succeeds server-side but the browser blocks the response from JavaScript |
+
+**Backend total:** 122 tests (84 unit + 38 integration), 100% coverage
 
 ---
 
@@ -351,6 +374,27 @@ Tests for `RepositoryStatusManager` covering repo name extraction, emoji selecti
 ---
 
 ## Refactoring History
+
+### 2026-05-06 — QA Agent: integration-gaps session (issue #179)
+**Contract-level integration tests added (both backend and frontend at 100% coverage; this session targets API-wide contracts not previously validated):**
+
+**Backend — three new classes in `backend/tests/test_integration.py` (11 tests):**
+
+`TestOpenAPISchemaContract` (6 tests) — Catches drift between the OpenAPI schema and the actual response shapes. Without these, a field added/removed on either side silently desynchronises code generators, the `/docs` UI, and external SDKs:
+- `test_openapi_documents_all_defined_routes`: All four defined route+method combinations appear in /openapi.json
+- `test_openapi_post_hello_request_body_requires_name_string`: POST body schema pins `name` as required/string (frontend type + SDK contract)
+- `test_openapi_{health,version,get_hello,post_hello}_response_schema_matches_actual_response` (4 tests): For each endpoint, the OpenAPI component fields equal the actual response fields — catches drift in either direction
+
+`TestCrossEndpointContract` (3 tests) — Treats the API as a single contract; per-endpoint tests would not catch a new endpoint added without the conventions:
+- `test_all_success_responses_are_json`: All four 200 responses emit `application/json`
+- `test_all_endpoint_timestamps_share_utc_iso8601_format`: Timestamps from /health, GET /api/hello, POST /api/hello are all UTC ISO-8601 (timezone-aware, zero offset)
+- `test_all_4xx_responses_have_detail_key`: 404/405/422 responses across endpoints all include `detail`
+
+`TestFrontendInitSequenceCORS` (2 tests) — Combines the multi-call init flow with the real-browser Origin header (existing CORS tests check one endpoint at a time, existing workflow tests omit Origin):
+- `test_init_sequence_all_responses_carry_cors_for_localhost_3000`: All three init endpoints return `Access-Control-Allow-Origin: http://localhost:3000` — a single missing header would freeze the frontend on "Checking..."
+- `test_post_hello_response_carries_cors_for_localhost_3000`: POST response also carries the CORS header — catches a regression where submission succeeds server-side but the browser blocks the response
+
+**Coverage change:** 100% → 100% (maintained); backend 111 tests → 122 tests; frontend 53 tests (unchanged)
 
 ### 2026-05-05 — QA Agent: flaky-hunt session (issue #176)
 **No flaky tests found across 10 runs (5 default order + 5 randomized seed). Suite is stable. New hardening tests added for latent flakiness risks:**
