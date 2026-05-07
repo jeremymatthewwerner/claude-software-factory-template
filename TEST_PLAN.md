@@ -168,6 +168,46 @@ Documents test coverage, test descriptions, and quality improvements.
 
 ---
 
+## Backend Performance Tests (`backend/tests/test_performance.py`)
+
+Performance regression guards. Bounds are deliberately generous (10–100× typical observed latency) so they only fail on real regressions, not on noisy CI runners. These act as the perf side of an E2E suite for the e2e-performance focus.
+
+### `TestSingleCallLatency`
+| Test | Description |
+|------|-------------|
+| `test_health_responds_under_ceiling` | GET /health completes in under 500ms |
+| `test_version_responds_under_ceiling` | GET /api/version completes in under 500ms |
+| `test_hello_get_responds_under_ceiling` | GET /api/hello completes in under 500ms |
+| `test_hello_post_responds_under_ceiling` | POST /api/hello completes in under 500ms |
+
+### `TestInitSequenceLatency`
+| Test | Description |
+|------|-------------|
+| `test_full_init_sequence_under_ceiling` | Frontend init (health → version → hello GET) completes under 500ms total |
+| `test_init_sequence_then_post_under_one_second` | Init sequence followed by a user POST stays under 1s — full first-interaction budget |
+
+### `TestSustainedSequentialLoad`
+| Test | Description |
+|------|-------------|
+| `test_100_sequential_health_calls_under_ceiling` | 100 sequential /health calls complete in under 2s total |
+| `test_no_per_call_latency_drift_across_50_calls` | Last 10 of 50 sequential calls are not >10× slower than first 10 (drift guard) |
+| `test_30_sequential_posts_each_under_100ms` | Each of 30 sequential POSTs completes in <100ms — per-call regression guard |
+
+### `TestConcurrentThroughput`
+| Test | Description |
+|------|-------------|
+| `test_50_concurrent_health_under_ceiling` | 50 concurrent /health requests complete in under 1s total |
+| `test_30_concurrent_posts_return_distinct_names` | 30 concurrent POSTs each receive their own name back (no cross-contamination, <1s) |
+| `test_concurrent_not_slower_than_sequential_x2` | 30 concurrent calls finish faster than 2× sequential — catches accidental serialization of the event loop |
+
+### `TestLargePayloadPerformance`
+| Test | Description |
+|------|-------------|
+| `test_1kb_name_post_under_ceiling` | POST with 1KB name completes under 500ms |
+| `test_10kb_name_post_under_one_second` | POST with 10KB name completes under 1s — guards against quadratic blowup |
+
+---
+
 ## Frontend Tests (`frontend/__tests__/page.test.tsx`)
 
 ### Initial Render
@@ -279,6 +319,18 @@ Documents test coverage, test descriptions, and quality improvements.
 | `displays message from hello response (not timestamp field)` | Frontend reads only `helloData.message`; the `timestamp` field is not rendered as visible text |
 | `handles API responses with extra unexpected fields gracefully` | Frontend tolerates extra unknown fields (uptime, build, requestId, etc.) in all three API responses — validates forward compatibility |
 
+### Fetch Efficiency / e2e-performance (added 2026-05-07)
+| Test | Description |
+|------|-------------|
+| `makes exactly 3 fetch calls on mount (health, version, hello)` | The init useEffect issues exactly three fetches with the expected paths — guards against a regression that adds a redundant fetch |
+| `does not re-fetch when re-rendering with the same props` | Two `rerender()` calls do not re-trigger the init effect — guards against a missing/empty deps array regression |
+| `issues exactly one POST per submit click (no fetch storms)` | Submitting the form fires exactly one POST, not several — catches double-binding or duplicate handler regressions |
+| `rapid double-clicks during in-flight submit do not multiply POSTs` | Three rapid clicks while a submit is in flight result in one POST because the button is disabled during loading — verifies the loading-disabled contract |
+| `does not fetch when submit is clicked with empty/whitespace name` | Empty and whitespace-only names short-circuit `handleSubmit` via `!name.trim()` — guards against wasted requests |
+| `init sequence finishes within Jest waitFor default (1s)` | "Connected" reaches the DOM in under 1000ms — catches a regression that would otherwise impose a 1s tax on every test in this file |
+| `loading state clears after submit completes (no stuck "Sending...")` | Button label flips back from "Sending..." to "Say Hello" after the POST resolves — regression guard against a missing `finally` |
+| `makes init fetches without "undefined" segments (env var sanity)` | Every fetch URL begins with `http(s)://` and contains neither "undefined" nor "null" — guards against malformed URLs from a missing env var fallback |
+
 ---
 
 ## Backend Integration Tests (`backend/tests/test_integration.py`)
@@ -353,7 +405,7 @@ Documents test coverage, test descriptions, and quality improvements.
 | `test_init_sequence_all_responses_carry_cors_for_localhost_3000` | All three init endpoints (/health, /api/version, /api/hello) return Access-Control-Allow-Origin: http://localhost:3000 when the request includes that Origin — catches CORS misconfiguration on any single init endpoint that would freeze the frontend on "Checking..." |
 | `test_post_hello_response_carries_cors_for_localhost_3000` | POST /api/hello returns Access-Control-Allow-Origin for localhost:3000 — catches a regression where the form submission succeeds server-side but the browser blocks the response from JavaScript |
 
-**Backend total:** 122 tests (84 unit + 38 integration), 100% coverage
+**Backend total:** 136 tests (84 unit + 38 integration + 14 performance), 100% coverage
 
 ---
 
@@ -374,6 +426,33 @@ Tests for `RepositoryStatusManager` covering repo name extraction, emoji selecti
 ---
 
 ## Refactoring History
+
+### 2026-05-07 — QA Agent: e2e-performance session (issue #182)
+**Performance regression coverage added (both suites already at 100% line/branch; gap was performance, not coverage):**
+
+**Backend — new `backend/tests/test_performance.py` (5 classes, 14 tests):**
+
+`TestSingleCallLatency` (4 tests) — Each endpoint must respond well under 500ms. Bound is ~100× typical observed latency (~5ms), generous to avoid noise but tight enough to catch real regressions like a sync sleep accidentally added to a handler.
+
+`TestInitSequenceLatency` (2 tests) — The full frontend init sequence (health → version → hello GET) finishes under 500ms; sequence + first POST under 1s. Pins the user's first-interaction budget.
+
+`TestSustainedSequentialLoad` (3 tests) — 100 sequential /health calls under 2s; per-call latency drift across 50 sequential calls bounded; each of 30 sequential POSTs under 100ms. Catches state accumulation, leaks, and per-call slowdowns.
+
+`TestConcurrentThroughput` (3 tests) — 50 concurrent /health under 1s; 30 concurrent POSTs return distinct names (no cross-contamination); concurrent never slower than 2× sequential — the last bound catches the case where a synchronous lock accidentally serialises the event loop.
+
+`TestLargePayloadPerformance` (2 tests) — 1KB POST under 500ms; 10KB POST under 1s. Catches O(n²) regressions in JSON serialization or model validation.
+
+**Frontend — new `fetch efficiency (e2e-performance)` describe block in `frontend/__tests__/page.test.tsx` (8 tests):**
+
+- Exactly 3 fetches on mount (regression guard for the init useEffect)
+- No re-fetch on `rerender()` with the same props (deps-array regression guard)
+- Exactly one POST per submit click; rapid double-clicks during in-flight submit do not multiply POSTs (loading-disabled contract)
+- No fetch when name is empty/whitespace-only (`!name.trim()` guard)
+- Init "Connected" reaches DOM in <1s (otherwise every other test pays a 1s waitFor tax)
+- Loading state clears after submit (missing-finally regression guard)
+- All fetch URLs begin with `http(s)://` and contain neither "undefined" nor "null" (env-var malformation guard)
+
+**Coverage change:** 100% → 100% (maintained); backend 122 tests → 136 tests; frontend 53 tests → 61 tests. Each new test verified to pass 3× consecutively with no flakiness.
 
 ### 2026-05-06 — QA Agent: integration-gaps session (issue #179)
 **Contract-level integration tests added (both backend and frontend at 100% coverage; this session targets API-wide contracts not previously validated):**
