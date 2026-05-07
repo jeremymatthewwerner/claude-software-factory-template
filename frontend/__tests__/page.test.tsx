@@ -1064,4 +1064,206 @@ describe('Home Page', () => {
       });
     });
   });
+
+  // Performance / efficiency regression guards.
+  // The init useEffect runs once and makes 3 fetches. A regression that
+  // re-fires it (missing deps array, state-change in deps, etc.) would
+  // multiply network traffic and slow first paint — these tests catch that.
+  describe('fetch efficiency (e2e-performance)', () => {
+    it('makes exactly 3 fetch calls on mount (health, version, hello)', async () => {
+      mockFetch(HEALTHY_RESPONSES);
+      render(<Home />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Connected')).toBeInTheDocument();
+      });
+
+      expect((global.fetch as jest.Mock).mock.calls).toHaveLength(3);
+      const urls = (global.fetch as jest.Mock).mock.calls.map((call) => call[0]);
+      expect(urls).toEqual(
+        expect.arrayContaining([
+          expect.stringContaining('/health'),
+          expect.stringContaining('/api/version'),
+          expect.stringContaining('/api/hello'),
+        ])
+      );
+    });
+
+    it('does not re-fetch when re-rendering with the same props', async () => {
+      mockFetch(HEALTHY_RESPONSES);
+      const { rerender } = render(<Home />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Connected')).toBeInTheDocument();
+      });
+
+      const callsAfterMount = (global.fetch as jest.Mock).mock.calls.length;
+      rerender(<Home />);
+      rerender(<Home />);
+
+      // Re-rendering with no prop change must not re-trigger the init effect.
+      expect((global.fetch as jest.Mock).mock.calls).toHaveLength(callsAfterMount);
+    });
+
+    it('issues exactly one POST per submit click (no fetch storms)', async () => {
+      mockFetch({
+        ...HEALTHY_RESPONSES,
+        '/api/hello': { message: 'Hello, Alice! Welcome.' },
+      });
+      render(<Home />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Connected')).toBeInTheDocument();
+      });
+
+      const initCalls = (global.fetch as jest.Mock).mock.calls.length;
+      const input = screen.getByPlaceholderText('Enter your name');
+      fireEvent.change(input, { target: { value: 'Alice' } });
+      fireEvent.click(screen.getByRole('button', { name: /say hello/i }));
+
+      await waitFor(() => {
+        expect(screen.getByText('Hello, Alice! Welcome.')).toBeInTheDocument();
+      });
+
+      const postCalls = (global.fetch as jest.Mock).mock.calls
+        .slice(initCalls)
+        .filter((call) => call[1]?.method === 'POST');
+      expect(postCalls).toHaveLength(1);
+    });
+
+    it('rapid double-clicks during in-flight submit do not multiply POSTs', async () => {
+      // The button is disabled while loading=true. This test verifies that
+      // contract — clicking twice rapidly should result in one POST, not two,
+      // because the second click hits a disabled button.
+      let resolvePost: ((value: object) => void) | null = null;
+      const pendingPost = new Promise<object>((resolve) => {
+        resolvePost = resolve;
+      });
+
+      (global.fetch as jest.Mock).mockImplementation((url: string, opts) => {
+        const endpoint = url.replace('http://localhost:8000', '');
+        if (opts?.method === 'POST') {
+          return pendingPost.then((data) => ({
+            ok: true,
+            json: () => Promise.resolve(data),
+          }));
+        }
+        if (HEALTHY_RESPONSES[endpoint as keyof typeof HEALTHY_RESPONSES]) {
+          return Promise.resolve({
+            ok: true,
+            json: () =>
+              Promise.resolve(HEALTHY_RESPONSES[endpoint as keyof typeof HEALTHY_RESPONSES]),
+          });
+        }
+        return Promise.reject(new Error('Not found'));
+      });
+
+      render(<Home />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Connected')).toBeInTheDocument();
+      });
+
+      const initCalls = (global.fetch as jest.Mock).mock.calls.length;
+      const input = screen.getByPlaceholderText('Enter your name');
+      const button = screen.getByRole('button', { name: /say hello/i });
+
+      fireEvent.change(input, { target: { value: 'Alice' } });
+      fireEvent.click(button);
+      // Now button shows "Sending..." and is disabled — second click is a no-op.
+      fireEvent.click(button);
+      fireEvent.click(button);
+
+      // Resolve the pending POST so the test cleans up.
+      resolvePost!({ message: 'Hello, Alice!' });
+      await waitFor(() => {
+        expect(screen.getByText('Hello, Alice!')).toBeInTheDocument();
+      });
+
+      const postCalls = (global.fetch as jest.Mock).mock.calls
+        .slice(initCalls)
+        .filter((call) => call[1]?.method === 'POST');
+      expect(postCalls).toHaveLength(1);
+    });
+
+    it('does not fetch when submit is clicked with empty/whitespace name', async () => {
+      mockFetch(HEALTHY_RESPONSES);
+      render(<Home />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Connected')).toBeInTheDocument();
+      });
+
+      const initCalls = (global.fetch as jest.Mock).mock.calls.length;
+      const input = screen.getByPlaceholderText('Enter your name');
+
+      // Empty
+      fireEvent.click(screen.getByRole('button', { name: /say hello/i }));
+      // Whitespace-only
+      fireEvent.change(input, { target: { value: '   ' } });
+      fireEvent.click(screen.getByRole('button', { name: /say hello/i }));
+
+      // No additional POST should fire — handleSubmit short-circuits on
+      // !name.trim(). This guards against a regression where a typo'd
+      // condition would let empty submissions through and waste a request.
+      expect((global.fetch as jest.Mock).mock.calls).toHaveLength(initCalls);
+    });
+
+    it('init sequence finishes within Jest waitFor default (1s)', async () => {
+      // Healthy state must reach the DOM well within the default 1000ms
+      // waitFor budget. If it doesn't, every other test in this file pays
+      // a 1s tax on failure — a real perf regression.
+      mockFetch(HEALTHY_RESPONSES);
+      const start = performance.now();
+      render(<Home />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Connected')).toBeInTheDocument();
+      });
+      const elapsed = performance.now() - start;
+      expect(elapsed).toBeLessThan(1000);
+    });
+
+    it('loading state clears after submit completes (no stuck "Sending...")', async () => {
+      mockFetch({
+        ...HEALTHY_RESPONSES,
+        '/api/hello': { message: 'Hello, Alice!' },
+      });
+      render(<Home />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Connected')).toBeInTheDocument();
+      });
+
+      const input = screen.getByPlaceholderText('Enter your name');
+      fireEvent.change(input, { target: { value: 'Alice' } });
+      fireEvent.click(screen.getByRole('button', { name: /say hello/i }));
+
+      // Button label flips back from "Sending..." to "Say Hello" once the
+      // promise settles — regression guard against a missing finally().
+      await waitFor(() => {
+        expect(screen.getByRole('button', { name: /say hello/i })).toBeInTheDocument();
+      });
+      expect(screen.queryByRole('button', { name: /sending/i })).not.toBeInTheDocument();
+    });
+
+    it('makes init fetches without "undefined" segments (env var sanity)', async () => {
+      // If NEXT_PUBLIC_API_URL was undefined at build time AND no fallback
+      // existed, fetch URLs could contain literal "undefined" — a class of
+      // bug that ships silently. This test guards against URL malformation.
+      mockFetch(HEALTHY_RESPONSES);
+      render(<Home />);
+
+      await waitFor(() => {
+        expect((global.fetch as jest.Mock).mock.calls.length).toBeGreaterThan(0);
+      });
+
+      const urls = (global.fetch as jest.Mock).mock.calls.map((c) => String(c[0]));
+      urls.forEach((url) => {
+        expect(url).not.toContain('undefined');
+        expect(url).not.toContain('null');
+        expect(url).toMatch(/^https?:\/\//);
+      });
+    });
+  });
 });
