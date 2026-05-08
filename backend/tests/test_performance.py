@@ -32,37 +32,29 @@ CONCURRENT_50_CEILING_S = 1.0
 class TestSingleCallLatency:
     """Each endpoint must respond well under SINGLE_CALL_CEILING_S."""
 
-    def test_health_responds_under_ceiling(self, client: TestClient) -> None:
-        """GET /health completes in under 500ms (regression guard)."""
+    @pytest.mark.parametrize(
+        "method,path,json_body",
+        [
+            ("GET", "/health", None),
+            ("GET", "/api/version", None),
+            ("GET", "/api/hello", None),
+            ("POST", "/api/hello", {"name": "Perf"}),
+        ],
+        ids=["health", "version", "hello_get", "hello_post"],
+    )
+    def test_endpoint_responds_under_ceiling(
+        self,
+        client: TestClient,
+        method: str,
+        path: str,
+        json_body: dict[str, str] | None,
+    ) -> None:
+        """Endpoint completes in under 500ms (regression guard)."""
         start = time.perf_counter()
-        response = client.get("/health")
+        response = client.request(method, path, json=json_body)
         elapsed = time.perf_counter() - start
         assert response.status_code == 200
-        assert elapsed < SINGLE_CALL_CEILING_S, f"/health took {elapsed:.3f}s"
-
-    def test_version_responds_under_ceiling(self, client: TestClient) -> None:
-        """GET /api/version completes in under 500ms (regression guard)."""
-        start = time.perf_counter()
-        response = client.get("/api/version")
-        elapsed = time.perf_counter() - start
-        assert response.status_code == 200
-        assert elapsed < SINGLE_CALL_CEILING_S, f"/api/version took {elapsed:.3f}s"
-
-    def test_hello_get_responds_under_ceiling(self, client: TestClient) -> None:
-        """GET /api/hello completes in under 500ms (regression guard)."""
-        start = time.perf_counter()
-        response = client.get("/api/hello")
-        elapsed = time.perf_counter() - start
-        assert response.status_code == 200
-        assert elapsed < SINGLE_CALL_CEILING_S, f"GET /api/hello took {elapsed:.3f}s"
-
-    def test_hello_post_responds_under_ceiling(self, client: TestClient) -> None:
-        """POST /api/hello completes in under 500ms (regression guard)."""
-        start = time.perf_counter()
-        response = client.post("/api/hello", json={"name": "Perf"})
-        elapsed = time.perf_counter() - start
-        assert response.status_code == 200
-        assert elapsed < SINGLE_CALL_CEILING_S, f"POST /api/hello took {elapsed:.3f}s"
+        assert elapsed < SINGLE_CALL_CEILING_S, f"{method} {path} took {elapsed:.3f}s"
 
 
 class TestInitSequenceLatency:

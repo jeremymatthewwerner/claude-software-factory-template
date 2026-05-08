@@ -78,10 +78,7 @@ Documents test coverage, test descriptions, and quality improvements.
 ### `TestRegressionUTCTimestamps`
 | Test | Description |
 |------|-------------|
-| `test_health_timestamp_is_timezone_aware` | Health timestamp parses as a timezone-aware datetime (not naive) |
-| `test_health_timestamp_utc_offset_is_zero` | Health timestamp UTC offset is exactly zero seconds (true UTC) |
-| `test_hello_get_timestamp_is_utc_aware` | GET /api/hello timestamp is timezone-aware with zero UTC offset |
-| `test_hello_post_timestamp_is_utc_aware` | POST /api/hello timestamp is timezone-aware with zero UTC offset |
+| `test_response_timestamp_is_utc_iso8601[health/hello_get/hello_post]` | Each timestamped endpoint returns a timezone-aware ISO 8601 UTC timestamp (zero offset). Parametrized over (method, path, body) and shares the `assert_utc_iso8601` helper from `conftest.py` so the tz-aware + zero-offset invariant is checked in one place |
 
 ### `TestRegressionPackageStructure`
 | Test | Description |
@@ -101,17 +98,12 @@ Documents test coverage, test descriptions, and quality improvements.
 ### `TestHTTPMethodNotAllowed`
 | Test | Description |
 |------|-------------|
-| `test_delete_health_returns_405` | DELETE /health returns 405 Method Not Allowed |
-| `test_put_health_returns_405` | PUT /health returns 405 Method Not Allowed |
-| `test_delete_api_version_returns_405` | DELETE /api/version returns 405 Method Not Allowed |
-| `test_put_api_hello_returns_405` | PUT /api/hello returns 405 (only GET and POST are defined) |
-| `test_delete_api_hello_returns_405` | DELETE /api/hello returns 405 Method Not Allowed |
+| `test_unsupported_method_returns_405[…]` | Parametrized over (method, path) — covers DELETE/PUT/PATCH against every defined route (`/health`, `/api/version`, `/api/hello`). Single test body replaces the previous 8 separate methods (5 in this class + 3 in `TestPATCHMethodNotAllowed`) |
 
 ### `TestTimestampOrdering`
 | Test | Description |
 |------|-------------|
-| `test_health_timestamps_are_non_decreasing` | Two successive /health calls return timestamps where the second is not earlier than the first (catches clock drift or response caching) |
-| `test_hello_get_timestamps_are_non_decreasing` | Two successive GET /api/hello calls return non-decreasing timestamps |
+| `test_successive_timestamps_are_non_decreasing[health/hello_get]` | Two successive calls to a timestamped GET endpoint return timestamps where the second is not earlier than the first (catches clock drift or response caching). Parametrized over `/health` and `/api/hello` |
 | `test_hello_post_timestamp_within_request_window` | POST /api/hello timestamp falls strictly between the request start time and response receipt time (catches stale clocks) |
 | `test_health_timestamps_monotone_across_10_sequential_calls` | Ten sequential /health calls produce a non-decreasing timestamp sequence — extends the two-call ordering test to catch rare timestamp caching or coarse-granularity regressions that the two-call test might miss |
 
@@ -126,13 +118,6 @@ Documents test coverage, test descriptions, and quality improvements.
 |------|-------------|
 | `test_20_concurrent_health_requests_all_return_200` | 20 simultaneous GET /health requests all return 200 with healthy status — amplifies any resource exhaustion or scheduling non-determinism that only manifests under higher load than the 3-request concurrent tests |
 | `test_20_concurrent_hello_posts_have_no_name_crosscontamination` | 20 concurrent POST /api/hello calls each receive only their own name — at this scale, any global mutable state that could cause cross-contamination becomes far more likely to trigger |
-
-### `TestPATCHMethodNotAllowed`
-| Test | Description |
-|------|-------------|
-| `test_patch_health_returns_405` | PATCH /health returns 405 (only DELETE and PUT were previously covered for this endpoint) |
-| `test_patch_api_version_returns_405` | PATCH /api/version returns 405 |
-| `test_patch_api_hello_returns_405` | PATCH /api/hello returns 405 (only GET and POST are defined) |
 
 ### `TestNotFoundRoutes`
 | Test | Description |
@@ -150,10 +135,8 @@ Documents test coverage, test descriptions, and quality improvements.
 ### `TestHEADMethod`
 | Test | Description |
 |------|-------------|
-| `test_head_health_returns_405` | HEAD /health returns 405 — Starlette 1.0 does NOT auto-register HEAD for GET routes (documents potential gotcha for clients expecting auto-HEAD) |
+| `test_head_returns_405[/health,/api/version,/api/hello]` | HEAD on any defined route returns 405 — Starlette 1.0 does NOT auto-register HEAD for GET routes (documents potential gotcha for clients expecting auto-HEAD). Parametrized over every defined path |
 | `test_head_health_response_has_no_body` | HEAD /health response body is empty even for 405 (HTTP HEAD semantics require no body regardless of status) |
-| `test_head_api_version_returns_405` | HEAD /api/version returns 405 |
-| `test_head_api_hello_returns_405` | HEAD /api/hello returns 405 |
 
 ### `TestRegressionMessageFormat`
 | Test | Description |
@@ -175,10 +158,7 @@ Performance regression guards. Bounds are deliberately generous (10–100× typi
 ### `TestSingleCallLatency`
 | Test | Description |
 |------|-------------|
-| `test_health_responds_under_ceiling` | GET /health completes in under 500ms |
-| `test_version_responds_under_ceiling` | GET /api/version completes in under 500ms |
-| `test_hello_get_responds_under_ceiling` | GET /api/hello completes in under 500ms |
-| `test_hello_post_responds_under_ceiling` | POST /api/hello completes in under 500ms |
+| `test_endpoint_responds_under_ceiling[health/version/hello_get/hello_post]` | Each endpoint completes in under 500ms (regression guard). Parametrized over (method, path, body) — single test body replaces 4 separate methods |
 
 ### `TestInitSequenceLatency`
 | Test | Description |
@@ -426,6 +406,19 @@ Tests for `RepositoryStatusManager` covering repo name extraction, emoji selecti
 ---
 
 ## Refactoring History
+
+### 2026-05-08 — QA Agent: test-refactoring session (issue #185)
+**Backend test-suite refactor (no behavior change; both suites stay at 100% coverage):**
+
+- **`conftest.py`** — Added `LOCALHOST_ORIGIN` constant (`"http://localhost:3000"`) and `assert_utc_iso8601(timestamp)` helper. The helper checks both timezone-awareness and zero UTC offset in one call, replacing 4 inline open-coded variants of the same check across `test_main.py`.
+- **`test_main.py`** — Hoisted `from datetime import datetime` to module level (removed 5 inline imports inside individual test bodies). Replaced `"http://localhost:3000"` magic strings in CORS tests with the new constant.
+- **`TestRegressionUTCTimestamps`** (4 tests → 1 parametrized over 3 cases): Two `/health`-only sub-tests (`test_health_timestamp_is_timezone_aware`, `test_health_timestamp_utc_offset_is_zero`) checked one half each of the same invariant. The new helper checks both invariants in one call, so the cases are covered by a single parametrized `test_response_timestamp_is_utc_iso8601` over `(GET /health, GET /api/hello, POST /api/hello)`.
+- **`TestHTTPMethodNotAllowed` + `TestPATCHMethodNotAllowed`** (5 + 3 tests → 1 parametrized over 8 cases): Two classes with identical 405 assertions per (method, path) tuple merged into a single parametrized `test_unsupported_method_returns_405` covering DELETE/PUT/PATCH against every defined route.
+- **`TestHEADMethod`** (3 of 4 tests → 1 parametrized over 3 paths): The three "HEAD on a path returns 405" tests collapse to a single parametrized `test_head_returns_405`. The distinct `test_head_health_response_has_no_body` (different assertion) is kept.
+- **`TestTimestampOrdering`** (2 tests → 1 parametrized over 2 cases): `test_health_timestamps_are_non_decreasing` and `test_hello_get_timestamps_are_non_decreasing` had identical bodies modulo path; merged into parametrized `test_successive_timestamps_are_non_decreasing`.
+- **`test_performance.py` `TestSingleCallLatency`** (4 tests → 1 parametrized over 4 cases): All four "GET/POST /path completes under 500ms" tests merged into parametrized `test_endpoint_responds_under_ceiling` over (method, path, body).
+
+**Coverage change:** 100% → 100% (maintained); backend 136 tests → 135 tests (the one removed case was a redundant `/health` tzinfo check whose assertion is fully subsumed by the new helper-based parametrized case). Each refactored test verified to pass 3× consecutively with no flakiness.
 
 ### 2026-05-07 — QA Agent: e2e-performance session (issue #182)
 **Performance regression coverage added (both suites already at 100% line/branch; gap was performance, not coverage):**
