@@ -147,7 +147,59 @@ Documents test coverage, test descriptions, and quality improvements.
 | `test_openapi_title_is_software_factory_api` | OpenAPI title is exactly "Software Factory API" — prevents accidental renames propagating to generated clients |
 | `test_openapi_version_matches_app_version` | OpenAPI version matches `__version__` — ensures the FastAPI `version=__version__` wiring is never removed or overridden |
 
-**Coverage:** 100% (36/36 statements, 111 tests)
+### `TestHelloNameTypeValidation` (added 2026-05-09 — edge cases)
+| Test | Description |
+|------|-------------|
+| `test_hello_name_wrong_type_returns_422[bool_true/bool_false/float/array/object]` | POST /api/hello returns 422 when `name` is a bool, float, JSON array, or JSON object — pins the strict-string contract for the remaining JSON value categories not covered by the existing null/int tests |
+| `test_hello_top_level_array_body_returns_422` | POST /api/hello with a top-level JSON array (e.g. `["Alice"]`) returns 422 — exercises body-shape validation rather than per-field type validation |
+
+### `TestHelloNameSpecialCharacters` (added 2026-05-09 — edge cases)
+| Test | Description |
+|------|-------------|
+| `test_hello_name_special_char_echoed_verbatim[tab_only]` | Tab `\t` name echoed verbatim in greeting (no whitespace stripping) |
+| `test_hello_name_special_char_echoed_verbatim[carriage_return_only]` | Bare CR `\r` (without LF) name echoed verbatim |
+| `test_hello_name_special_char_echoed_verbatim[null_byte_in_middle]` | Embedded NUL byte `\x00` does not truncate the name |
+| `test_hello_name_special_char_echoed_verbatim[astral_plane]` | Astral-plane (4-byte UTF-8) code point `𝓐` round-trips correctly |
+| `test_hello_name_special_char_echoed_verbatim[combining_accent]` | Decomposed combining accent (`a` + U+0301 ◌́) preserved without normalization |
+
+### `TestPathRouting` (added 2026-05-09 — edge cases)
+| Test | Description |
+|------|-------------|
+| `test_path_is_case_sensitive[/Health//HEALTH//api/Hello//API/version]` | Mixed-case path variants return 404 — pins case-sensitive routing as part of the public URL contract |
+| `test_health_with_trailing_slash_succeeds` | `GET /health/` returns 200 — trailing-slash convenience pinned for clients that join URLs with a trailing slash |
+| `test_hello_get_query_string_is_ignored` | `GET /api/hello?name=Alice` returns the generic greeting — guards against the GET handler accidentally reading `name` from the query string |
+
+### `TestHTTPMethodEdgeCases` (added 2026-05-09 — edge cases)
+| Test | Description |
+|------|-------------|
+| `test_trace_method_returns_405` | TRACE on a defined route returns 405 — fills the gap left by `TestHTTPMethodNotAllowed` (DELETE/PUT/PATCH) and `TestHEADMethod` |
+| `test_options_without_origin_returns_405` | Bare OPTIONS (no `Origin` header) returns 405 — CORS middleware doesn't intercept; falls through to method-not-allowed |
+| `test_options_with_origin_but_no_request_method_returns_405` | OPTIONS with `Origin` but no `Access-Control-Request-Method` is not a valid preflight → 405 |
+| `test_post_hello_with_zero_length_body_returns_422` | POST /api/hello with empty body and `Content-Length: 0` returns 422 — exercises FastAPI's empty-body branch (distinct from invalid JSON) |
+
+### `TestCORSCacheCorrectness` (added 2026-05-09 — edge cases)
+| Test | Description |
+|------|-------------|
+| `test_allowed_origin_response_includes_vary_origin` | Allowed-origin response carries `Vary: Origin` so caches don't serve a response from one origin to a different origin |
+| `test_preflight_response_includes_vary_origin` | Preflight response carries `Vary: Origin` so caches store per-origin preflights |
+| `test_disallowed_origin_response_does_not_set_vary` | Disallowed-origin response does NOT add `Vary: Origin` — middleware only emits Vary when it emits Allow-Origin |
+| `test_allowed_origin_response_includes_allow_credentials` | `Access-Control-Allow-Credentials: true` accompanies Allow-Origin — pins `allow_credentials=True` so any frontend relying on credentialed requests doesn't silently break |
+
+### `TestErrorResponseShape` (added 2026-05-09 — edge cases)
+| Test | Description |
+|------|-------------|
+| `test_404_detail_is_a_string` | 404 responses have `detail` as a string ("Not Found") — distinct from the list-of-objects shape used for 422; pinned so generic clients that `str()` the value continue to work |
+| `test_405_detail_is_a_string` | 405 responses have `detail` as the string "Method Not Allowed" — same shape as 404, distinct from 422 |
+
+### `TestExactGreetingFormat` (added 2026-05-09 — edge cases)
+| Test | Description |
+|------|-------------|
+| `test_empty_name_message_format` | `{"name": ""}` returns exactly `"Hello, ! Welcome..."` — no trimming or "anonymous" fallback |
+| `test_whitespace_name_message_format` | `{"name": "   "}` returns exactly `"Hello,    ! Welcome..."` — whitespace preserved verbatim, not collapsed |
+| `test_tab_name_message_format` | `{"name": "\t"}` returns exactly `"Hello, \t! Welcome..."` — tab preserved verbatim |
+| `test_duplicate_name_keys_last_wins` | Duplicate `name` keys in the JSON body resolve last-wins — pins FastAPI/Starlette/`json.loads` behavior so a parser swap is detected |
+
+**Coverage:** 100% (36/36 statements, 114 tests)
 
 ---
 
@@ -261,7 +313,7 @@ Performance regression guards. Bounds are deliberately generous (10–100× typi
 | `submits the form on Enter key in the name input` | Submitting the form element (keyboard Enter) calls POST /api/hello and shows the greeting |
 | `sends the correct JSON body in POST /api/hello` | POST /api/hello is called with `{"name": "..."}` as the JSON body, verifying correct request construction |
 
-**Coverage:** 100% statements, 100% branches, 100% functions, 100% lines (53 tests)
+**Coverage:** 100% statements, 100% branches, 100% functions, 100% lines (70 tests)
 
 ### Mid-Sequence API Failure Edge Cases (added 2026-05-02)
 | Test | Description |
@@ -310,6 +362,31 @@ Performance regression guards. Bounds are deliberately generous (10–100× typi
 | `init sequence finishes within Jest waitFor default (1s)` | "Connected" reaches the DOM in under 1000ms — catches a regression that would otherwise impose a 1s tax on every test in this file |
 | `loading state clears after submit completes (no stuck "Sending...")` | Button label flips back from "Sending..." to "Say Hello" after the POST resolves — regression guard against a missing `finally` |
 | `makes init fetches without "undefined" segments (env var sanity)` | Every fetch URL begins with `http(s)://` and contains neither "undefined" nor "null" — guards against malformed URLs from a missing env var fallback |
+
+### Whitespace-Only Submit Edge Cases (added 2026-05-09 — edge cases)
+| Test | Description |
+|------|-------------|
+| `does not call POST /api/hello when name is tab-only` | Tab `\t` characters satisfy `String.prototype.trim()` and so must short-circuit `handleSubmit` (existing test only covered space-only) |
+| `does not call POST /api/hello when name is newline-only` | Newline `\n` characters short-circuit `handleSubmit` |
+| `does not call POST /api/hello when name is mixed whitespace` | Mixed whitespace ` \t\n ` short-circuits `handleSubmit` — covers the realistic "user copy-pasted" case |
+
+### Non-BMP Greeting Rendering (added 2026-05-09 — edge cases)
+| Test | Description |
+|------|-------------|
+| `renders an astral-plane (4-byte UTF-8) greeting from the backend as text` | Mathematical script capital A (U+1D4D0) — a JavaScript surrogate pair — renders as a single text node, not a split or escaped sequence |
+| `renders an emoji greeting from the backend as text` | Emoji greeting "Hello, 🎉🤖!" renders correctly — pins the contract that the backend's verbatim echo is rendered safely |
+
+### Form Attribute Regression Guards (added 2026-05-09 — edge cases)
+| Test | Description |
+|------|-------------|
+| `the name input has type="text"` | Pins `<input type="text">` so a flip to `type="number"` or `type="email"` (which silently changes browser-side validation) is caught |
+| `the submit button has type="submit"` | Pins button `type="submit"` so Enter-to-submit semantics keep working — the existing "submit on Enter" test passes only because of this attribute |
+| `the form contains both the input and the submit button` | Pins the structural relationship — submit button must live inside the same `<form>` as the input for Enter-to-submit |
+
+### Backend Error Response Handling (added 2026-05-09 — edge cases)
+| Test | Description |
+|------|-------------|
+| `clears the loading state when POST returns a non-JSON body` | Even when `res.json()` rejects (e.g. backend returned HTML), the `finally` block clears `loading` and the button returns from "Sending..." — guards against a missing `finally` leaving the button stuck forever |
 
 ---
 
@@ -406,6 +483,37 @@ Tests for `RepositoryStatusManager` covering repo name extraction, emoji selecti
 ---
 
 ## Refactoring History
+
+### 2026-05-09 — QA Agent: edge-cases session (issue #188)
+**Behavioral edge-case coverage added (both suites already at 100% line/branch; gap was behavioral contract, not coverage):**
+
+**Backend — seven new classes in `backend/tests/test_main.py` (22 tests):**
+
+`TestHelloNameTypeValidation` (6 tests, parametrized) — Pins the strict-string contract for the JSON value categories not covered by the existing null/int tests: `bool` (both true/false), `float`, JSON array, JSON object, plus a top-level array body. Each must be rejected with 422; a future change that loosens the type to `str | int | float` would silently start coercing values.
+
+`TestHelloNameSpecialCharacters` (5 tests, parametrized) — Pins verbatim echo for character classes that routinely break naive string handling: tab `\t`, bare CR `\r`, embedded NUL `\x00`, astral-plane (4-byte UTF-8) `𝓐`, and decomposed combining accents (`a` + U+0301). Catches a regression that introduces stripping, normalization, or NUL-truncation.
+
+`TestPathRouting` (6 tests, including 4 parametrized) — Pins case-sensitive routing (`/Health` → 404), trailing-slash convenience (`/health/` → 200), and that GET handlers ignore query strings (`?name=Alice` doesn't leak into the generic greeting). All three are part of the public URL contract.
+
+`TestHTTPMethodEdgeCases` (4 tests) — Fills the gaps left by `TestHTTPMethodNotAllowed` (DELETE/PUT/PATCH) and `TestHEADMethod`: TRACE → 405, bare OPTIONS → 405, OPTIONS-with-Origin-but-no-request-method → 405, and POST with `Content-Length: 0` → 422 (distinct from invalid-JSON).
+
+`TestCORSCacheCorrectness` (4 tests) — Pins the cache-correctness contract for the CORS middleware: allowed-origin GET and preflight both include `Vary: Origin` (so caches don't serve responses across origins), disallowed origin does NOT add Vary (negative case), and `Access-Control-Allow-Credentials: true` accompanies the Allow-Origin header.
+
+`TestErrorResponseShape` (2 tests) — Pins that 404/405 detail is a string ("Not Found"/"Method Not Allowed"), not the list-of-objects shape used for 422. Generic clients that `str()` the value depend on this distinction.
+
+`TestExactGreetingFormat` (4 tests) — Pins the EXACT greeting string for empty, whitespace, tab, and duplicate-key inputs. Existing tests check the substring is present; these lock the full template so a regression that adds trimming, collapsing, or fallbacks fails loudly. Duplicate-key test pins last-wins parser behavior.
+
+**Frontend — four new describe blocks in `frontend/__tests__/page.test.tsx` (9 tests):**
+
+`whitespace-only submit edge cases` (3 tests, parametrized) — The existing "no submit on whitespace" test only covers space-only. These cover tab-only, newline-only, and mixed whitespace — all of which satisfy `String.prototype.trim()` and so must short-circuit `handleSubmit`.
+
+`non-BMP greeting rendering` (2 tests) — Mathematical script capital A (U+1D4D0, a JS surrogate pair) and emoji greetings render as single text nodes. The backend echoes 4-byte UTF-8 verbatim; the frontend must render it without splitting or escaping.
+
+`form attribute regression guards` (3 tests) — Pin `<input type="text">`, `<button type="submit">`, and the structural relationship (button inside same `<form>` as input). The existing "submits on Enter" test passes only because of these attributes; a regression that flips them is silent without explicit pinning.
+
+`backend error response handling` (1 test) — When `res.json()` rejects (e.g., backend returned HTML), the `finally` block still clears `loading` and the button reverts from "Sending..." to "Say Hello". Guards against a missing `finally` leaving the button stuck forever.
+
+**Coverage change:** 100% → 100% (maintained); backend 144 tests → 166 tests; frontend 61 tests → 70 tests. Each new test verified to pass 3× consecutively with no flakiness.
 
 ### 2026-05-08 — QA Agent: test-refactoring session (issue #185)
 **Backend test-suite refactor (no behavior change; both suites stay at 100% coverage):**

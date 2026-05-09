@@ -1266,4 +1266,182 @@ describe('Home Page', () => {
       });
     });
   });
+
+  // Edge cases the existing suites don't cover.
+  // - "does not call POST when name is whitespace only" already tests space-only
+  //   inputs; tab and newline are different ASCII characters that still satisfy
+  //   String.prototype.trim() and so must also short-circuit handleSubmit.
+  // - The greeting <p> renders whatever the backend returned. The backend
+  //   contract allows astral-plane Unicode (verified in the backend suite); the
+  //   frontend must render it as a single text node, not crash on it.
+  // - The submit button must have type="submit" and the input must have
+  //   type="text" — these attributes are how the form behaves the way the rest
+  //   of the test suite assumes (Enter submits, browser doesn't apply numeric
+  //   validation). A regression that flips them is silent under the existing
+  //   tests because they fire events directly rather than relying on browser
+  //   form semantics.
+  describe('whitespace-only submit edge cases', () => {
+    it.each([
+      ['tab-only', '\t\t'],
+      ['newline-only', '\n'],
+      ['mixed whitespace', ' \t\n '],
+    ])('does not call POST /api/hello when name is %s', async (_label, name) => {
+      mockFetch(HEALTHY_RESPONSES);
+      render(<Home />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Connected')).toBeInTheDocument();
+      });
+
+      const initCalls = (global.fetch as jest.Mock).mock.calls.length;
+      const input = screen.getByPlaceholderText('Enter your name');
+      fireEvent.change(input, { target: { value: name } });
+      fireEvent.click(screen.getByRole('button', { name: /say hello/i }));
+
+      // handleSubmit short-circuits on !name.trim(); the only fetches should be
+      // the three init calls captured above.
+      expect((global.fetch as jest.Mock).mock.calls).toHaveLength(initCalls);
+    });
+  });
+
+  describe('non-BMP greeting rendering', () => {
+    it('renders an astral-plane (4-byte UTF-8) greeting from the backend as text', async () => {
+      // Mathematical script capital A (U+1D4D0). It encodes as 4 bytes in
+      // UTF-8 and is a surrogate pair in JavaScript strings. React must render
+      // it as a single text node without splitting or escaping the surrogate
+      // pair.
+      const astralGreeting = 'Hello, 𝓐lice!';
+      (global.fetch as jest.Mock)
+        .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ status: 'healthy' }) })
+        .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ version: '0.1.0' }) })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve({ message: 'Hello, World!' }),
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve({ message: astralGreeting }),
+        });
+
+      render(<Home />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Connected')).toBeInTheDocument();
+      });
+
+      const input = screen.getByPlaceholderText('Enter your name');
+      fireEvent.change(input, { target: { value: '𝓐lice' } });
+      fireEvent.click(screen.getByRole('button', { name: /say hello/i }));
+
+      await waitFor(() => {
+        expect(screen.getByText(astralGreeting)).toBeInTheDocument();
+      });
+    });
+
+    it('renders an emoji greeting from the backend as text', async () => {
+      const emojiGreeting = 'Hello, 🎉🤖!';
+      (global.fetch as jest.Mock)
+        .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ status: 'healthy' }) })
+        .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ version: '0.1.0' }) })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve({ message: 'Hello, World!' }),
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve({ message: emojiGreeting }),
+        });
+
+      render(<Home />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Connected')).toBeInTheDocument();
+      });
+
+      fireEvent.change(screen.getByPlaceholderText('Enter your name'), {
+        target: { value: '🎉🤖' },
+      });
+      fireEvent.click(screen.getByRole('button', { name: /say hello/i }));
+
+      await waitFor(() => {
+        expect(screen.getByText(emojiGreeting)).toBeInTheDocument();
+      });
+    });
+  });
+
+  describe('form attribute regression guards', () => {
+    it('the name input has type="text"', () => {
+      // Some prior test suites have been bitten by an inadvertent flip to
+      // type="number" or type="email" — those change browser-side validation
+      // (e.g., "type=number" rejects "Alice") without breaking any of the
+      // tests that fire events directly. Pin the attribute explicitly.
+      mockFetch(HEALTHY_RESPONSES);
+      render(<Home />);
+      const input = screen.getByPlaceholderText('Enter your name');
+      expect(input).toHaveAttribute('type', 'text');
+    });
+
+    it('the submit button has type="submit"', () => {
+      // The "submits the form on Enter key" test passes only because the
+      // button is type="submit". A regression flipping it to type="button"
+      // would break Enter-to-submit silently for users who tab into the form,
+      // because the form's onSubmit handler would never fire.
+      mockFetch(HEALTHY_RESPONSES);
+      render(<Home />);
+      const button = screen.getByRole('button', { name: /say hello/i });
+      expect(button).toHaveAttribute('type', 'submit');
+    });
+
+    it('the form contains both the input and the submit button', () => {
+      // The submit button must live inside the same <form> as the input;
+      // otherwise pressing Enter in the input field does not trigger the
+      // button's submit semantics. Pin the structural relationship.
+      mockFetch(HEALTHY_RESPONSES);
+      render(<Home />);
+      const input = screen.getByPlaceholderText('Enter your name');
+      const button = screen.getByRole('button', { name: /say hello/i });
+      const form = input.closest('form');
+      expect(form).not.toBeNull();
+      expect(form).toContainElement(button);
+    });
+  });
+
+  describe('backend error response handling', () => {
+    it('clears the loading state when POST returns a non-JSON body', async () => {
+      // If the backend returns ok=true but a body that fails to JSON-parse
+      // (e.g. the body promise rejects), the catch branch in handleSubmit
+      // must still reach the finally block and clear `loading`. A missing
+      // finally would leave the button stuck on "Sending..." forever.
+      (global.fetch as jest.Mock)
+        .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ status: 'healthy' }) })
+        .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ version: '0.1.0' }) })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve({ message: 'Hello, World!' }),
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.reject(new SyntaxError('Unexpected token < in JSON')),
+        });
+
+      render(<Home />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Connected')).toBeInTheDocument();
+      });
+
+      fireEvent.change(screen.getByPlaceholderText('Enter your name'), {
+        target: { value: 'Alice' },
+      });
+      fireEvent.click(screen.getByRole('button', { name: /say hello/i }));
+
+      // The catch branch sets greeting to the API error message; loading
+      // state is cleared in the finally block so the button label reverts.
+      await waitFor(() => {
+        expect(screen.getByText('Error connecting to API')).toBeInTheDocument();
+      });
+      expect(screen.queryByRole('button', { name: /sending/i })).not.toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /say hello/i })).not.toBeDisabled();
+    });
+  });
 });
