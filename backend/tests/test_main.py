@@ -702,3 +702,280 @@ class TestContentTypeNegotiation:
             headers={"Content-Type": "text/plain"},
         )
         assert response.status_code == 422
+
+
+class TestHelloNameTypeValidation:
+    """The Pydantic ``HelloRequest.name`` field is typed ``str``.
+
+    The existing edge-case suite covers the two most obvious wrong types
+    (``None`` and ``int``). These tests pin the contract for the remaining
+    JSON value categories — boolean, float, array, object, and a top-level
+    array body — each of which must be rejected with 422 rather than coerced.
+    A regression that loosens validation (e.g. accidentally typing ``name``
+    as ``str | int``) would silently start accepting wrong types in
+    production; these tests fail first.
+    """
+
+    @pytest.mark.parametrize(
+        "wrong_value",
+        [True, False, 1.5, [1, 2], {"first": "Alice"}],
+        ids=["bool_true", "bool_false", "float", "array", "object"],
+    )
+    def test_hello_name_wrong_type_returns_422(
+        self, client: TestClient, wrong_value: object
+    ) -> None:
+        """POST /api/hello returns 422 when ``name`` is not a string."""
+        response = client.post("/api/hello", json={"name": wrong_value})
+        assert response.status_code == 422
+
+    def test_hello_top_level_array_body_returns_422(self, client: TestClient) -> None:
+        """POST /api/hello returns 422 when the body is a JSON array, not an object.
+
+        Pydantic expects an object (``HelloRequest``); passing ``["Alice"]`` exercises
+        the body-shape validation rather than the per-field type validation.
+        """
+        response = client.post("/api/hello", json=["Alice"])
+        assert response.status_code == 422
+
+
+class TestHelloNameSpecialCharacters:
+    """The endpoint echoes ``name`` verbatim with no normalization.
+
+    Existing edge-case tests cover ASCII control (`\\n`), HTML-like markup,
+    and BMP Unicode. These pin the contract for character classes that
+    routinely break naive string handling: the ASCII tab, the bare CR
+    (without LF), the embedded NUL byte, astral-plane (4-byte UTF-8)
+    code points, and decomposed combining accents. A regression that
+    introduces stripping, normalization, or NUL-truncation would alter
+    these responses and fail here.
+    """
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "\t",
+            "\r",
+            "Alice\x00Bob",
+            "𝓐",
+            "á",
+        ],
+        ids=[
+            "tab_only",
+            "carriage_return_only",
+            "null_byte_in_middle",
+            "astral_plane",
+            "combining_accent",
+        ],
+    )
+    def test_hello_name_special_char_echoed_verbatim(self, client: TestClient, name: str) -> None:
+        """POST /api/hello echoes the special-character name verbatim in the message."""
+        response = client.post("/api/hello", json={"name": name})
+        assert response.status_code == 200
+        assert name in response.json()["message"]
+
+
+class TestPathRouting:
+    """FastAPI route dispatch is case-sensitive and ignores query strings.
+
+    These behaviors are part of the public URL contract — any change (e.g.
+    a custom router that lower-cases paths, or a redirect for trailing
+    slashes that consumers depend on) is a breaking change for API clients.
+    """
+
+    @pytest.mark.parametrize("path", ["/Health", "/HEALTH", "/api/Hello", "/API/version"])
+    def test_path_is_case_sensitive(self, client: TestClient, path: str) -> None:
+        """Mixed-case variants of valid paths return 404 (case-sensitive routing)."""
+        response = client.get(path)
+        assert response.status_code == 404
+
+    def test_health_with_trailing_slash_succeeds(self, client: TestClient) -> None:
+        """``GET /health/`` returns 200 — Starlette resolves the trailing slash to the route.
+
+        Pinned because if a future router config strips this convenience, clients
+        that build URLs by joining a base URL with ``/health/`` would silently fail.
+        """
+        response = client.get("/health/")
+        assert response.status_code == 200
+        assert response.json()["status"] == "healthy"
+
+    def test_hello_get_query_string_is_ignored(self, client: TestClient) -> None:
+        """``GET /api/hello?name=Alice`` returns the generic greeting (query ignored).
+
+        ``name`` is only meaningful for POST. This pins that the GET handler
+        does not accidentally read it from the query string.
+        """
+        response = client.get("/api/hello?name=Alice")
+        assert response.status_code == 200
+        assert response.json()["message"] == "Hello, World! Welcome to your Software Factory."
+
+
+class TestHTTPMethodEdgeCases:
+    """Methods and request shapes that current tests don't cover.
+
+    ``TestHTTPMethodNotAllowed`` covers DELETE/PUT/PATCH; ``TestHEADMethod``
+    covers HEAD. These tests fill the remaining gaps.
+    """
+
+    def test_trace_method_returns_405(self, client: TestClient) -> None:
+        """TRACE on a defined route returns 405 — TRACE is never registered."""
+        response = client.request("TRACE", "/health")
+        assert response.status_code == 405
+
+    def test_options_without_origin_returns_405(self, client: TestClient) -> None:
+        """OPTIONS without an ``Origin`` header returns 405.
+
+        The CORS middleware only intercepts preflight requests — i.e. OPTIONS
+        carrying both ``Origin`` and ``Access-Control-Request-Method``. A bare
+        OPTIONS therefore falls through to FastAPI's method-not-allowed handler.
+        """
+        response = client.options("/health")
+        assert response.status_code == 405
+
+    def test_options_with_origin_but_no_request_method_returns_405(
+        self, client: TestClient
+    ) -> None:
+        """OPTIONS with ``Origin`` but no ``Access-Control-Request-Method`` returns 405.
+
+        Same reason as above: this isn't a valid CORS preflight, so the CORS
+        middleware doesn't claim it. Pinning this prevents a regression that
+        accidentally returns 200 with empty CORS headers — confusing for clients.
+        """
+        response = client.options("/health", headers={"Origin": LOCALHOST_ORIGIN})
+        assert response.status_code == 405
+
+    def test_post_hello_with_zero_length_body_returns_422(self, client: TestClient) -> None:
+        """POST /api/hello with an empty body and JSON content type returns 422.
+
+        Distinct from ``test_hello_name_rejects_invalid_json`` which sends garbage:
+        this sends nothing at all, exercising FastAPI's empty-body branch.
+        """
+        response = client.post(
+            "/api/hello",
+            content=b"",
+            headers={"Content-Type": "application/json", "Content-Length": "0"},
+        )
+        assert response.status_code == 422
+
+
+class TestCORSCacheCorrectness:
+    """The CORS middleware must set ``Vary: Origin`` so caches don't serve a
+    response generated for one origin to a request from another.
+
+    Without ``Vary: Origin``, a CDN that caches a response with
+    ``Access-Control-Allow-Origin: http://localhost:3000`` could serve it
+    to a request from a different origin, breaking CORS for that consumer.
+    The middleware also advertises credential support; both behaviors are
+    pinned here.
+    """
+
+    def test_allowed_origin_response_includes_vary_origin(self, client: TestClient) -> None:
+        """A simple GET from an allowed origin includes ``Vary: Origin``."""
+        response = client.get("/health", headers={"Origin": LOCALHOST_ORIGIN})
+        assert response.status_code == 200
+        assert "origin" in response.headers.get("vary", "").lower()
+
+    def test_preflight_response_includes_vary_origin(self, client: TestClient) -> None:
+        """The preflight response also includes ``Vary: Origin`` (caches the preflight correctly)."""
+        response = client.options(
+            "/api/hello",
+            headers={
+                "Origin": LOCALHOST_ORIGIN,
+                "Access-Control-Request-Method": "POST",
+            },
+        )
+        assert response.status_code == 200
+        assert "origin" in response.headers.get("vary", "").lower()
+
+    def test_disallowed_origin_response_does_not_set_vary(self, client: TestClient) -> None:
+        """A response to a disallowed origin does not advertise ``Vary: Origin``.
+
+        The middleware only adds ``Vary`` when it actually emits an
+        ``Access-Control-Allow-Origin`` header. Pinning the negative case
+        guards against a regression that always sets ``Vary`` and would
+        leak the existence of allowed-origin handling.
+        """
+        response = client.get("/health", headers={"Origin": "https://evil.example.com"})
+        vary = response.headers.get("vary", "")
+        # Either no vary header, or one that does not contain origin.
+        assert "origin" not in vary.lower(), f"Disallowed origin emitted Vary: {vary!r}"
+
+    def test_allowed_origin_response_includes_allow_credentials(self, client: TestClient) -> None:
+        """``Access-Control-Allow-Credentials: true`` accompanies the Allow-Origin header.
+
+        The app is configured with ``allow_credentials=True`` (so cookies/auth
+        headers can be sent cross-origin). If a future change drops this flag,
+        any frontend that relies on credentialed requests would silently break.
+        """
+        response = client.get("/health", headers={"Origin": LOCALHOST_ORIGIN})
+        assert response.headers.get("access-control-allow-credentials") == "true"
+
+
+class TestErrorResponseShape:
+    """The shape of error response bodies differs by status code.
+
+    ``TestValidationErrorFormat`` already pins the 422 shape (``detail`` is a
+    list of objects). FastAPI returns 404 with ``detail`` as a *string*,
+    which is a meaningfully different shape. ``TestCrossEndpointContract``
+    only checks that ``detail`` exists; this test pins the shape difference
+    so generic clients that ``str()`` the value continue to work.
+    """
+
+    def test_404_detail_is_a_string(self, client: TestClient) -> None:
+        """404 responses have ``detail`` as a string ("Not Found"), not a list."""
+        response = client.get("/api/nonexistent")
+        assert response.status_code == 404
+        detail = response.json()["detail"]
+        assert isinstance(detail, str), (
+            f"Expected str detail, got {type(detail).__name__}: {detail!r}"
+        )
+        assert detail == "Not Found"
+
+    def test_405_detail_is_a_string(self, client: TestClient) -> None:
+        """405 responses have ``detail`` as a string ("Method Not Allowed"), not a list."""
+        response = client.delete("/health")
+        assert response.status_code == 405
+        detail = response.json()["detail"]
+        assert isinstance(detail, str)
+        assert detail == "Method Not Allowed"
+
+
+class TestExactGreetingFormat:
+    """Pin the exact greeting string for whitespace and duplicate-key inputs.
+
+    ``TestHelloNameEdgeCases`` checks that the response is 200 for these
+    inputs and that the substring is present, but never the full template.
+    These tests pin the exact output so a regression that adds trimming,
+    collapsing, or quoting would fail loudly.
+    """
+
+    def test_empty_name_message_format(self, client: TestClient) -> None:
+        """``{"name": ""}`` produces ``"Hello, ! Welcome..."`` — no trimming."""
+        response = client.post("/api/hello", json={"name": ""})
+        assert response.json()["message"] == "Hello, ! Welcome to your Software Factory."
+
+    def test_whitespace_name_message_format(self, client: TestClient) -> None:
+        """``{"name": "   "}`` produces ``"Hello,    ! Welcome..."`` — whitespace preserved verbatim."""
+        response = client.post("/api/hello", json={"name": "   "})
+        assert response.json()["message"] == "Hello,    ! Welcome to your Software Factory."
+
+    def test_tab_name_message_format(self, client: TestClient) -> None:
+        """``{"name": "\\t"}`` produces ``"Hello, \\t! Welcome..."`` — tab preserved verbatim."""
+        response = client.post("/api/hello", json={"name": "\t"})
+        assert response.json()["message"] == "Hello, \t! Welcome to your Software Factory."
+
+    def test_duplicate_name_keys_last_wins(self, client: TestClient) -> None:
+        """Duplicate ``name`` keys in the JSON body resolve last-wins.
+
+        RFC 8259 leaves duplicate-key behavior implementation-defined, but
+        FastAPI's underlying parser (Starlette + json.loads) chooses last-wins.
+        Any client that sends duplicate keys (rarely intentional, but valid JSON)
+        depends on this stable choice; pinning it prevents a silent change if
+        the parser is swapped.
+        """
+        response = client.post(
+            "/api/hello",
+            content=b'{"name":"first","name":"second"}',
+            headers={"Content-Type": "application/json"},
+        )
+        assert response.status_code == 200
+        assert response.json()["message"] == "Hello, second! Welcome to your Software Factory."
