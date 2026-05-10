@@ -6,6 +6,7 @@ the frontend makes on initialization and user interaction — and validate the
 API contract (response shapes) that the frontend TypeScript interfaces depend on.
 """
 
+import pytest
 from fastapi.testclient import TestClient
 
 
@@ -468,4 +469,50 @@ class TestFrontendInitSequenceCORS:
         assert response.headers.get("access-control-allow-origin") == "http://localhost:3000", (
             f"POST /api/hello missing CORS header (got "
             f"{response.headers.get('access-control-allow-origin')!r})"
+        )
+
+
+class TestRegressionCORSAllowListBoundary:
+    """The CORS allow-list contains two entries: ``http://localhost:3000`` and
+    ``http://127.0.0.1:3000``. Existing tests cover the **allowed** boundary
+    (those two origins) and **one obviously-wrong** origin (``evil.example.com``).
+
+    These tests pin three **realistic near-miss** origins that look superficially
+    similar to the allow-list and would be silently accepted if a regression
+    relaxed the matching (e.g. to a wildcard, a substring match, or a bug that
+    treats scheme/port as optional). All three are common deployment mistakes:
+
+    - ``https://localhost:3000`` — the **scheme** flipped to https. A future
+      change that switches the dev frontend to https without updating the
+      backend would silently break.
+    - ``http://localhost:3001`` — the **port** drifted (e.g. someone bumps
+      the dev port for a side project). Browsers treat origin equality as
+      tuple equality (scheme, host, port).
+    - ``http://localhost`` — the **port omitted**. RFC 6454 treats a missing
+      port as the scheme default (80), distinct from ``:3000``.
+
+    Pinning these three near-miss origins ensures the CORS middleware
+    continues to enforce strict origin equality, not a relaxed prefix or
+    fuzzy match. Without these pins, a regression in the middleware (or a
+    dev who misreads the FastAPI ``allow_origins`` docs and adds a wildcard
+    "for convenience") would land green.
+    """
+
+    @pytest.mark.parametrize(
+        "near_miss_origin,reason",
+        [
+            ("https://localhost:3000", "scheme flipped to https"),
+            ("http://localhost:3001", "port drifted to 3001"),
+            ("http://localhost", "port omitted (defaults to 80)"),
+        ],
+    )
+    def test_get_does_not_expose_allow_origin_for_near_miss(
+        self, client: TestClient, near_miss_origin: str, reason: str
+    ) -> None:
+        """Near-miss origins do NOT receive ``Access-Control-Allow-Origin``."""
+        response = client.get("/health", headers={"Origin": near_miss_origin})
+        assert response.status_code == 200
+        assert response.headers.get("access-control-allow-origin") is None, (
+            f"CORS regression: {near_miss_origin!r} ({reason}) was accepted "
+            f"by the allow-list — got {response.headers.get('access-control-allow-origin')!r}"
         )

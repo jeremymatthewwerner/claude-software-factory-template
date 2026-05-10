@@ -199,7 +199,31 @@ Documents test coverage, test descriptions, and quality improvements.
 | `test_tab_name_message_format` | `{"name": "\t"}` returns exactly `"Hello, \t! Welcome..."` — tab preserved verbatim |
 | `test_duplicate_name_keys_last_wins` | Duplicate `name` keys in the JSON body resolve last-wins — pins FastAPI/Starlette/`json.loads` behavior so a parser swap is detected |
 
-**Coverage:** 100% (36/36 statements, 114 tests)
+### `TestRegressionOpenAPIRouteMetadata` (added 2026-05-10 — regression-prevention)
+| Test | Description |
+|------|-------------|
+| `test_route_has_expected_tag[get-/health-System/get-/api/version-System/get-/api/hello-Hello World/post-/api/hello-Hello World]` | Each route's OpenAPI `tags` field equals the documented value (`["System"]` or `["Hello World"]`). Pinned because SDK generators and the `/docs` UI group operations by tag — a removed/renamed tag silently re-groups operations for downstream consumers |
+| `test_route_operation_id_pinned[get-/health-…/get-/api/version-…/get-/api/hello-…/post-/api/hello-…]` | Each route's auto-generated `operationId` (e.g. `health_check_health_get`) matches the documented value. Pinned because generators like `openapi-typescript` and `swagger-codegen` use operationIds as method names — a function rename silently changes the public SDK API |
+
+### `TestRegressionFastAPIDescription` (added 2026-05-10 — regression-prevention)
+| Test | Description |
+|------|-------------|
+| `test_openapi_description_is_pinned` | OpenAPI `info.description` equals exactly `"Backend API powered by Claude Software Factory"` — `TestRegressionMessageFormat` already pinned `info.title` and `info.version`; this fills the third member of the publicly visible `info` block (rendered on `/docs` and consumed by SDK generators emitting module docstrings) |
+
+### `TestRegressionDocumentationURLs` (added 2026-05-10 — regression-prevention)
+| Test | Description |
+|------|-------------|
+| `test_docs_url_is_exactly_slash_docs` | Swagger UI is served at exactly `/docs` (200) and not at alternative paths like `/documentation` or `/api/docs` (404). Pins the URL contract — `TestOpenAPIDocumentation` only verified the canonical path returns 200, not that nothing else does |
+| `test_redoc_url_is_exactly_slash_redoc` | ReDoc is served at exactly `/redoc` (200) and not at `/api/redoc` (404). Same rationale — relocating the docs UI is a breaking change for bookmarks and internal documentation |
+
+### `TestRegressionCORSPreflightContents` (added 2026-05-10 — regression-prevention)
+| Test | Description |
+|------|-------------|
+| `test_preflight_advertises_post_in_allow_methods` | The CORS preflight response includes `POST` in `Access-Control-Allow-Methods`. Pinned because the wildcard `allow_methods=["*"]` configuration produces this; if a future change tightens to `allow_methods=["GET"]`, every browser-side POST silently fails with a CORS error and existing tests still pass |
+| `test_preflight_advertises_get_in_allow_methods` | The preflight response includes `GET` in `Access-Control-Allow-Methods`. Complementary regression guard for the init sequence (`/health`, `/api/version`, `/api/hello` GETs) |
+| `test_preflight_max_age_is_present_and_positive` | The preflight response advertises a positive integer `Access-Control-Max-Age` (Starlette default: 600s). Without a positive max-age, browsers re-issue the preflight on every cross-origin request — a silent perf regression. Asserts presence + positivity rather than exact value so deliberate tuning doesn't require a test edit |
+
+**Coverage:** 100% (36/36 statements, 128 tests)
 
 ---
 
@@ -313,7 +337,7 @@ Performance regression guards. Bounds are deliberately generous (10–100× typi
 | `submits the form on Enter key in the name input` | Submitting the form element (keyboard Enter) calls POST /api/hello and shows the greeting |
 | `sends the correct JSON body in POST /api/hello` | POST /api/hello is called with `{"name": "..."}` as the JSON body, verifying correct request construction |
 
-**Coverage:** 100% statements, 100% branches, 100% functions, 100% lines (70 tests)
+**Coverage:** 100% statements, 100% branches, 100% functions, 100% lines (75 tests)
 
 ### Mid-Sequence API Failure Edge Cases (added 2026-05-02)
 | Test | Description |
@@ -387,6 +411,23 @@ Performance regression guards. Bounds are deliberately generous (10–100× typi
 | Test | Description |
 |------|-------------|
 | `clears the loading state when POST returns a non-JSON body` | Even when `res.json()` rejects (e.g. backend returned HTML), the `finally` block clears `loading` and the button returns from "Sending..." — guards against a missing `finally` leaving the button stuck forever |
+
+### POST Request Shape (added 2026-05-10 — regression-prevention)
+| Test | Description |
+|------|-------------|
+| `POST /api/hello sends Content-Type: application/json header` | Pins the `Content-Type: application/json` header on the submit POST. Existing tests pin the body shape but never the header — a regression that drops the header would still match the body in mocks while breaking real backend negotiation (which would return 422 for a request without a JSON content-type) |
+| `POST /api/hello uses uppercase method string "POST"` | The `method` option is exactly the string `'POST'` (uppercase). Existing tests filter calls by `opts.method === 'POST'`, so a regression that submitted with `'post'` would silently match no calls in those filters and the assertions would pass vacuously. This pin asserts the value positively |
+
+### Pre-Healthy Form State (added 2026-05-10 — regression-prevention)
+| Test | Description |
+|------|-------------|
+| `input is disabled while apiStatus.health is "checking" (initial render)` | The init fetch is left perpetually pending so the component stays in `'checking'`; the input must be disabled. Existing tests cover the `'unhealthy'` case; this fills the `'checking'` window where users are most likely to interact (slow backend) — pins the disabled condition `apiStatus.health !== 'healthy'` so a regression to `=== 'unhealthy'` is loud |
+| `button is disabled while apiStatus.health is "checking" (initial render)` | Complementary pin for the submit button — same rationale as the input |
+
+### apiUrl Fallback Default (added 2026-05-10 — regression-prevention)
+| Test | Description |
+|------|-------------|
+| `every fetch URL has the expected base "http://localhost:8000" when NEXT_PUBLIC_API_URL is unset` | Verifies `process.env.NEXT_PUBLIC_API_URL` is unset in the test environment, then asserts every fetch URL begins with the literal fallback `http://localhost:8000/`. Without this test, a regression that drops/typos the `||` fallback would still pass every other test (mocks match by path) while silently breaking `npm run dev` |
 
 ---
 
@@ -462,7 +503,14 @@ Performance regression guards. Bounds are deliberately generous (10–100× typi
 | `test_init_sequence_all_responses_carry_cors_for_localhost_3000` | All three init endpoints (/health, /api/version, /api/hello) return Access-Control-Allow-Origin: http://localhost:3000 when the request includes that Origin — catches CORS misconfiguration on any single init endpoint that would freeze the frontend on "Checking..." |
 | `test_post_hello_response_carries_cors_for_localhost_3000` | POST /api/hello returns Access-Control-Allow-Origin for localhost:3000 — catches a regression where the form submission succeeds server-side but the browser blocks the response from JavaScript |
 
-**Backend total:** 136 tests (84 unit + 38 integration + 14 performance), 100% coverage
+### `TestRegressionCORSAllowListBoundary` (added 2026-05-10 — regression-prevention)
+| Test | Description |
+|------|-------------|
+| `test_get_does_not_expose_allow_origin_for_near_miss[https://localhost:3000-scheme flipped to https]` | HTTPS variant of the allowed origin does NOT receive `Access-Control-Allow-Origin` — pins origin equality as a tuple match, not a host-only or fuzzy match |
+| `test_get_does_not_expose_allow_origin_for_near_miss[http://localhost:3001-port drifted to 3001]` | A port one digit away from the allow-listed `:3000` is NOT accepted — pins port-strictness in origin matching |
+| `test_get_does_not_expose_allow_origin_for_near_miss[http://localhost-port omitted (defaults to 80)]` | An origin without an explicit port (defaults to 80, distinct from `:3000` per RFC 6454) is NOT accepted — guards against a regression that strips the port before comparison |
+
+**Backend total:** 183 tests (128 unit + 41 integration + 14 performance), 100% coverage
 
 ---
 
@@ -483,6 +531,33 @@ Tests for `RepositoryStatusManager` covering repo name extraction, emoji selecti
 ---
 
 ## Refactoring History
+
+### 2026-05-10 — QA Agent: regression-prevention session (issue #191)
+**Behavior-pin tests added (both suites already at 100% line/branch coverage; gap was uncovered observable contracts that could regress without any failing test):**
+
+**Backend — five new classes across `test_main.py` and `test_integration.py` (17 tests):**
+
+`TestRegressionOpenAPIRouteMetadata` (8 tests, two parametrized over four routes each) — Pins the per-operation OpenAPI metadata that downstream consumers silently depend on:
+- `tags` — `["System"]` for `/health` and `/api/version`; `["Hello World"]` for both `/api/hello` methods. Tags drive the `/docs` UI grouping and SDK generators that filter operations by tag.
+- `operationId` — auto-derived from handler function names (`health_check_health_get`, `get_version_api_version_get`, `hello_world_api_hello_get`, `hello_name_api_hello_post`). Generators like `openapi-typescript` and `swagger-codegen` use them as method names; a function rename therefore silently changes the public SDK surface.
+
+`TestRegressionFastAPIDescription` (1 test) — Pins `info.description` to exactly `"Backend API powered by Claude Software Factory"`. `TestRegressionMessageFormat` already pinned `info.title` and `info.version`; this fills the third member of the public `info` block.
+
+`TestRegressionDocumentationURLs` (2 tests) — Pins that Swagger UI is at exactly `/docs` (not `/documentation` or `/api/docs`) and ReDoc is at exactly `/redoc` (not `/api/redoc`). `TestOpenAPIDocumentation` only verified the canonical paths return 200, not that nothing else does.
+
+`TestRegressionCORSPreflightContents` (3 tests) — Pins the CORS preflight payload that `TestCORSMiddleware` and `TestCORSCacheCorrectness` did not cover: `Access-Control-Allow-Methods` includes both `POST` and `GET` (driven by `allow_methods=["*"]`), and `Access-Control-Max-Age` is a positive integer (Starlette default 600s). Without these, a tightening of `allow_methods` or a drop of `max-age` would silently regress browser-side behavior with no failing test.
+
+`TestRegressionCORSAllowListBoundary` (3 parametrized tests, in `test_integration.py`) — Pins that three realistic near-miss origins are NOT accepted: `https://localhost:3000` (scheme flipped), `http://localhost:3001` (port drifted), `http://localhost` (port omitted). Existing tests covered the allowed boundary and one obviously-wrong origin (`evil.example.com`); these guard against a relaxation of origin matching to a fuzzy/prefix/host-only comparison.
+
+**Frontend — three new describe blocks in `frontend/__tests__/page.test.tsx` (5 tests):**
+
+`regression-prevention: POST request shape` (2 tests) — Pins the `Content-Type: application/json` header (existing tests pinned the body shape but not the header) and asserts the request `method` is positively the uppercase string `'POST'` (existing tests filter on `opts.method === 'POST'`, which would silently match nothing if a regression lowercased the method).
+
+`regression-prevention: pre-healthy form state` (2 tests) — Pins that both the input and submit button are disabled while `apiStatus.health === 'checking'` (initial render, fetch perpetually pending). Existing tests covered the `'unhealthy'` case; this fills the more user-facing `'checking'` window. The disabled condition is `apiStatus.health !== 'healthy'`, which must remain truthy for both states — a regression to `=== 'unhealthy'` is the kind of bug this catches.
+
+`regression-prevention: apiUrl fallback default` (1 test) — Asserts that every fetch URL begins with the literal fallback `http://localhost:8000/` (after first verifying `process.env.NEXT_PUBLIC_API_URL` is undefined in the test environment). Without this test, a regression that drops or typos the `|| 'http://localhost:8000'` fallback would still pass every other test (mocks match by path) while silently breaking `npm run dev`.
+
+**Coverage change:** 100% → 100% (maintained); backend 166 tests → 183 tests; frontend 70 tests → 75 tests. Each new test verified to pass 3× consecutively with no flakiness.
 
 ### 2026-05-09 — QA Agent: edge-cases session (issue #188)
 **Behavioral edge-case coverage added (both suites already at 100% line/branch; gap was behavioral contract, not coverage):**

@@ -1406,6 +1406,136 @@ describe('Home Page', () => {
     });
   });
 
+  // Regression-prevention pins for POST request shape and pre-healthy form
+  // state. Both protect contracts that existing tests rely on but never
+  // explicitly assert:
+  //
+  // - POST request shape: existing tests filter calls by `opts.method === 'POST'`
+  //   which would silently match nothing if a regression lower-cased the method
+  //   or dropped the Content-Type header. We pin the positive presence here.
+  // - Pre-healthy form state: only the 'unhealthy' case pins disabled-ness
+  //   for the input/button. The 'checking' state (initial render, fetch
+  //   pending) is the time window where users are most likely to interact
+  //   with the form; pin the disabled-ness so a regression that flips the
+  //   condition (e.g. `=== 'unhealthy'` instead of `!== 'healthy'`) is loud.
+  // - Fallback `apiUrl`: every test relies on the
+  //   `process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'` fallback,
+  //   but no test pins the literal default. If the fallback is removed or
+  //   typo'd ('http://localhost:8001'), every test would still pass against
+  //   the (now wrong) base URL — but real `npm run dev` would break.
+  describe('regression-prevention: POST request shape', () => {
+    it('POST /api/hello sends Content-Type: application/json header', async () => {
+      mockFetch({ ...HEALTHY_RESPONSES, '/api/hello': { message: 'Hello, Alice!' } });
+      render(<Home />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Connected')).toBeInTheDocument();
+      });
+
+      fireEvent.change(screen.getByPlaceholderText('Enter your name'), {
+        target: { value: 'Alice' },
+      });
+      fireEvent.click(screen.getByRole('button', { name: /say hello/i }));
+
+      await waitFor(() => {
+        expect(screen.getByText('Hello, Alice!')).toBeInTheDocument();
+      });
+
+      const postCall = (global.fetch as jest.Mock).mock.calls.find(
+        ([, opts]: [string, RequestInit]) => opts?.method === 'POST'
+      );
+      expect(postCall).toBeDefined();
+      const headers = (postCall![1] as RequestInit).headers as Record<string, string>;
+      // Header may be capitalised ('Content-Type') or lowercase by environment;
+      // pin presence regardless of casing, but require it to declare JSON.
+      const ctKey = Object.keys(headers).find((k) => k.toLowerCase() === 'content-type');
+      expect(ctKey).toBeDefined();
+      expect(headers[ctKey!]).toBe('application/json');
+    });
+
+    it('POST /api/hello uses uppercase method string "POST"', async () => {
+      // Existing tests filter calls by `opts.method === 'POST'`, so a
+      // regression that submitted with `method: 'post'` (lowercase) would
+      // silently match no calls in those filters and the assertions would
+      // pass vacuously. Pin the exact uppercase string here.
+      mockFetch({ ...HEALTHY_RESPONSES, '/api/hello': { message: 'Hello, Alice!' } });
+      render(<Home />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Connected')).toBeInTheDocument();
+      });
+
+      fireEvent.change(screen.getByPlaceholderText('Enter your name'), {
+        target: { value: 'Alice' },
+      });
+      fireEvent.click(screen.getByRole('button', { name: /say hello/i }));
+
+      await waitFor(() => {
+        expect(screen.getByText('Hello, Alice!')).toBeInTheDocument();
+      });
+
+      // The init sequence makes 3 GET calls (no `method` set, defaults to GET).
+      // The submit handler must explicitly set method: 'POST'. Find any call
+      // whose method is set and assert exactly 'POST'.
+      const callsWithMethod = (global.fetch as jest.Mock).mock.calls.filter(
+        ([, opts]: [string, RequestInit | undefined]) => opts?.method !== undefined
+      );
+      expect(callsWithMethod).toHaveLength(1);
+      expect((callsWithMethod[0][1] as RequestInit).method).toBe('POST');
+    });
+  });
+
+  describe('regression-prevention: pre-healthy form state', () => {
+    it('input is disabled while apiStatus.health is "checking" (initial render)', () => {
+      // The init fetch is perpetually pending so the component stays in
+      // 'checking'. Existing tests cover the 'unhealthy' disabled-ness;
+      // this pins the 'checking' case, which is the window users are most
+      // likely to interact with on a slow backend. The disabled condition
+      // is `apiStatus.health !== 'healthy'`, which must remain truthy for
+      // both 'checking' and 'unhealthy'.
+      (global.fetch as jest.Mock).mockReturnValue(new Promise(() => {}));
+      render(<Home />);
+
+      expect(screen.getByText('Checking...')).toBeInTheDocument();
+      expect(screen.getByPlaceholderText('Enter your name')).toBeDisabled();
+    });
+
+    it('button is disabled while apiStatus.health is "checking" (initial render)', () => {
+      (global.fetch as jest.Mock).mockReturnValue(new Promise(() => {}));
+      render(<Home />);
+
+      expect(screen.getByText('Checking...')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /say hello/i })).toBeDisabled();
+    });
+  });
+
+  describe('regression-prevention: apiUrl fallback default', () => {
+    it('every fetch URL has the expected base "http://localhost:8000" when NEXT_PUBLIC_API_URL is unset', async () => {
+      // The component reads `process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'`.
+      // The Jest environment does not set NEXT_PUBLIC_API_URL, so every
+      // fetch URL must begin with the fallback. Pinning the literal string
+      // here catches a regression that drops the `||` fallback or typos it
+      // ('http://localhost:8001', 'http://localhost', 'https://localhost:8000').
+      // Without this test, every other test would still pass — they match
+      // requests by path — but `npm run dev` (which also relies on the
+      // fallback) would silently break.
+      expect(process.env.NEXT_PUBLIC_API_URL).toBeUndefined();
+
+      mockFetch(HEALTHY_RESPONSES);
+      render(<Home />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Connected')).toBeInTheDocument();
+      });
+
+      const urls = (global.fetch as jest.Mock).mock.calls.map((c) => String(c[0]));
+      expect(urls.length).toBeGreaterThan(0);
+      urls.forEach((url) => {
+        expect(url.startsWith('http://localhost:8000/')).toBe(true);
+      });
+    });
+  });
+
   describe('backend error response handling', () => {
     it('clears the loading state when POST returns a non-JSON body', async () => {
       // If the backend returns ok=true but a body that fails to JSON-parse

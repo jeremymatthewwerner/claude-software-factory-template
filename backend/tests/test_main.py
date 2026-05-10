@@ -979,3 +979,186 @@ class TestExactGreetingFormat:
         )
         assert response.status_code == 200
         assert response.json()["message"] == "Hello, second! Welcome to your Software Factory."
+
+
+class TestRegressionOpenAPIRouteMetadata:
+    """Pin OpenAPI per-route metadata used by SDK generators and ``/docs``.
+
+    ``TestRegressionMessageFormat`` already pins the OpenAPI ``info.title`` and
+    ``info.version``. This class pins per-operation metadata that downstream
+    consumers (SDK generators, the ``/docs`` UI's grouping, monitoring tools
+    that key off operationId) silently depend on:
+
+    - **tags** — a removed or renamed tag silently re-groups operations in
+      ``/docs`` and breaks any tooling that filters by tag (e.g. "show only
+      System endpoints in the dashboard").
+    - **operationId** — FastAPI auto-derives these from function names
+      (``health_check`` → ``health_check_health_get``). Generators like
+      ``openapi-typescript`` and ``swagger-codegen`` use them as method
+      names. A function rename therefore silently changes the public SDK
+      surface; pinning catches the rename before it ships.
+    """
+
+    @pytest.mark.parametrize(
+        "method,path,expected_tag",
+        [
+            ("get", "/health", "System"),
+            ("get", "/api/version", "System"),
+            ("get", "/api/hello", "Hello World"),
+            ("post", "/api/hello", "Hello World"),
+        ],
+    )
+    def test_route_has_expected_tag(
+        self, client: TestClient, method: str, path: str, expected_tag: str
+    ) -> None:
+        """Each route is grouped under its documented tag in the OpenAPI schema."""
+        schema = client.get("/openapi.json").json()
+        operation = schema["paths"][path][method]
+        assert operation.get("tags") == [expected_tag], (
+            f"{method.upper()} {path} expected tag {expected_tag!r}, got {operation.get('tags')!r}"
+        )
+
+    @pytest.mark.parametrize(
+        "method,path,expected_operation_id",
+        [
+            ("get", "/health", "health_check_health_get"),
+            ("get", "/api/version", "get_version_api_version_get"),
+            ("get", "/api/hello", "hello_world_api_hello_get"),
+            ("post", "/api/hello", "hello_name_api_hello_post"),
+        ],
+    )
+    def test_route_operation_id_pinned(
+        self, client: TestClient, method: str, path: str, expected_operation_id: str
+    ) -> None:
+        """Each route's auto-generated operationId is exactly the documented value.
+
+        ``operationId`` is derived from the handler function name. A rename
+        like ``hello_name`` → ``greet`` would silently change the SDK method
+        name on every consumer; pinning the operationId catches that.
+        """
+        schema = client.get("/openapi.json").json()
+        actual = schema["paths"][path][method].get("operationId")
+        assert actual == expected_operation_id, (
+            f"{method.upper()} {path} operationId regressed: "
+            f"got {actual!r}, expected {expected_operation_id!r}"
+        )
+
+
+class TestRegressionFastAPIDescription:
+    """Pin the FastAPI app ``description`` field exposed via OpenAPI.
+
+    ``TestRegressionMessageFormat`` pins ``info.title`` and ``info.version``.
+    The ``info.description`` is also a publicly visible field (rendered on
+    ``/docs`` and consumed by SDK generators that emit module docstrings).
+    A future change to the FastAPI constructor that drops or rewrites the
+    description would currently pass all tests.
+    """
+
+    def test_openapi_description_is_pinned(self, client: TestClient) -> None:
+        """OpenAPI ``info.description`` matches the value declared in ``app.main``."""
+        schema = client.get("/openapi.json").json()
+        assert schema["info"]["description"] == "Backend API powered by Claude Software Factory"
+
+
+class TestRegressionDocumentationURLs:
+    """Pin the URL paths at which Swagger UI and ReDoc are served.
+
+    ``TestOpenAPIDocumentation`` verifies that the documentation endpoints
+    return 200, but does not pin the URL paths themselves. The FastAPI
+    constructor declares ``docs_url="/docs"`` and ``redoc_url="/redoc"``; a
+    regression that changes either to FastAPI's default ``None`` (disabling
+    the UI) or to a different path silently breaks bookmarks, internal
+    documentation, and the Railway deployment health-check that opens
+    ``/docs`` to verify the API surface.
+    """
+
+    def test_docs_url_is_exactly_slash_docs(self, client: TestClient) -> None:
+        """Swagger UI is served from ``/docs`` and not from any alternative path."""
+        assert client.get("/docs").status_code == 200
+        # If the docs were re-routed (e.g. to /api/docs), the canonical path
+        # would 404 — pin the canonical path here so a relocation is loud.
+        assert client.get("/documentation").status_code == 404
+        assert client.get("/api/docs").status_code == 404
+
+    def test_redoc_url_is_exactly_slash_redoc(self, client: TestClient) -> None:
+        """ReDoc is served from ``/redoc`` and not from any alternative path."""
+        assert client.get("/redoc").status_code == 200
+        assert client.get("/api/redoc").status_code == 404
+
+
+class TestRegressionCORSPreflightContents:
+    """Pin the contents of the CORS preflight response.
+
+    ``TestCORSMiddleware`` and ``TestCORSCacheCorrectness`` pin the
+    *presence* of ``Access-Control-Allow-Origin``, ``Vary: Origin``, and
+    ``Access-Control-Allow-Credentials``. They do **not** pin:
+
+    - ``Access-Control-Allow-Methods`` — the wildcard ``allow_methods=["*"]``
+      configuration causes Starlette to emit every HTTP method. If a future
+      change tightens this to ``allow_methods=["GET"]``, every browser-side
+      POST silently fails with a CORS error and the existing tests still pass.
+    - ``Access-Control-Max-Age`` — Starlette's default is 600 seconds. If a
+      regression drops it to 0 (or removes the header), browsers re-issue
+      preflight on every request, multiplying network traffic.
+    """
+
+    def test_preflight_advertises_post_in_allow_methods(self, client: TestClient) -> None:
+        """The preflight response includes ``POST`` in ``Access-Control-Allow-Methods``.
+
+        The frontend's submit handler issues ``fetch(..., { method: 'POST' })``;
+        without ``POST`` in the advertised methods, browsers reject the
+        actual request even though the server would have accepted it.
+        """
+        response = client.options(
+            "/api/hello",
+            headers={
+                "Origin": LOCALHOST_ORIGIN,
+                "Access-Control-Request-Method": "POST",
+            },
+        )
+        assert response.status_code == 200
+        allowed = response.headers.get("access-control-allow-methods", "")
+        assert "POST" in allowed, (
+            f"Preflight Access-Control-Allow-Methods did not include POST: {allowed!r}"
+        )
+
+    def test_preflight_advertises_get_in_allow_methods(self, client: TestClient) -> None:
+        """The preflight response includes ``GET`` in ``Access-Control-Allow-Methods``.
+
+        The frontend's init sequence issues three ``GET`` requests; the
+        complementary regression to the POST pin above.
+        """
+        response = client.options(
+            "/health",
+            headers={
+                "Origin": LOCALHOST_ORIGIN,
+                "Access-Control-Request-Method": "GET",
+            },
+        )
+        assert response.status_code == 200
+        allowed = response.headers.get("access-control-allow-methods", "")
+        assert "GET" in allowed, (
+            f"Preflight Access-Control-Allow-Methods did not include GET: {allowed!r}"
+        )
+
+    def test_preflight_max_age_is_present_and_positive(self, client: TestClient) -> None:
+        """The preflight response advertises a positive ``Access-Control-Max-Age``.
+
+        Without a positive max-age, browsers re-issue the preflight on every
+        cross-origin request — a silent perf regression. Starlette's default
+        is 600 seconds; the test asserts presence and positivity rather than
+        the exact value so a deliberate tuning change (e.g. to 3600) doesn't
+        require a test edit.
+        """
+        response = client.options(
+            "/api/hello",
+            headers={
+                "Origin": LOCALHOST_ORIGIN,
+                "Access-Control-Request-Method": "POST",
+            },
+        )
+        max_age = response.headers.get("access-control-max-age")
+        assert max_age is not None, "Preflight is missing Access-Control-Max-Age header"
+        assert max_age.isdigit() and int(max_age) > 0, (
+            f"Access-Control-Max-Age must be a positive integer, got {max_age!r}"
+        )
