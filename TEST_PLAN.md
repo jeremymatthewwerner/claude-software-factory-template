@@ -807,3 +807,24 @@ Tests for `RepositoryStatusManager` covering repo name extraction, emoji selecti
 - Extracted repeated `mockFetch({...})` setup into a `HEALTHY_RESPONSES` constant and `beforeEach` hooks per `describe` block
 - Added missing test for POST /api/hello network failure error path (covers `page.tsx:70`)
 - Frontend line coverage: 96.66% → 100%
+
+### 2026-05-11 — QA Agent: coverage-sprint session (issue #195)
+
+**Coverage gap closed:** `frontend/src/app/layout.tsx` was previously excluded from coverage via `!src/**/layout.tsx` in `jest.config.js`. It is now included and tested.
+
+**Frontend — new `frontend/__tests__/layout.test.tsx` (8 tests):**
+
+| Test | Description |
+|------|-------------|
+| `metadata export › has the exact title "Software Factory"` | Pins `metadata.title` — the value that renders in the browser tab. |
+| `metadata export › has the exact description used by SEO/social embeds` | Pins `metadata.description` — the value used by SEO/social cards. |
+| `RootLayout component › returns an <html> root element` | Verifies layout returns a React element with `type === 'html'`. |
+| `RootLayout component › sets lang="en" on the <html> element` | Pins the `lang` attribute for accessibility/SEO. |
+| `RootLayout component › wraps children inside a <body> element` | Verifies the html → body structural contract. |
+| `RootLayout component › passes children through into <body> unchanged` | Asserts referential identity — children are not cloned, wrapped, or re-keyed. |
+| `RootLayout component › renders <body> as the only direct child of <html>` | Pins single-child structure (no sibling head/script/style nodes inserted at the layout level). |
+| `RootLayout component › is exported as the default export and is callable` | Pins the default-export contract so layout cannot accidentally become a non-function export. |
+
+**Test design choice:** RootLayout is tested as a pure function call (inspecting the returned React element tree) rather than via `@testing-library/react.render()`. This avoids the jsdom warning about nested `<html>` tags and keeps the assertions focused on the component's structural contract rather than DOM rendering side-effects.
+
+**Coverage change:** Frontend coverage now reports `layout.tsx` at 100% (previously excluded — effectively 0% safety net). All files: 100% statements / branches / functions / lines. Test count: 75 → 83.
