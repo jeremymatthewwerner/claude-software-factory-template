@@ -828,3 +828,29 @@ Tests for `RepositoryStatusManager` covering repo name extraction, emoji selecti
 **Test design choice:** RootLayout is tested as a pure function call (inspecting the returned React element tree) rather than via `@testing-library/react.render()`. This avoids the jsdom warning about nested `<html>` tags and keeps the assertions focused on the component's structural contract rather than DOM rendering side-effects.
 
 **Coverage change:** Frontend coverage now reports `layout.tsx` at 100% (previously excluded — effectively 0% safety net). All files: 100% statements / branches / functions / lines. Test count: 75 → 83.
+
+### 2026-05-12 — QA Agent: flaky-hunt session (issue #199)
+
+**Flakiness root cause identified.** Running `npx jest` emitted **47 React `act()` warnings** to stderr — all originating from `frontend/__tests__/page.test.tsx`. ~14 "renders X" tests mounted `Home`, asserted synchronously, and returned before the init `useEffect` settled. The `setApiStatus` call (page.tsx:40) then fired on the microtask queue *outside* any `act()` scope, meaning the state update was free to leak into the next test's render depending on microtask scheduling. The suite passed 5/5 today but was sitting on the edge of non-determinism — Jest test-ordering changes, RTL version upgrades, or stricter React `act()` enforcement could turn the warnings into intermittent failures.
+
+**Backend:** 5/5 runs clean, 183/183 stable. No backend flakes.
+
+**Fix:**
+
+1. **New regression guard** in `frontend/__tests__/page.test.tsx`: a top-level `beforeEach`/`afterEach` pair installs a `console.error` spy that captures any "not wrapped in act()" warning. The `afterEach` then flushes pending microtasks **outside** `act()` (via `setTimeout(_, 0)` — yields a macrotask boundary that drains the microtask queue) so leaked state updates emit their warnings *before* the assertion runs. Any captured warning fails the test with an actionable error message ("Use `await waitFor`, `await screen.findBy*`, or `await flushInitEffect()`"). Verified by intentionally removing the fix on one test — the guard fires correctly.
+
+2. **New helper** `flushInitEffect()`: wraps `await Promise.resolve()` in `act(async () => {})` to flush the init `useEffect` chain inside the test's `act()` scope. One-line call sites for the synchronous render-and-assert pattern.
+
+3. **Sync test fixes (13 tests):** converted each of the following to `async` and added `await flushInitEffect()` after the synchronous assertion. The assertion still observes the initial render — only the post-test cleanup is now inside `act()`:
+   - `Home Page › initial render`: `renders the title`, `renders the subtitle`, `renders the API status section`, `renders the form`
+   - `Home Page › edge cases`: `renders the View Source card`
+   - `Home Page › info cards`: `renders Getting Started section`, `renders Claude Code card`, `renders API Docs card`
+   - `Home Page › footer`: `renders footer with technology links`
+   - `Home Page › security`: `external links have rel="noopener noreferrer" to prevent tab-nabbing`
+   - `Home Page › form attribute regression guards`: `the name input has type="text"`, `the submit button has type="submit"`, `the form contains both the input and the submit button`
+
+4. **One additional fix:** the `shows loading state during form submission` test resolved the post promise but didn't await the resulting state cleanup — the loading-cleared `setState` then fired after the test ended. Now awaits `screen.getByText('Hello, Alice!')` so the cleanup settles inside the test.
+
+**Verification:** suite runs 5/5 clean (`npx jest --silent`), zero `act()` warnings (`grep -c "wrapped in act"` returns 0). Coverage maintained at 100% statements / branches / functions / lines. Test count unchanged at 83 — this session hardens existing tests rather than adding new ones.
+
+**Why no flaky tests were "fixed" in the traditional sense:** none were intermittently failing today. But the act() warnings indicated 13 tests one microtask-ordering quirk away from flaking. The regression guard ensures future tests cannot reintroduce this class of bug silently.
