@@ -1,8 +1,19 @@
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import Home from '@/app/page';
 
 // Mock fetch
 global.fetch = jest.fn();
+
+// Flushes pending microtasks so the init useEffect's setState calls settle
+// inside the test's act() scope. Required for synchronous render-and-assert
+// tests that mount Home with a resolving fetch mock — without this, the
+// setApiStatus call fires after the test ends, leaking state updates into
+// adjacent tests and emitting React act() warnings (a known flake class).
+async function flushInitEffect() {
+  await act(async () => {
+    await Promise.resolve();
+  });
+}
 
 const HEALTHY_RESPONSES = {
   '/health': { status: 'healthy' },
@@ -26,8 +37,43 @@ const mockFetch = (responses: { [key: string]: object }) => {
 };
 
 describe('Home Page', () => {
+  // Regression guard: capture React "not wrapped in act()" warnings emitted
+  // during the test. These warnings indicate state updates that fire outside
+  // any act() scope — a top cause of test flakes because their effects can
+  // leak into the next test under different microtask scheduling. The guard
+  // also keeps CI logs clean once the suite is warning-free.
+  let actWarnings: string[];
+  let consoleErrorSpy: jest.SpyInstance;
+  let originalConsoleError: typeof console.error;
+
   beforeEach(() => {
     jest.clearAllMocks();
+    actWarnings = [];
+    originalConsoleError = console.error;
+    consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
+      const msg = args.map(String).join(' ');
+      if (msg.includes('not wrapped in act')) {
+        actWarnings.push(msg);
+        return; // Captured — don't re-emit, the afterEach will fail the test.
+      }
+      originalConsoleError(...(args as Parameters<typeof console.error>));
+    });
+  });
+
+  afterEach(async () => {
+    // Flush pending microtasks WITHOUT wrapping in act() so any state updates
+    // leaked by the test body fire their warnings here, where we capture them.
+    // setTimeout(_, 0) yields to a macrotask boundary, draining the queue.
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    consoleErrorSpy.mockRestore();
+    if (actWarnings.length > 0) {
+      throw new Error(
+        `Test leaked ${actWarnings.length} React act() warning(s). State updates ` +
+          `must settle inside the test's act() scope. Use \`await waitFor(...)\`, ` +
+          `\`await screen.findBy*(...)\`, or \`await flushInitEffect()\` to flush ` +
+          `pending effects before the test ends.\n\nFirst warning:\n${actWarnings[0]}`
+      );
+    }
   });
 
   describe('initial render', () => {
@@ -35,25 +81,29 @@ describe('Home Page', () => {
       mockFetch(HEALTHY_RESPONSES);
     });
 
-    it('renders the title', () => {
+    it('renders the title', async () => {
       render(<Home />);
       expect(screen.getByText('Software Factory')).toBeInTheDocument();
+      await flushInitEffect();
     });
 
-    it('renders the subtitle', () => {
+    it('renders the subtitle', async () => {
       render(<Home />);
       expect(screen.getByText('Autonomous development powered by Claude')).toBeInTheDocument();
+      await flushInitEffect();
     });
 
-    it('renders the API status section', () => {
+    it('renders the API status section', async () => {
       render(<Home />);
       expect(screen.getByText('API Status')).toBeInTheDocument();
+      await flushInitEffect();
     });
 
-    it('renders the form', () => {
+    it('renders the form', async () => {
       render(<Home />);
       expect(screen.getByPlaceholderText('Enter your name')).toBeInTheDocument();
       expect(screen.getByRole('button', { name: /say hello/i })).toBeInTheDocument();
+      await flushInitEffect();
     });
   });
 
@@ -299,12 +349,18 @@ describe('Home Page', () => {
       expect(button).toBeDisabled();
 
       resolvePost!({ ok: true, json: () => Promise.resolve({ message: 'Hello, Alice!' }) });
+      // Wait for the post-submit state to settle inside act() so the loading
+      // cleanup setState doesn't fire outside the test scope.
+      await waitFor(() => {
+        expect(screen.getByText('Hello, Alice!')).toBeInTheDocument();
+      });
     });
 
-    it('renders the View Source card', () => {
+    it('renders the View Source card', async () => {
       mockFetch(HEALTHY_RESPONSES);
       render(<Home />);
       expect(screen.getByText('View Source')).toBeInTheDocument();
+      await flushInitEffect();
     });
 
     it('unmounts cleanly before fetch resolves without React state update warnings', () => {
@@ -327,19 +383,22 @@ describe('Home Page', () => {
       mockFetch(HEALTHY_RESPONSES);
     });
 
-    it('renders Getting Started section', () => {
+    it('renders Getting Started section', async () => {
       render(<Home />);
       expect(screen.getByText('Getting Started')).toBeInTheDocument();
+      await flushInitEffect();
     });
 
-    it('renders Claude Code card', () => {
+    it('renders Claude Code card', async () => {
       render(<Home />);
       expect(screen.getByText('Claude Code')).toBeInTheDocument();
+      await flushInitEffect();
     });
 
-    it('renders API Docs card', () => {
+    it('renders API Docs card', async () => {
       render(<Home />);
       expect(screen.getByText('API Docs')).toBeInTheDocument();
+      await flushInitEffect();
     });
   });
 
@@ -348,11 +407,12 @@ describe('Home Page', () => {
       mockFetch(HEALTHY_RESPONSES);
     });
 
-    it('renders footer with technology links', () => {
+    it('renders footer with technology links', async () => {
       render(<Home />);
       expect(screen.getByText('Next.js')).toBeInTheDocument();
       expect(screen.getByText('FastAPI')).toBeInTheDocument();
       expect(screen.getByText('Claude')).toBeInTheDocument();
+      await flushInitEffect();
     });
   });
 
@@ -1049,7 +1109,7 @@ describe('Home Page', () => {
       });
     });
 
-    it('external links have rel="noopener noreferrer" to prevent tab-nabbing', () => {
+    it('external links have rel="noopener noreferrer" to prevent tab-nabbing', async () => {
       // target="_blank" links can be exploited (tab-nabbing) unless
       // rel="noopener noreferrer" is present.
       mockFetch(HEALTHY_RESPONSES);
@@ -1062,6 +1122,7 @@ describe('Home Page', () => {
         expect(rel).toContain('noopener');
         expect(rel).toContain('noreferrer');
       });
+      await flushInitEffect();
     });
   });
 
@@ -1370,7 +1431,7 @@ describe('Home Page', () => {
   });
 
   describe('form attribute regression guards', () => {
-    it('the name input has type="text"', () => {
+    it('the name input has type="text"', async () => {
       // Some prior test suites have been bitten by an inadvertent flip to
       // type="number" or type="email" — those change browser-side validation
       // (e.g., "type=number" rejects "Alice") without breaking any of the
@@ -1379,9 +1440,10 @@ describe('Home Page', () => {
       render(<Home />);
       const input = screen.getByPlaceholderText('Enter your name');
       expect(input).toHaveAttribute('type', 'text');
+      await flushInitEffect();
     });
 
-    it('the submit button has type="submit"', () => {
+    it('the submit button has type="submit"', async () => {
       // The "submits the form on Enter key" test passes only because the
       // button is type="submit". A regression flipping it to type="button"
       // would break Enter-to-submit silently for users who tab into the form,
@@ -1390,9 +1452,10 @@ describe('Home Page', () => {
       render(<Home />);
       const button = screen.getByRole('button', { name: /say hello/i });
       expect(button).toHaveAttribute('type', 'submit');
+      await flushInitEffect();
     });
 
-    it('the form contains both the input and the submit button', () => {
+    it('the form contains both the input and the submit button', async () => {
       // The submit button must live inside the same <form> as the input;
       // otherwise pressing Enter in the input field does not trigger the
       // button's submit semantics. Pin the structural relationship.
@@ -1403,6 +1466,7 @@ describe('Home Page', () => {
       const form = input.closest('form');
       expect(form).not.toBeNull();
       expect(form).toContainElement(button);
+      await flushInitEffect();
     });
   });
 
