@@ -854,3 +854,43 @@ Tests for `RepositoryStatusManager` covering repo name extraction, emoji selecti
 **Verification:** suite runs 5/5 clean (`npx jest --silent`), zero `act()` warnings (`grep -c "wrapped in act"` returns 0). Coverage maintained at 100% statements / branches / functions / lines. Test count unchanged at 83 — this session hardens existing tests rather than adding new ones.
 
 **Why no flaky tests were "fixed" in the traditional sense:** none were intermittently failing today. But the act() warnings indicated 13 tests one microtask-ordering quirk away from flaking. The regression guard ensures future tests cannot reintroduce this class of bug silently.
+
+### 2026-05-13 — QA Agent: integration-gaps session (issue #202)
+
+**Coverage was already 100% backend / 100% frontend.** The focus for this run is *integration-level behaviour the existing tests do not yet pin*, not unreached lines. The existing tests verify each endpoint in isolation plus a few flow contracts; what was missing was cross-endpoint state isolation, idempotence, the OpenAPI-vs-actual error-body contract, and concurrent multi-endpoint behaviour.
+
+**Tests added (21 new in `backend/tests/test_integration.py`, 183 → 203 in the suite):**
+
+| Class | Test | Description |
+|-------|------|-------------|
+| `TestStatelessUserFlow` | `test_get_hello_unchanged_after_post_with_name` | After `POST /api/hello {name: "LeakProbe"}`, a subsequent `GET /api/hello` is byte-identical to the baseline GET — no state leak. |
+| `TestStatelessUserFlow` | `test_post_does_not_leak_previous_post_name` | A POST with name `Bob` does not contain the earlier POSTed name `Alice` — handler state isolation across calls. |
+| `TestStatelessUserFlow` | `test_health_response_status_unchanged_by_prior_traffic` | `/health.status` stays `"healthy"` after a mix of GET/POST/422 traffic — pin against accidental request-counted health logic. |
+| `TestPostIdempotenceContract` | `test_repeated_post_same_name_returns_identical_message` | Five POSTs with the same name yield exactly one unique `message` value — endpoint is a pure function of input. |
+| `TestPostIdempotenceContract` | `test_repeated_post_same_name_timestamps_differ_or_match_but_format_stable` | Across repeated POSTs, every emitted timestamp is a valid timezone-aware UTC ISO 8601 string. |
+| `TestPostIdempotenceContract` | `test_get_hello_message_is_constant_across_calls` | Five `GET /api/hello` calls produce one unique `message` value. |
+| `TestOpenAPI422SchemaMatchesActual422Body` | `test_post_hello_openapi_declares_422_response` | `/openapi.json` declares a `422` response for `POST /api/hello`. |
+| `TestOpenAPI422SchemaMatchesActual422Body` | `test_422_body_top_level_matches_http_validation_error_schema` | The top-level keys of an actual 422 body equal the declared `HTTPValidationError.properties` set. |
+| `TestOpenAPI422SchemaMatchesActual422Body` | `test_422_detail_item_has_required_validation_error_fields` | Every item in `detail` includes every field marked `required` by the `ValidationError` component. |
+| `TestOpenAPI422SchemaMatchesActual422Body` | `test_422_detail_loc_is_list_per_documented_schema` | Each `detail[i].loc` is a list — the documented array type, not a joined string. |
+| `TestAsyncConcurrentInitSequence` | `test_init_sequence_fired_concurrently_all_succeed` | `health + version + hello` fired concurrently via `asyncio.gather` all return 200. |
+| `TestAsyncConcurrentInitSequence` | `test_init_sequence_fired_concurrently_each_returns_its_own_shape` | Each concurrent init response has the endpoint-specific fields and *not* fields of its siblings. |
+| `TestMixedEndpointAsyncConcurrency` | `test_mixed_concurrent_endpoints_each_return_correct_shape` | Concurrent mixed `GET /health + GET /version + GET /hello + POST /hello` each return their own correct shape. |
+| `TestMixedEndpointAsyncConcurrency` | `test_concurrent_posts_with_different_names_have_no_cross_contamination` | Ten concurrent POSTs with ten distinct names each receive their own name in their response. |
+| `TestCrossEndpointTimestampOrderingInUserFlow` | `test_user_flow_timestamps_are_monotonic_across_endpoints` | Timestamps from `/health → GET /api/hello → POST /api/hello` are non-decreasing — catches a handler accidentally using a cached or naive clock. |
+| `TestCrossEndpointTimestampOrderingInUserFlow` | `test_repeated_user_flow_timestamps_progress_forward` | Two passes of the user flow produce timestamps that move forward across passes. |
+| `TestAPIRouteInventoryPin` | `test_openapi_paths_match_expected_route_inventory` | `/openapi.json` declares exactly the `{(GET, /health), (GET, /api/version), (GET, /api/hello), (POST, /api/hello)}` user-facing route set — any addition/removal must update this pin. |
+| `TestAPIRouteInventoryPin` | `test_no_undeclared_route_returns_200` | Common candidate paths (`/`, `/api`, `/admin`, `/metrics`, `/debug`, …) do not return 200 — catches an accidental catch-all router. |
+| `TestFullUserFlowRepeatability` | `test_full_flow_run_twice_returns_identical_shapes` | Running the full init+POST flow twice through one `TestClient` yields identical response *key sets* per endpoint. |
+| `TestFullUserFlowRepeatability` | `test_full_flow_run_twice_status_codes_stable` | All status codes (including the 422 path) are identical across two flow passes. |
+
+**Why these specifically.** The existing integration test file (`test_integration.py`) covers per-endpoint contract (`TestAPIContractHealth/Version/Hello`), the full sequential workflow (`TestFullWorkflow`), the validation-error response shape (`TestValidationErrorFormat`), the OpenAPI 200-response schemas (`TestOpenAPISchemaContract`), cross-endpoint shared conventions (`TestCrossEndpointContract`), and CORS for the init sequence. What was missing — and what this session adds — is:
+- **Statelessness as an explicit contract** (a regression where a handler stored last-greeted state would have passed every existing test).
+- **POST/GET idempotence pinning** (existing tests check single calls; nothing pins that two identical calls produce identical bodies).
+- **The error-side of OpenAPI** (`TestOpenAPISchemaContract` only validated 200 schemas).
+- **True asyncio concurrency across endpoints** (existing concurrent tests fire one endpoint N times; nothing mixes endpoints in one `gather`).
+- **Cross-endpoint timestamp monotonicity inside one user flow** (existing tests check ordering inside one endpoint).
+- **A pin on the entire route surface** (existing tests only assert known routes are present, not the *complete* set).
+- **Two-pass flow stability** (every existing test runs against a fresh `TestClient`).
+
+**Verification:** all 203 tests pass 3× in sequence with no flakiness. Backend coverage stays at 100% (36/36 statements).
