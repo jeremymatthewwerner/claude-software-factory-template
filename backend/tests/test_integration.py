@@ -6,8 +6,11 @@ the frontend makes on initialization and user interaction — and validate the
 API contract (response shapes) that the frontend TypeScript interfaces depend on.
 """
 
+import asyncio
+
 import pytest
 from fastapi.testclient import TestClient
+from httpx import AsyncClient
 
 
 class TestFullWorkflow:
@@ -516,3 +519,456 @@ class TestRegressionCORSAllowListBoundary:
             f"CORS regression: {near_miss_origin!r} ({reason}) was accepted "
             f"by the allow-list — got {response.headers.get('access-control-allow-origin')!r}"
         )
+
+
+class TestStatelessUserFlow:
+    """
+    Verifies the API is stateless across the full user flow.
+
+    The handlers are written as stateless functions, but nothing prevents a
+    future refactor from accidentally introducing module-level state — for
+    example, a "last greeted name" cache or a request-counter. These tests
+    pin the contract that GET responses are unaffected by prior POSTs, and
+    that one user's POST does not influence another's response.
+    """
+
+    def test_get_hello_unchanged_after_post_with_name(self, client: TestClient) -> None:
+        """``GET /api/hello`` returns the generic greeting even after a POST with a name.
+
+        If a handler ever stored the last submitted name (e.g. in a global),
+        the next anonymous GET would surface it — a privacy and contract bug.
+        """
+        baseline = client.get("/api/hello").json()["message"]
+        client.post("/api/hello", json={"name": "LeakProbe"})
+        after_post = client.get("/api/hello").json()["message"]
+        assert after_post == baseline, (
+            f"GET hello changed after a POST — possible state leak. "
+            f"Before: {baseline!r}, after: {after_post!r}"
+        )
+        assert "LeakProbe" not in after_post, (
+            f"POSTed name leaked into anonymous GET response: {after_post!r}"
+        )
+
+    def test_post_does_not_leak_previous_post_name(self, client: TestClient) -> None:
+        """A POST with name ``B`` does not reference any earlier POSTed name ``A``."""
+        client.post("/api/hello", json={"name": "Alice"})
+        second = client.post("/api/hello", json={"name": "Bob"}).json()["message"]
+        assert "Alice" not in second, (
+            f"Earlier POST name leaked into a later distinct POST: {second!r}"
+        )
+        assert "Bob" in second
+
+    def test_health_response_status_unchanged_by_prior_traffic(self, client: TestClient) -> None:
+        """``/health`` returns the same ``status`` value after a mix of GET/POST traffic.
+
+        A regression where ``/health`` reflected request-handling state (e.g.
+        flipping to ``degraded`` after a 422) would be caught here.
+        """
+        before = client.get("/health").json()["status"]
+        client.post("/api/hello", json={"name": "Charlie"})
+        client.post("/api/hello", json={})  # triggers 422
+        client.get("/api/version")
+        after = client.get("/health").json()["status"]
+        assert before == after == "healthy"
+
+
+class TestPostIdempotenceContract:
+    """
+    Pins the idempotence contract of POST /api/hello.
+
+    Repeated POSTs with the same ``name`` must return the same ``message``
+    body — the endpoint is a pure function of its input. Only ``timestamp``
+    is allowed to vary between identical calls. Without this pin, a future
+    change that, say, appended a counter or a uuid to the message would
+    pass every existing test (each test only checks a single call) while
+    silently breaking any client that relies on the deterministic format.
+    """
+
+    def test_repeated_post_same_name_returns_identical_message(self, client: TestClient) -> None:
+        """Five POSTs with the same name yield byte-identical ``message`` values."""
+        messages = {
+            client.post("/api/hello", json={"name": "Repeat"}).json()["message"] for _ in range(5)
+        }
+        assert len(messages) == 1, (
+            f"POST /api/hello is not idempotent on 'message' — got distinct values: {messages!r}"
+        )
+
+    def test_repeated_post_same_name_timestamps_differ_or_match_but_format_stable(
+        self, client: TestClient
+    ) -> None:
+        """Timestamps across repeated POSTs are all valid ISO 8601 UTC strings.
+
+        Identical timestamps are acceptable (calls within the same millisecond),
+        but every emitted timestamp must parse as a timezone-aware UTC datetime.
+        """
+        from datetime import datetime
+
+        timestamps = [
+            client.post("/api/hello", json={"name": "TimestampRepeat"}).json()["timestamp"]
+            for _ in range(5)
+        ]
+        for ts in timestamps:
+            parsed = datetime.fromisoformat(ts)
+            assert parsed.tzinfo is not None, f"Naive timestamp emitted: {ts!r}"
+            offset = parsed.utcoffset()
+            assert offset is not None and offset.total_seconds() == 0, (
+                f"Non-UTC timestamp emitted across repeated POSTs: {ts!r}"
+            )
+
+    def test_get_hello_message_is_constant_across_calls(self, client: TestClient) -> None:
+        """``GET /api/hello`` returns byte-identical messages across repeated calls."""
+        messages = {client.get("/api/hello").json()["message"] for _ in range(5)}
+        assert len(messages) == 1, (
+            f"GET /api/hello message changed between calls — got: {messages!r}"
+        )
+
+
+class TestOpenAPI422SchemaMatchesActual422Body:
+    """
+    Verifies the OpenAPI ``HTTPValidationError`` and ``ValidationError`` schemas
+    accurately describe the actual 422 body emitted by FastAPI.
+
+    ``TestOpenAPISchemaContract`` validates 200 response schemas only. The 422
+    response on ``POST /api/hello`` is declared in OpenAPI via the
+    ``HTTPValidationError`` component, but no current test pins that the
+    documented schema matches what the server actually emits. SDK code
+    generators and TypeScript clients trust this declaration — if FastAPI
+    is upgraded and adds/removes fields from validation errors, generated
+    clients silently drift from reality. These tests catch that drift.
+    """
+
+    def test_post_hello_openapi_declares_422_response(self, client: TestClient) -> None:
+        """POST /api/hello must declare a 422 response in its OpenAPI operation.
+
+        Without this declaration, generated clients have no idea the endpoint
+        can return a structured validation error and may fail to parse it.
+        """
+        schema = client.get("/openapi.json").json()
+        responses = schema["paths"]["/api/hello"]["post"]["responses"]
+        assert "422" in responses, (
+            f"POST /api/hello does not declare a 422 response in OpenAPI; got {list(responses)}"
+        )
+
+    def test_422_body_top_level_matches_http_validation_error_schema(
+        self, client: TestClient
+    ) -> None:
+        """Actual 422 body has exactly the fields declared by HTTPValidationError.
+
+        The schema declares a single ``detail`` field; FastAPI must emit a
+        body with exactly that top-level shape (no extra keys, no missing keys).
+        """
+        schema = client.get("/openapi.json").json()
+        hve = schema["components"]["schemas"]["HTTPValidationError"]
+        documented_fields = set(hve["properties"])
+
+        actual_body = client.post("/api/hello", json={}).json()
+        actual_fields = set(actual_body)
+
+        assert actual_fields == documented_fields, (
+            f"422 body top-level keys {actual_fields} do not match documented "
+            f"HTTPValidationError properties {documented_fields}"
+        )
+
+    def test_422_detail_item_has_required_validation_error_fields(self, client: TestClient) -> None:
+        """Each item in 422 ``detail`` includes every field marked required by ValidationError.
+
+        ``ValidationError.required`` is ``[loc, msg, type]``. If FastAPI ever
+        drops one of these (or the model drifts), generated clients break.
+        """
+        schema = client.get("/openapi.json").json()
+        ve = schema["components"]["schemas"]["ValidationError"]
+        required_fields = set(ve["required"])
+
+        body = client.post("/api/hello", json={"name": 123}).json()
+        assert body["detail"], "422 'detail' list was empty — cannot verify item shape"
+        for item in body["detail"]:
+            missing = required_fields - set(item)
+            assert not missing, (
+                f"422 detail item is missing documented-required fields {missing}: {item!r}"
+            )
+
+    def test_422_detail_loc_is_list_per_documented_schema(self, client: TestClient) -> None:
+        """``ValidationError.loc`` is documented as an array; actual ``loc`` must be a list.
+
+        Pinning the type catches a FastAPI change that returned ``loc`` as a
+        joined string — a subtle breaking change that string-typed asserts
+        elsewhere would not catch.
+        """
+        body = client.post("/api/hello", json={}).json()
+        for item in body["detail"]:
+            assert isinstance(item["loc"], list), (
+                f"Validation error 'loc' is not a list per OpenAPI schema: {item!r}"
+            )
+
+
+class TestAsyncConcurrentInitSequence:
+    """
+    Verifies the frontend init sequence works when fired truly concurrently.
+
+    ``TestFullWorkflow.test_full_page_load_sequence`` runs the init calls
+    sequentially. Real browsers may fire them concurrently (the page makes
+    three ``fetch`` calls inside one ``useEffect`` without awaiting between
+    them is possible). These tests use ``asyncio.gather`` against the ASGI
+    transport to confirm all three init calls succeed under genuine
+    concurrency, with no cross-talk between handler invocations.
+    """
+
+    @pytest.mark.asyncio
+    async def test_init_sequence_fired_concurrently_all_succeed(
+        self, async_client: AsyncClient
+    ) -> None:
+        """``GET /health``, ``GET /api/version``, ``GET /api/hello`` succeed when fired concurrently."""
+        health, version, hello = await asyncio.gather(
+            async_client.get("/health"),
+            async_client.get("/api/version"),
+            async_client.get("/api/hello"),
+        )
+        assert health.status_code == 200, f"/health failed under concurrency: {health.status_code}"
+        assert version.status_code == 200, (
+            f"/api/version failed under concurrency: {version.status_code}"
+        )
+        assert hello.status_code == 200, f"/api/hello failed under concurrency: {hello.status_code}"
+
+    @pytest.mark.asyncio
+    async def test_init_sequence_fired_concurrently_each_returns_its_own_shape(
+        self, async_client: AsyncClient
+    ) -> None:
+        """Concurrently-fired init calls each return the shape unique to their endpoint.
+
+        Catches a hypothetical handler-state leak where, under contention,
+        one handler's response body bleeds into another's.
+        """
+        health, version, hello = await asyncio.gather(
+            async_client.get("/health"),
+            async_client.get("/api/version"),
+            async_client.get("/api/hello"),
+        )
+        assert "status" in health.json() and health.json()["status"] == "healthy"
+        assert "version" in version.json() and "name" in version.json()
+        assert "message" in hello.json() and "Hello" in hello.json()["message"]
+        # Mutually exclusive: no endpoint accidentally returns another's payload
+        assert "version" not in health.json()
+        assert "message" not in version.json()
+        assert "status" not in hello.json()
+
+
+class TestMixedEndpointAsyncConcurrency:
+    """
+    Verifies mixed GET + POST traffic across all endpoints in one concurrent batch.
+
+    Existing async concurrency tests only hit one endpoint at a time
+    (e.g. ``test_concurrent_health_requests`` is N×GET /health). This is the
+    only place that fires N requests across the *full* endpoint surface
+    concurrently — catching handler-level state leakage that only manifests
+    when different endpoints share the event loop simultaneously.
+    """
+
+    @pytest.mark.asyncio
+    async def test_mixed_concurrent_endpoints_each_return_correct_shape(
+        self, async_client: AsyncClient
+    ) -> None:
+        """Mixed GET /health, GET /api/version, GET /api/hello, POST /api/hello
+        fired concurrently each return the shape correct for *their* endpoint."""
+        responses = await asyncio.gather(
+            async_client.get("/health"),
+            async_client.get("/api/version"),
+            async_client.get("/api/hello"),
+            async_client.post("/api/hello", json={"name": "Concurrent"}),
+        )
+        health, version, hello_get, hello_post = responses
+        for r in responses:
+            assert r.status_code == 200
+
+        assert health.json()["status"] == "healthy"
+        assert isinstance(version.json()["version"], str) and version.json()["version"]
+        assert "Hello, World" in hello_get.json()["message"]
+        assert "Concurrent" in hello_post.json()["message"]
+
+    @pytest.mark.asyncio
+    async def test_concurrent_posts_with_different_names_have_no_cross_contamination(
+        self, async_client: AsyncClient
+    ) -> None:
+        """Ten concurrent POSTs with ten distinct names each get back their own name.
+
+        Confirms request handler frames stay isolated across the event loop
+        even with deliberately interleaved distinct names.
+        """
+        names = [f"User{i}" for i in range(10)]
+        responses = await asyncio.gather(
+            *[async_client.post("/api/hello", json={"name": n}) for n in names]
+        )
+        for name, response in zip(names, responses, strict=True):
+            assert response.status_code == 200
+            body = response.json()
+            assert name in body["message"], (
+                f"Concurrent POST for {name!r} got back: {body['message']!r}"
+            )
+
+
+class TestCrossEndpointTimestampOrderingInUserFlow:
+    """
+    Verifies timestamps across a single user flow are monotonically non-decreasing.
+
+    ``TestTimestampOrdering`` checks single-endpoint monotonicity. This class
+    checks the *cross-endpoint* version: the user-facing flow emits timestamps
+    from three different handler functions (``health_check``, ``hello_world``,
+    ``hello_name``), all of which use ``datetime.now(UTC)``. If any of these
+    were ever wired to a different clock source (e.g. a cached datetime, a
+    fixture clock, or accidentally ``datetime.utcnow()`` which is naive),
+    cross-endpoint ordering would break — invisible to single-endpoint tests.
+    """
+
+    def test_user_flow_timestamps_are_monotonic_across_endpoints(self, client: TestClient) -> None:
+        """Timestamps from /health → /api/hello → POST /api/hello are non-decreasing.
+
+        Models the real user flow: page load (health), greeting display
+        (GET hello), form submit (POST hello). Each handler creates its own
+        timestamp; ordering must follow wall-clock ordering.
+        """
+        from datetime import datetime
+
+        ts_health = datetime.fromisoformat(client.get("/health").json()["timestamp"])
+        ts_get_hello = datetime.fromisoformat(client.get("/api/hello").json()["timestamp"])
+        ts_post_hello = datetime.fromisoformat(
+            client.post("/api/hello", json={"name": "FlowUser"}).json()["timestamp"]
+        )
+
+        assert ts_health <= ts_get_hello, (
+            f"/health timestamp {ts_health} is after /api/hello GET {ts_get_hello}"
+        )
+        assert ts_get_hello <= ts_post_hello, (
+            f"GET /api/hello timestamp {ts_get_hello} is after POST /api/hello {ts_post_hello}"
+        )
+
+    def test_repeated_user_flow_timestamps_progress_forward(self, client: TestClient) -> None:
+        """A second pass through the user flow emits timestamps no earlier than the first.
+
+        Catches a regression where any handler accidentally cached its first
+        ``datetime.now()`` value (e.g. via a misused module-level default).
+        """
+        from datetime import datetime
+
+        first_health = datetime.fromisoformat(client.get("/health").json()["timestamp"])
+        first_post = datetime.fromisoformat(
+            client.post("/api/hello", json={"name": "Pass1"}).json()["timestamp"]
+        )
+        second_health = datetime.fromisoformat(client.get("/health").json()["timestamp"])
+        second_post = datetime.fromisoformat(
+            client.post("/api/hello", json={"name": "Pass2"}).json()["timestamp"]
+        )
+        assert first_health <= second_health, (
+            "Health timestamp moved backwards across two passes — possible clock cache"
+        )
+        assert first_post <= second_post, (
+            "POST hello timestamp moved backwards across two passes — possible clock cache"
+        )
+
+
+class TestAPIRouteInventoryPin:
+    """
+    Pins the exact set of routes exposed by the application.
+
+    Existing tests check for the presence of *known* routes in OpenAPI
+    (``test_openapi_documents_all_defined_routes``) but never assert the
+    *complete* set. A new public route can be silently added (or an
+    existing one removed) without any existing test failing — which is
+    exactly the kind of API-surface drift that integration tests should
+    catch. This test pins the entire surface so any addition or removal is
+    a conscious change reviewed via this test update.
+    """
+
+    EXPECTED_USER_ROUTES: set[tuple[str, str]] = {
+        ("GET", "/health"),
+        ("GET", "/api/version"),
+        ("GET", "/api/hello"),
+        ("POST", "/api/hello"),
+    }
+
+    def test_openapi_paths_match_expected_route_inventory(self, client: TestClient) -> None:
+        """``/openapi.json`` declares exactly the user-facing routes the project ships."""
+        schema = client.get("/openapi.json").json()
+        actual: set[tuple[str, str]] = {
+            (method.upper(), path)
+            for path, methods in schema["paths"].items()
+            for method in methods
+            if method.lower() in {"get", "post", "put", "delete", "patch"}
+        }
+        unexpected = actual - self.EXPECTED_USER_ROUTES
+        missing = self.EXPECTED_USER_ROUTES - actual
+        assert not unexpected, (
+            f"Unexpected route(s) appeared in OpenAPI without updating this pin: {unexpected}"
+        )
+        assert not missing, f"Expected route(s) are missing from OpenAPI: {missing}"
+
+    def test_no_undeclared_route_returns_200(self, client: TestClient) -> None:
+        """Common candidate paths not in the inventory return 404, not 200.
+
+        Catches an accidentally-mounted catch-all router or a stray
+        ``@app.get`` that exposes an undocumented endpoint.
+        """
+        candidates = [
+            "/",
+            "/api",
+            "/api/",
+            "/api/users",
+            "/admin",
+            "/metrics",
+            "/debug",
+            "/api/internal/state",
+        ]
+        for path in candidates:
+            response = client.get(path)
+            assert response.status_code != 200, (
+                f"Undocumented route {path!r} unexpectedly returned 200 — "
+                f"either pin it in EXPECTED_USER_ROUTES or remove the handler"
+            )
+
+
+class TestFullUserFlowRepeatability:
+    """
+    Verifies the entire user flow can be run twice in one process with identical contract.
+
+    Each individual integration test runs in isolation. Real users (and the
+    frontend during a re-mount, or a Playwright suite running across cases)
+    will execute the flow multiple times against the same process. If any
+    handler accumulates state, caches a global, or relies on first-call
+    initialisation, the second pass would diverge — yet every existing
+    test would still pass since each runs against a fresh ``TestClient``.
+    This test runs the flow twice through one client and pins shape parity.
+    """
+
+    def test_full_flow_run_twice_returns_identical_shapes(self, client: TestClient) -> None:
+        """Running init+POST twice yields responses with identical JSON keys per call.
+
+        The values may differ (timestamps, etc.); the *shape* must be stable.
+        """
+
+        def run_flow() -> dict[str, set[str]]:
+            return {
+                "health": set(client.get("/health").json()),
+                "version": set(client.get("/api/version").json()),
+                "hello_get": set(client.get("/api/hello").json()),
+                "hello_post": set(client.post("/api/hello", json={"name": "Repeat"}).json()),
+            }
+
+        first = run_flow()
+        second = run_flow()
+        for endpoint, keys in first.items():
+            assert keys == second[endpoint], (
+                f"Response shape for {endpoint} drifted between flow runs: "
+                f"first={keys}, second={second[endpoint]}"
+            )
+
+    def test_full_flow_run_twice_status_codes_stable(self, client: TestClient) -> None:
+        """All status codes are identical across two passes of the flow."""
+
+        def run_flow() -> list[int]:
+            return [
+                client.get("/health").status_code,
+                client.get("/api/version").status_code,
+                client.get("/api/hello").status_code,
+                client.post("/api/hello", json={"name": "RepeatStatus"}).status_code,
+                client.post("/api/hello", json={}).status_code,  # 422 path
+            ]
+
+        assert run_flow() == run_flow()
