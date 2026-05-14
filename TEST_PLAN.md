@@ -262,6 +262,46 @@ Performance regression guards. Bounds are deliberately generous (10–100× typi
 | `test_1kb_name_post_under_ceiling` | POST with 1KB name completes under 500ms |
 | `test_10kb_name_post_under_one_second` | POST with 10KB name completes under 1s — guards against quadratic blowup |
 
+### `TestCORSPreflightPerformance` (added 2026-05-14 — e2e-performance)
+| Test | Description |
+|------|-------------|
+| `test_single_preflight_under_ceiling` | One CORS preflight (OPTIONS) for POST /api/hello completes under 100ms — every cross-origin POST pays this round-trip |
+| `test_preflight_then_post_under_single_call_ceiling` | Preflight + the POST it gates complete together under 500ms — guards user-perceived POST latency in a real browser |
+
+### `TestLatencyDistribution` (added 2026-05-14 — e2e-performance)
+| Test | Description |
+|------|-------------|
+| `test_p95_latency_under_ceiling` | p95 /health latency stays under 50ms over 200 calls — tail-latency regression guard |
+| `test_p99_latency_under_ceiling` | p99 /health latency stays under 100ms over 200 calls — catches sporadic slow responses the median hides |
+| `test_max_latency_within_50x_median` | Worst single call never exceeds 50× median over 100 calls — outlier guard for stalls (lock contention, sync I/O on hot path) |
+
+### `TestParallelInitSequence` (added 2026-05-14 — e2e-performance)
+| Test | Description |
+|------|-------------|
+| `test_parallel_init_under_ceiling` | Health + version + hello fetched in parallel (matches real browser behavior) complete under 300ms |
+| `test_parallel_init_not_slower_than_sequential` | Parallel init never exceeds 2× sequential time — catches accidental serialization of async handlers |
+
+### `TestMixedWorkloadConcurrent` (added 2026-05-14 — e2e-performance)
+| Test | Description |
+|------|-------------|
+| `test_15_reads_and_15_writes_interleaved_under_ceiling` | 15 GETs interleaved with 15 POSTs complete concurrently under 1s with no cross-contamination — realistic mixed E2E traffic pattern |
+
+### `TestOpenAPISchemaPerformance` (added 2026-05-14 — e2e-performance)
+| Test | Description |
+|------|-------------|
+| `test_openapi_json_under_ceiling` | GET /openapi.json completes under 500ms — schema generation cost regression guard |
+| `test_openapi_json_cached_repeat_call_fast` | Five repeat /openapi.json calls average under 200ms — FastAPI schema cache regression guard |
+
+### `TestResponsePayloadSize` (added 2026-05-14 — e2e-performance)
+| Test | Description |
+|------|-------------|
+| `test_response_body_under_size_ceiling[health/version/hello_get/hello_post]` | Each endpoint response body stays under its pinned ceiling — bandwidth/parse-cost regression guard against accidental bloat (debug fields, leaked metadata). Parametrized over (method, path, body, ceiling_bytes) |
+
+### `TestBurstThenIdlePattern` (added 2026-05-14 — e2e-performance)
+| Test | Description |
+|------|-------------|
+| `test_three_bursts_each_under_ceiling` | Three back-to-back bursts of 10 concurrent requests each stay under 300ms with the third not more than 3× the first — catches per-burst resource leaks across idle gaps |
+
 ---
 
 ## Frontend Tests (`frontend/__tests__/page.test.tsx`)
