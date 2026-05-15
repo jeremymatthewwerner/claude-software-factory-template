@@ -7,10 +7,13 @@ API contract (response shapes) that the frontend TypeScript interfaces depend on
 """
 
 import asyncio
+from datetime import datetime
 
 import pytest
 from fastapi.testclient import TestClient
 from httpx import AsyncClient
+
+from .conftest import assert_utc_iso8601, openapi_component_for_response
 
 
 class TestFullWorkflow:
@@ -279,8 +282,9 @@ class TestOpenAPISchemaContract:
         changes (e.g. to `int`), generated clients break — this test fails first.
         """
         schema = client.get("/openapi.json").json()
-        post_op = schema["paths"]["/api/hello"]["post"]
-        ref = post_op["requestBody"]["content"]["application/json"]["schema"]["$ref"]
+        ref = schema["paths"]["/api/hello"]["post"]["requestBody"]["content"]["application/json"][
+            "schema"
+        ]["$ref"]
         # $ref is like "#/components/schemas/HelloRequest"
         component_name = ref.rsplit("/", 1)[-1]
         component = schema["components"]["schemas"][component_name]
@@ -290,72 +294,40 @@ class TestOpenAPISchemaContract:
             "Schema must declare 'name' as a string"
         )
 
-    def test_openapi_health_response_schema_matches_actual_response(
-        self, client: TestClient
+    @pytest.mark.parametrize(
+        "method,path,json_body",
+        [
+            ("get", "/health", None),
+            ("get", "/api/version", None),
+            ("get", "/api/hello", None),
+            ("post", "/api/hello", {"name": "SchemaCheck"}),
+        ],
+        ids=["health", "version", "hello_get", "hello_post"],
+    )
+    def test_openapi_response_schema_matches_actual_response(
+        self,
+        client: TestClient,
+        method: str,
+        path: str,
+        json_body: dict[str, str] | None,
     ) -> None:
-        """OpenAPI HealthResponse fields are exactly the fields returned by /health.
+        """OpenAPI 200-response schema fields equal the fields the handler emits.
 
-        Catches drift in either direction: a field added to the response but not
-        the model, or removed from the model but still emitted by the handler.
+        Catches drift in either direction across every endpoint: a field added
+        to the handler response without updating the Pydantic model, or a
+        field removed from the model but still emitted. Pinning all four
+        endpoints via parametrize (rather than four separate methods) keeps
+        the assertion logic in one place so a single helper update covers
+        every endpoint.
         """
         schema = client.get("/openapi.json").json()
-        ref = schema["paths"]["/health"]["get"]["responses"]["200"]["content"]["application/json"][
-            "schema"
-        ]["$ref"]
-        component_name = ref.rsplit("/", 1)[-1]
-        documented_fields = set(schema["components"]["schemas"][component_name]["properties"])
-        actual_fields = set(client.get("/health").json().keys())
+        component = openapi_component_for_response(schema, path, method)
+        documented_fields = set(component["properties"])
+        actual_fields = set(client.request(method.upper(), path, json=json_body).json())
 
         assert documented_fields == actual_fields, (
-            f"OpenAPI declares {documented_fields} but /health returns {actual_fields}"
-        )
-
-    def test_openapi_version_response_schema_matches_actual_response(
-        self, client: TestClient
-    ) -> None:
-        """OpenAPI VersionResponse fields are exactly the fields returned by /api/version."""
-        schema = client.get("/openapi.json").json()
-        ref = schema["paths"]["/api/version"]["get"]["responses"]["200"]["content"][
-            "application/json"
-        ]["schema"]["$ref"]
-        component_name = ref.rsplit("/", 1)[-1]
-        documented_fields = set(schema["components"]["schemas"][component_name]["properties"])
-        actual_fields = set(client.get("/api/version").json().keys())
-
-        assert documented_fields == actual_fields, (
-            f"OpenAPI declares {documented_fields} but /api/version returns {actual_fields}"
-        )
-
-    def test_openapi_get_hello_response_schema_matches_actual_response(
-        self, client: TestClient
-    ) -> None:
-        """OpenAPI HelloResponse fields are exactly the fields returned by GET /api/hello."""
-        schema = client.get("/openapi.json").json()
-        ref = schema["paths"]["/api/hello"]["get"]["responses"]["200"]["content"][
-            "application/json"
-        ]["schema"]["$ref"]
-        component_name = ref.rsplit("/", 1)[-1]
-        documented_fields = set(schema["components"]["schemas"][component_name]["properties"])
-        actual_fields = set(client.get("/api/hello").json().keys())
-
-        assert documented_fields == actual_fields, (
-            f"OpenAPI declares {documented_fields} but GET /api/hello returns {actual_fields}"
-        )
-
-    def test_openapi_post_hello_response_schema_matches_actual_response(
-        self, client: TestClient
-    ) -> None:
-        """OpenAPI HelloResponse fields are exactly the fields returned by POST /api/hello."""
-        schema = client.get("/openapi.json").json()
-        ref = schema["paths"]["/api/hello"]["post"]["responses"]["200"]["content"][
-            "application/json"
-        ]["schema"]["$ref"]
-        component_name = ref.rsplit("/", 1)[-1]
-        documented_fields = set(schema["components"]["schemas"][component_name]["properties"])
-        actual_fields = set(client.post("/api/hello", json={"name": "SchemaCheck"}).json().keys())
-
-        assert documented_fields == actual_fields, (
-            f"OpenAPI declares {documented_fields} but POST /api/hello returns {actual_fields}"
+            f"OpenAPI declares {documented_fields} but {method.upper()} {path} "
+            f"returns {actual_fields}"
         )
 
 
@@ -395,20 +367,13 @@ class TestCrossEndpointContract:
         observability tooling treats them uniformly — a non-UTC or non-ISO format
         on one endpoint silently breaks downstream consumers.
         """
-        from datetime import datetime
-
         timestamps = [
             client.get("/health").json()["timestamp"],
             client.get("/api/hello").json()["timestamp"],
             client.post("/api/hello", json={"name": "TimestampCheck"}).json()["timestamp"],
         ]
         for ts in timestamps:
-            parsed = datetime.fromisoformat(ts)
-            assert parsed.tzinfo is not None, f"Timestamp {ts!r} is naive (no timezone)"
-            offset = parsed.utcoffset()
-            assert offset is not None and offset.total_seconds() == 0, (
-                f"Timestamp {ts!r} is not UTC (offset={offset})"
-            )
+            assert_utc_iso8601(ts)
 
     def test_all_4xx_responses_have_detail_key(self, client: TestClient) -> None:
         """404, 405, and 422 responses across endpoints all include a top-level `detail` key.
@@ -601,19 +566,12 @@ class TestPostIdempotenceContract:
         Identical timestamps are acceptable (calls within the same millisecond),
         but every emitted timestamp must parse as a timezone-aware UTC datetime.
         """
-        from datetime import datetime
-
         timestamps = [
             client.post("/api/hello", json={"name": "TimestampRepeat"}).json()["timestamp"]
             for _ in range(5)
         ]
         for ts in timestamps:
-            parsed = datetime.fromisoformat(ts)
-            assert parsed.tzinfo is not None, f"Naive timestamp emitted: {ts!r}"
-            offset = parsed.utcoffset()
-            assert offset is not None and offset.total_seconds() == 0, (
-                f"Non-UTC timestamp emitted across repeated POSTs: {ts!r}"
-            )
+            assert_utc_iso8601(ts)
 
     def test_get_hello_message_is_constant_across_calls(self, client: TestClient) -> None:
         """``GET /api/hello`` returns byte-identical messages across repeated calls."""
@@ -825,8 +783,6 @@ class TestCrossEndpointTimestampOrderingInUserFlow:
         (GET hello), form submit (POST hello). Each handler creates its own
         timestamp; ordering must follow wall-clock ordering.
         """
-        from datetime import datetime
-
         ts_health = datetime.fromisoformat(client.get("/health").json()["timestamp"])
         ts_get_hello = datetime.fromisoformat(client.get("/api/hello").json()["timestamp"])
         ts_post_hello = datetime.fromisoformat(
@@ -846,8 +802,6 @@ class TestCrossEndpointTimestampOrderingInUserFlow:
         Catches a regression where any handler accidentally cached its first
         ``datetime.now()`` value (e.g. via a misused module-level default).
         """
-        from datetime import datetime
-
         first_health = datetime.fromisoformat(client.get("/health").json()["timestamp"])
         first_post = datetime.fromisoformat(
             client.post("/api/hello", json={"name": "Pass1"}).json()["timestamp"]

@@ -525,10 +525,7 @@ Performance regression guards. Bounds are deliberately generous (10–100× typi
 |------|-------------|
 | `test_openapi_documents_all_defined_routes` | Every defined route+method (GET /health, GET /api/version, GET+POST /api/hello) appears in /openapi.json paths — catches routes accidentally hidden via include_in_schema=False or missed by FastAPI introspection |
 | `test_openapi_post_hello_request_body_requires_name_string` | OpenAPI POST /api/hello body schema marks `name` as required and declares its type as `string` — pins the contract consumed by frontend TypeScript types and SDK generators |
-| `test_openapi_health_response_schema_matches_actual_response` | OpenAPI HealthResponse fields equal the fields actually emitted by /health — catches drift if a field is added to the response but not the model (or vice versa) |
-| `test_openapi_version_response_schema_matches_actual_response` | OpenAPI VersionResponse fields equal the fields actually emitted by /api/version |
-| `test_openapi_get_hello_response_schema_matches_actual_response` | OpenAPI HelloResponse fields equal the fields actually emitted by GET /api/hello |
-| `test_openapi_post_hello_response_schema_matches_actual_response` | OpenAPI HelloResponse fields equal the fields actually emitted by POST /api/hello |
+| `test_openapi_response_schema_matches_actual_response[health/version/hello_get/hello_post]` | OpenAPI 200-response schema fields equal the fields actually emitted by each handler — parametrized over all four endpoints. Catches drift in either direction (handler emits a field not in the model, or model declares a field the handler never emits). Refactored 2026-05-15 from four near-identical methods into one parametrized test that resolves `$ref` via the shared `openapi_component_for_response` helper |
 
 ### `TestCrossEndpointContract`
 | Test | Description |
@@ -934,3 +931,31 @@ Tests for `RepositoryStatusManager` covering repo name extraction, emoji selecti
 - **Two-pass flow stability** (every existing test runs against a fresh `TestClient`).
 
 **Verification:** all 203 tests pass 3× in sequence with no flakiness. Backend coverage stays at 100% (36/36 statements).
+
+---
+
+## Friday 2026-05-15 — test-refactoring (no new tests; deduplication only)
+
+This session reduced duplication in the existing 218-test backend suite without
+changing test coverage or removing test cases. The four near-identical OpenAPI
+schema-match methods were collapsed into one parametrized test (still four cases
+via `@pytest.mark.parametrize` ids), and shared helpers were added to
+`conftest.py` so format-parsing logic lives in one place.
+
+### Helpers added to `backend/tests/conftest.py`
+
+| Helper | Replaces |
+|--------|----------|
+| `name_from_greeting(message)` | Two inline `message.split("Hello, ", 1)[1].split("!", 1)[0]` chains in `test_performance.py` (`test_30_concurrent_posts_return_distinct_names`, `test_15_reads_and_15_writes_interleaved_under_ceiling`). |
+| `openapi_component_for_response(schema, path, method, status="200")` | Five inline `ref.rsplit("/", 1)[-1]` + `schema["components"]["schemas"][name]` lookups across `TestOpenAPISchemaContract`. Resolves the `$ref` and returns the component dict in one call. |
+
+### Refactor summary
+
+| File | Change |
+|------|--------|
+| `tests/test_integration.py` | Moved 4 in-function `from datetime import datetime` imports to module top. |
+| `tests/test_integration.py` | Replaced 3 inline UTC-offset parse blocks (`TestCrossEndpointContract.test_all_endpoint_timestamps_share_utc_iso8601_format`, `TestPostIdempotenceContract.test_repeated_post_same_name_timestamps_differ_or_match_but_format_stable`) with calls to the existing `assert_utc_iso8601` helper. |
+| `tests/test_integration.py` | Collapsed `TestOpenAPISchemaContract`'s four `test_openapi_*_response_schema_matches_actual_response` methods into one parametrized `test_openapi_response_schema_matches_actual_response` test with `health`/`version`/`hello_get`/`hello_post` ids. Net test count unchanged (4 parametrized cases). |
+| `tests/test_performance.py` | Two inline name-extraction chains use the new `name_from_greeting` helper. |
+
+**Verification:** 218 backend tests + 83 frontend tests still pass, all 3× in sequence with no flakiness. Backend coverage stays at 100%.

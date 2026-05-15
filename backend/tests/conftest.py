@@ -4,6 +4,7 @@ Pytest configuration, fixtures, and shared test helpers.
 
 from collections.abc import AsyncGenerator
 from datetime import datetime
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
@@ -43,3 +44,31 @@ def assert_utc_iso8601(timestamp: str) -> datetime:
         f"Timestamp {timestamp!r} is not UTC (offset={offset})"
     )
     return parsed
+
+
+def name_from_greeting(message: str) -> str:
+    """Extract the name from a ``"Hello, {name}! Welcome..."`` message.
+
+    Used by concurrent-POST tests to verify that each response carries back
+    the name it was called with. Centralised so the message-template format
+    is parsed in exactly one place.
+    """
+    return message.split("Hello, ", 1)[1].split("!", 1)[0]
+
+
+def openapi_component_for_response(
+    schema: dict[str, Any], path: str, method: str, status: str = "200"
+) -> dict[str, Any]:
+    """Return the OpenAPI component schema referenced by a route's response.
+
+    Resolves the ``$ref`` for ``schema["paths"][path][method]["responses"]
+    [status]["content"]["application/json"]["schema"]`` and returns the
+    target component dict. Used to compare documented fields with the
+    fields actually emitted by a handler.
+    """
+    ref = schema["paths"][path][method]["responses"][status]["content"]["application/json"][
+        "schema"
+    ]["$ref"]
+    component_name = ref.rsplit("/", 1)[-1]
+    component: dict[str, Any] = schema["components"]["schemas"][component_name]
+    return component
