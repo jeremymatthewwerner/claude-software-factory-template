@@ -20,7 +20,7 @@ import pytest
 from fastapi.testclient import TestClient
 from httpx import AsyncClient
 
-from .conftest import LOCALHOST_ORIGIN
+from .conftest import LOCALHOST_ORIGIN, name_from_greeting
 
 # Latency bounds — generous to avoid flakiness on shared CI runners.
 # Single-call ceilings: 500 ms is ~100x typical observed latency for these
@@ -148,9 +148,7 @@ class TestConcurrentThroughput:
         assert all(r.status_code == 200 for r in responses)
         assert elapsed < 1.0, f"30 concurrent POSTs took {elapsed:.3f}s"
 
-        returned_names = [
-            r.json()["message"].split("Hello, ", 1)[1].split("!", 1)[0] for r in responses
-        ]
+        returned_names = [name_from_greeting(r.json()["message"]) for r in responses]
         assert sorted(returned_names) == sorted(names)
 
     @pytest.mark.asyncio
@@ -400,9 +398,7 @@ class TestMixedWorkloadConcurrent:
         # POSTs are at odd indices — each should echo its own name unchanged
         # (no cross-contamination from concurrent GETs sharing event-loop state).
         post_responses = responses[1::2]
-        returned = [
-            r.json()["message"].split("Hello, ", 1)[1].split("!", 1)[0] for r in post_responses
-        ]
+        returned = [name_from_greeting(r.json()["message"]) for r in post_responses]
         assert sorted(returned) == sorted(names)
 
 
