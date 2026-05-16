@@ -1638,4 +1638,238 @@ describe('Home Page', () => {
       expect(screen.getByRole('button', { name: /say hello/i })).not.toBeDisabled();
     });
   });
+
+  describe('edge cases: falsy greeting render guard', () => {
+    // The greeting paragraph is conditionally rendered with `{greeting && ...}`.
+    // Existing tests cover non-empty strings; these pin the falsy branches.
+    // A regression that changed the guard to `{greeting !== undefined && ...}`
+    // would silently render an empty `<p>` for these payloads.
+
+    it('does not render greeting paragraph when POST returns an empty-string message', async () => {
+      // ``message: ''`` is falsy, so the conditional render must suppress the
+      // paragraph entirely — not render an empty element that the user sees
+      // as a blank line under the form.
+      (global.fetch as jest.Mock)
+        .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ status: 'healthy' }) })
+        .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ version: '0.1.0' }) })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve({ message: 'Hello, World!' }),
+        })
+        .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ message: '' }) });
+
+      render(<Home />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Connected')).toBeInTheDocument();
+      });
+
+      fireEvent.change(screen.getByPlaceholderText('Enter your name'), {
+        target: { value: 'Alice' },
+      });
+      fireEvent.click(screen.getByRole('button', { name: /say hello/i }));
+
+      // Loading must clear (the finally branch ran) — pin via the button label.
+      await waitFor(() => {
+        expect(screen.getByRole('button', { name: /say hello/i })).not.toBeDisabled();
+      });
+
+      // Snapshot the rendered class names of every <p> to assert the
+      // greeting paragraph (className contains "greeting") is absent.
+      const paragraphs = document.querySelectorAll('p');
+      const greetingPara = Array.from(paragraphs).find((p) =>
+        (p.className || '').includes('greeting')
+      );
+      expect(greetingPara).toBeUndefined();
+    });
+
+    it('does not render greeting paragraph when POST returns message: null', async () => {
+      // Same render-guard contract for ``null``. ``setGreeting(null)`` would
+      // not actually transition from the initial ``null`` state, but a
+      // regression that toggled the state to ``''`` or ``'null'`` would
+      // surface here. Pinning the post-submit state guards both directions.
+      (global.fetch as jest.Mock)
+        .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ status: 'healthy' }) })
+        .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ version: '0.1.0' }) })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve({ message: 'Hello, World!' }),
+        })
+        .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ message: null }) });
+
+      render(<Home />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Connected')).toBeInTheDocument();
+      });
+
+      fireEvent.change(screen.getByPlaceholderText('Enter your name'), {
+        target: { value: 'Alice' },
+      });
+      fireEvent.click(screen.getByRole('button', { name: /say hello/i }));
+
+      await waitFor(() => {
+        expect(screen.getByRole('button', { name: /say hello/i })).not.toBeDisabled();
+      });
+
+      const paragraphs = document.querySelectorAll('p');
+      const greetingPara = Array.from(paragraphs).find((p) =>
+        (p.className || '').includes('greeting')
+      );
+      expect(greetingPara).toBeUndefined();
+    });
+
+    it('clears loading state when POST returns 200 with no message field', async () => {
+      // ``setGreeting(data.message)`` becomes ``setGreeting(undefined)`` when
+      // the field is absent. The finally branch must still clear loading;
+      // a regression that put ``setLoading(false)`` only in the success path
+      // (not finally) would leave the button stuck on "Sending..." here.
+      (global.fetch as jest.Mock)
+        .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ status: 'healthy' }) })
+        .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ version: '0.1.0' }) })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve({ message: 'Hello, World!' }),
+        })
+        .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({}) });
+
+      render(<Home />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Connected')).toBeInTheDocument();
+      });
+
+      fireEvent.change(screen.getByPlaceholderText('Enter your name'), {
+        target: { value: 'Alice' },
+      });
+      fireEvent.click(screen.getByRole('button', { name: /say hello/i }));
+
+      // Pin the "loading state clears" property — the button label flips
+      // back to "Say Hello" and the button is no longer disabled.
+      await waitFor(() => {
+        expect(screen.getByRole('button', { name: /say hello/i })).not.toBeDisabled();
+      });
+      expect(screen.queryByRole('button', { name: /sending/i })).not.toBeInTheDocument();
+    });
+  });
+
+  describe('edge cases: health-check body shape', () => {
+    it('flips to Connected when /health responds ok=true with no status field', async () => {
+      // The init effect calls ``fetch('/health')`` and only checks
+      // ``healthRes.ok`` — it never reads the body. Pinning this guards
+      // against a "defensive" refactor that starts parsing the body and
+      // checking for ``status === 'healthy'`` without a coordinated
+      // contract change on the backend; such a refactor would silently
+      // break the page for any backend that returns ``200 {}``.
+      (global.fetch as jest.Mock).mockImplementation((url: string) => {
+        const endpoint = url.replace('http://localhost:8000', '');
+        if (endpoint === '/health') {
+          return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+        }
+        if (endpoint === '/api/version') {
+          return Promise.resolve({ ok: true, json: () => Promise.resolve({ version: '0.1.0' }) });
+        }
+        if (endpoint === '/api/hello') {
+          return Promise.resolve({
+            ok: true,
+            json: () => Promise.resolve({ message: 'Hello, World!' }),
+          });
+        }
+        return Promise.reject(new Error('Not found'));
+      });
+
+      render(<Home />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Connected')).toBeInTheDocument();
+      });
+      // The input/button become enabled because health.ok was true,
+      // confirming the page never required a ``status`` field.
+      expect(screen.getByPlaceholderText('Enter your name')).not.toBeDisabled();
+    });
+  });
+
+  describe('edge cases: submit input boundaries', () => {
+    it('does not POST when name is a Unicode no-break space only', async () => {
+      // ``handleSubmit`` calls ``name.trim()`` and bails on falsy. ECMAScript
+      // ``trim()`` strips all Unicode whitespace per the WhiteSpace +
+      // LineTerminator productions, which includes U+00A0 (NBSP). A
+      // regression that swapped ``.trim()`` for ``.trim().length`` on a
+      // byte-only basis would still pass for ASCII space but would start
+      // POSTing for NBSP-only — pinning the suppression here flags that.
+      mockFetch(HEALTHY_RESPONSES);
+      render(<Home />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Connected')).toBeInTheDocument();
+      });
+
+      const initialCallCount = (global.fetch as jest.Mock).mock.calls.length;
+
+      fireEvent.change(screen.getByPlaceholderText('Enter your name'), {
+        target: { value: '   ' },
+      });
+      fireEvent.click(screen.getByRole('button', { name: /say hello/i }));
+
+      // Flush microtasks to ensure no POST gets fired.
+      await flushInitEffect();
+
+      const postCalls = (global.fetch as jest.Mock).mock.calls.filter(
+        ([, opts]: [string, RequestInit | undefined]) => opts?.method === 'POST'
+      );
+      expect(postCalls).toHaveLength(0);
+      // Total call count must not have grown.
+      expect((global.fetch as jest.Mock).mock.calls.length).toBe(initialCallCount);
+    });
+
+    it('round-trips a 5000-character name through the form and renders it as the greeting', async () => {
+      // ``TestLargePayloadPerformance.test_10kb_name_post_under_one_second``
+      // pins the *backend* side at 10K chars; the frontend has no length
+      // pin at all. A regression that introduced a client-side
+      // ``maxLength`` attribute on the input, or that truncated the
+      // controlled-input value, would silently truncate the POST body
+      // and the greeting — and every other frontend test would still pass
+      // because they use short names. Pinning a 5K-char round trip
+      // catches both the truncation and the rendering paths.
+      const longName = 'A'.repeat(5000);
+      const greeting = `Hello, ${longName}! Welcome to your Software Factory.`;
+      (global.fetch as jest.Mock)
+        .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ status: 'healthy' }) })
+        .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ version: '0.1.0' }) })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve({ message: 'Hello, World!' }),
+        })
+        .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ message: greeting }) });
+
+      render(<Home />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Connected')).toBeInTheDocument();
+      });
+
+      const input = screen.getByPlaceholderText('Enter your name') as HTMLInputElement;
+      fireEvent.change(input, { target: { value: longName } });
+      // Controlled input retains the full value — pin the round-trip
+      // through React state before the submit.
+      expect(input.value).toBe(longName);
+      expect(input.value.length).toBe(5000);
+
+      fireEvent.click(screen.getByRole('button', { name: /say hello/i }));
+
+      // The greeting paragraph renders the full backend response verbatim.
+      await waitFor(() => {
+        expect(screen.getByText(greeting)).toBeInTheDocument();
+      });
+
+      // The POST body carried the full name, not a truncated version.
+      const postCall = (global.fetch as jest.Mock).mock.calls.find(
+        ([, opts]: [string, RequestInit | undefined]) => opts?.method === 'POST'
+      );
+      expect(postCall).toBeDefined();
+      const body = JSON.parse((postCall![1] as RequestInit).body as string);
+      expect(body.name).toBe(longName);
+      expect(body.name.length).toBe(5000);
+    });
+  });
 });

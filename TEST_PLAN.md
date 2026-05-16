@@ -959,3 +959,69 @@ via `@pytest.mark.parametrize` ids), and shared helpers were added to
 | `tests/test_performance.py` | Two inline name-extraction chains use the new `name_from_greeting` helper. |
 
 **Verification:** 218 backend tests + 83 frontend tests still pass, all 3× in sequence with no flakiness. Backend coverage stays at 100%.
+
+---
+
+## Saturday 2026-05-16 — edge-cases (behavioural pins, no coverage change)
+
+This session adds **27 new tests** (21 backend, 6 frontend) that pin
+behaviours the live server and the live UI exhibit today but that no
+existing test asserted. Both surfaces sit at 100% line + branch coverage
+already, so the lever here is *behaviour pinning*: a regression that
+silently flipped any of these — for example, a middleware swap that
+started accepting non-JSON Content-Types, a Starlette upgrade that
+changed BOM handling, or a "defensive" refactor of the React init effect
+that started validating the `/health` response body — would fail one of
+these tests first instead of shipping to production.
+
+### Backend — `backend/tests/test_edge_cases.py` (21 new tests)
+
+| Suite | Test | Pins |
+|-------|------|------|
+| `TestTopLevelNonObjectBodyReturns422` | `test_top_level_null_body_returns_422` | Body literal `null` returns 422 — distinct from "name is null inside an object" (already pinned). |
+| `TestTopLevelNonObjectBodyReturns422` | `test_top_level_boolean_body_returns_422` | Body literal `true` returns 422 (top-level scalar body rejected). |
+| `TestTopLevelNonObjectBodyReturns422` | `test_top_level_number_body_returns_422` | Body literal `42` returns 422 (top-level scalar body rejected). |
+| `TestTopLevelNonObjectBodyReturns422` | `test_top_level_string_body_returns_422` | Body literal `"Alice"` returns 422 — guards against silently treating a bare-string body as the name. |
+| `TestRequestContentTypePermissiveness` | `test_content_type_with_charset_parameter_is_accepted` | `application/json; charset=utf-8` returns 200 — MIME parameters are tolerated per RFC 9110. |
+| `TestRequestContentTypePermissiveness` | `test_content_type_mixed_case_is_accepted` | `Application/JSON` returns 200 — media-type comparison is case-insensitive. |
+| `TestRequestContentTypeStrictness` | `test_post_without_content_type_header_returns_422` | POST with a body but no `Content-Type` header returns 422 — pins that the JSON branch requires a declared type. |
+| `TestRequestContentTypeStrictness` | `test_post_with_application_xml_content_type_returns_422` | `application/xml` returns 422 — complement to `text/plain`/`form-encoded` (already pinned). |
+| `TestJSONBodyParsingEdges` | `test_utf8_bom_prefix_on_body_is_accepted` | A leading UTF-8 BOM (`EF BB BF`) before the JSON object is tolerated (200). |
+| `TestJSONBodyParsingEdges` | `test_trailing_whitespace_after_json_object_is_accepted` | Trailing ASCII whitespace after `}` is tolerated (200). |
+| `TestJSONBodyParsingEdges` | `test_trailing_garbage_after_json_object_returns_422` | Non-whitespace bytes after `}` cause a 422 — strict about *content*, lenient about *whitespace*. |
+| `TestPathRoutingEdges` | `test_double_slash_prefix_does_not_route_to_health` | `GET //health` returns 404 — the leading double slash is not collapsed. |
+| `TestPathRoutingEdges` | `test_percent_encoded_path_segment_resolves_to_canonical_route` | `GET /he%61lth` returns 200 — Starlette percent-decodes path segments before routing. |
+| `TestNameEchoBoundaries` | `test_single_character_name_echoed_verbatim` | A one-character name produces the exact greeting — pins no minimum-length validator. |
+| `TestNameEchoBoundaries` | `test_fifty_thousand_character_name_round_trips_verbatim` | A 50K-character name is echoed verbatim with the exact length preserved (perf tests stop at 10K). |
+| `TestNameEchoBoundaries` | `test_pure_whitespace_name_echoed_verbatim` | `"\t\r\n "` is echoed verbatim — the handler does not call `.strip()`. |
+| `TestNameEchoBoundaries` | `test_ascii_bel_character_in_name_echoed_verbatim` | ASCII BEL (`\x07`) is echoed verbatim — no C0-control sanitisation. |
+| `TestNameEchoBoundaries` | `test_unicode_noncharacter_in_name_echoed_verbatim` | U+FFFE noncharacter is echoed verbatim — no NFC normalisation on the request body. |
+| `TestResponseContentTypePinned` | `test_health_response_content_type_is_exactly_application_json` | `/health` returns `Content-Type: application/json` (no charset parameter). |
+| `TestResponseContentTypePinned` | `test_post_hello_response_content_type_is_exactly_application_json` | `POST /api/hello` returns `Content-Type: application/json` (no parameters). |
+| `TestResponseContentTypePinned` | `test_version_response_content_type_is_exactly_application_json` | `/api/version` returns `Content-Type: application/json` (no parameters). |
+
+### Frontend — `frontend/__tests__/page.test.tsx` (6 new tests)
+
+| Suite | Test | Pins |
+|-------|------|------|
+| `edge cases: falsy greeting render guard` | `does not render greeting paragraph when POST returns an empty-string message` | The `{greeting && ...}` guard suppresses the paragraph for `message: ""` — no empty `<p>` rendered. |
+| `edge cases: falsy greeting render guard` | `does not render greeting paragraph when POST returns message: null` | Same guard contract for `message: null`. |
+| `edge cases: falsy greeting render guard` | `clears loading state when POST returns 200 with no message field` | The `finally` branch clears `loading` even when `data.message` is `undefined` — button is not stuck on "Sending...". |
+| `edge cases: health-check body shape` | `flips to Connected when /health responds ok=true with no status field` | The init effect only reads `healthRes.ok`, never the body — guards against a "defensive" refactor that starts parsing `status`. |
+| `edge cases: submit input boundaries` | `does not POST when name is a Unicode no-break space only` | `name.trim()` strips U+00A0 NBSP per ECMAScript — pins suppression for the Unicode-whitespace case (ASCII is already covered). |
+| `edge cases: submit input boundaries` | `round-trips a 5000-character name through the form and renders it as the greeting` | The controlled input retains 5000 chars, the POST body carries them intact, and the greeting renders them verbatim — no client-side truncation. |
+
+**Why these specifically.** The existing suites already cover the well-trodden edge cases (empty/whitespace names, common Unicode, SQL/XSS payloads, CORS preflight, 404/405, repeated submits). What was *unpinned* before this session — and what these tests fix — is:
+
+- **Top-level body shape vs. per-field type.** Existing tests pinned wrong types for `name` *inside* the object; nothing rejected a bare `null`/`true`/`42`/`"Alice"` at the body root.
+- **Request `Content-Type` permissiveness on the positive side.** Existing tests pinned that `text/plain` and `form-encoded` are rejected; the *lenient* behaviours (MIME parameters, mixed-case media type) were unpinned, so a stricter parser swap would silently break clients.
+- **JSON-body framing edges.** Trailing whitespace tolerance, trailing-garbage rejection, and UTF-8 BOM tolerance were all unpinned — three independent regression vectors.
+- **Routing edges.** `//health` 404 vs. percent-decoded `%61` 200 both depend on Starlette's resolver — any router-middleware swap could flip either.
+- **Echo verbatim at boundaries.** Single-char, 50K-char, BEL, and U+FFFE all round-tripped verbatim today but were unpinned — sanitiser/normaliser middleware would silently strip them.
+- **Response `Content-Type` shape.** No test asserted that the bare `application/json` (no `; charset=utf-8`) is what clients see — a `UJSONResponse` swap could silently change this.
+- **Frontend render-guard for falsy greeting.** `{greeting && ...}` suppresses the paragraph for `''`/`null`; a regression to `{greeting !== undefined && ...}` would render an empty paragraph for these payloads.
+- **Frontend health-body permissiveness.** The init effect never reads the `/health` body — a "defensive" refactor that starts validating `status === 'healthy'` would silently break the page against backends that return `{}`.
+- **Frontend Unicode-whitespace `trim()` reliance.** ECMAScript `.trim()` strips U+00A0; a byte-only re-implementation would start POSTing NBSP-only submissions.
+- **Frontend long-input round-trip.** Existing form tests use short names; a `maxLength` attribute or controlled-input truncation would pass every other test.
+
+**Verification:** 239 backend tests (218 → 239) + 89 frontend tests (83 → 89) all pass, 3× in sequence with no flakiness. Backend coverage stays at 100% (36/36 statements + branches). Frontend coverage stays at 100% (layout.tsx + page.tsx).
