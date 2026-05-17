@@ -1025,3 +1025,67 @@ these tests first instead of shipping to production.
 - **Frontend long-input round-trip.** Existing form tests use short names; a `maxLength` attribute or controlled-input truncation would pass every other test.
 
 **Verification:** 239 backend tests (218 → 239) + 89 frontend tests (83 → 89) all pass, 3× in sequence with no flakiness. Backend coverage stays at 100% (36/36 statements + branches). Frontend coverage stays at 100% (layout.tsx + page.tsx).
+
+---
+
+## Sunday 2026-05-17 — regression-prevention (behavioural pins, no coverage change)
+
+This session adds **29 new tests** (27 backend, 2 frontend) protecting
+public-contract behaviours that existing tests don't pin. Both surfaces
+already sit at 100% line + branch coverage (266 / 91 tests after this
+session), so the lever continues to be *behaviour pinning* — a
+regression that silently flips any of these would land green today.
+
+### Backend — `backend/tests/test_regression_prevention.py` (new file, 27 tests)
+
+| Suite | Test | Pins |
+|-------|------|------|
+| `TestOpenAPIURLIsCanonical` | `test_canonical_openapi_url_returns_200` | `/openapi.json` returns 200 — pins FastAPI's default `openapi_url` rather than relying on incidental coverage. |
+| `TestOpenAPIURLIsCanonical` | `test_common_aliases_are_not_routed[/openapi]` | `/openapi` returns 404 — only the canonical URL serves the schema. |
+| `TestOpenAPIURLIsCanonical` | `test_common_aliases_are_not_routed[/openapi.yaml]` | `/openapi.yaml` returns 404 — pins absence of a YAML alias. |
+| `TestOpenAPIURLIsCanonical` | `test_common_aliases_are_not_routed[/swagger.json]` | `/swagger.json` returns 404 — pins absence of a Swagger alias. |
+| `TestOpenAPIURLIsCanonical` | `test_common_aliases_are_not_routed[/api/openapi.json]` | `/api/openapi.json` returns 404 — pins the schema is not double-mounted under `/api`. |
+| `TestOpenAPIURLIsCanonical` | `test_common_aliases_are_not_routed[/api-docs.json]` | `/api-docs.json` returns 404 — pins absence of a Swagger-codegen-style alias. |
+| `TestOpenAPIComponentInventoryPinned` | `test_component_inventory_is_exactly_the_expected_set` | OpenAPI components are exactly `{HealthResponse, VersionResponse, HelloRequest, HelloResponse, HTTPValidationError, ValidationError}` — a Pydantic model rename would fail here before silently breaking every SDK generator's emitted type names. |
+| `TestUnusedErrorResponseNotExposedInOpenAPI` | `test_error_response_class_is_still_importable` | `ErrorResponse` is importable from `app.main` and instantiable with the documented fields — the base symbol still exists. |
+| `TestUnusedErrorResponseNotExposedInOpenAPI` | `test_error_response_is_not_in_openapi_components` | `ErrorResponse` is **not** in OpenAPI components — pins the model's currently-unused status so any future endpoint wiring it via `response_model=` becomes a visible test failure. |
+| `TestNoCacheControlOnTimestampedEndpoints` | `test_response_has_no_cache_control_header[health]` | `/health` does not set `Cache-Control` — a cached response would freeze the embedded timestamp and break the DevOps agent's liveness signal. |
+| `TestNoCacheControlOnTimestampedEndpoints` | `test_response_has_no_cache_control_header[version]` | `/api/version` does not set `Cache-Control`. |
+| `TestNoCacheControlOnTimestampedEndpoints` | `test_response_has_no_cache_control_header[hello_get]` | `GET /api/hello` does not set `Cache-Control`. |
+| `TestNoCacheControlOnTimestampedEndpoints` | `test_response_has_no_cache_control_header[hello_post]` | `POST /api/hello` does not set `Cache-Control`. |
+| `TestNoCacheControlOnTimestampedEndpoints` | `test_response_has_no_etag_or_expires_header[health]` | `/health` does not set `ETag` / `Expires` — both imply cacheability of a freshly-stamped response. |
+| `TestNoCacheControlOnTimestampedEndpoints` | `test_response_has_no_etag_or_expires_header[version]` | `/api/version` does not set `ETag` / `Expires`. |
+| `TestNoCacheControlOnTimestampedEndpoints` | `test_response_has_no_etag_or_expires_header[hello_get]` | `GET /api/hello` does not set `ETag` / `Expires`. |
+| `TestNoCacheControlOnTimestampedEndpoints` | `test_response_has_no_etag_or_expires_header[hello_post]` | `POST /api/hello` does not set `ETag` / `Expires`. |
+| `TestCORSPreflightReflectsRequestedHeaders` | `test_preflight_reflects_custom_request_header_back` | A preflight with `Access-Control-Request-Headers: x-custom-header,content-type` mirrors both back in `Access-Control-Allow-Headers` — pins the `allow_headers=["*"]` config. |
+| `TestCORSPreflightReflectsRequestedHeaders` | `test_preflight_reflects_auth_style_header` | A preflight with `Access-Control-Request-Headers: authorization` mirrors it back — pins that a future auth header lands without needing a CORS config change. |
+| `TestEveryRouteUses200ResponseModelComponentRef` | `test_route_200_response_is_component_ref[get-/health]` | The 200 schema for `GET /health` is a `$ref` to a local component — pins that `response_model=HealthResponse` is still wired on the decorator. |
+| `TestEveryRouteUses200ResponseModelComponentRef` | `test_route_200_response_is_component_ref[get-/api/version]` | Same pin for `GET /api/version`. |
+| `TestEveryRouteUses200ResponseModelComponentRef` | `test_route_200_response_is_component_ref[get-/api/hello]` | Same pin for `GET /api/hello`. |
+| `TestEveryRouteUses200ResponseModelComponentRef` | `test_route_200_response_is_component_ref[post-/api/hello]` | Same pin for `POST /api/hello`. |
+| `TestHelloRequestNameHasNoConstraints` | `test_name_property_has_no_length_constraints` | `HelloRequest.name` has no `minLength` / `maxLength` — protects the empty-string and 50K-char contracts other tests deliberately exercise. |
+| `TestHelloRequestNameHasNoConstraints` | `test_name_property_has_no_pattern_constraint` | `HelloRequest.name` has no `pattern` constraint and remains plain `string` — protects the verbatim-echo contract for adversarial / Unicode inputs. |
+| `TestPostHello422IsHTTPValidationErrorRef` | `test_422_response_uses_http_validation_error_ref` | `POST /api/hello` 422 schema is exactly `{"$ref": "#/components/schemas/HTTPValidationError"}` — pins the canonical FastAPI 422 declaration so SDK 422-parsing stays stable. |
+| `TestOpenAPISpecVersionPinned` | `test_openapi_field_is_3_1_family` | OpenAPI document's `openapi` field starts with `3.1.` — pins the OpenAPI spec family so a FastAPI upgrade that bumps the family is visible. |
+
+### Frontend — `frontend/__tests__/page.test.tsx` (2 new tests in `regression-prevention: form submit preventDefault`)
+
+| Test | Pins |
+|------|------|
+| `preventDefault is called on submit when name is populated` | A real `submit` event dispatched on the form returns with `defaultPrevented === true` — removing `e.preventDefault()` from `handleSubmit` would let the browser navigate away on submit (full-page reload, SPA state destroyed). Existing `fireEvent.click` tests would still pass because the click handler still fires; this test inspects the dispatched event directly. |
+| `preventDefault is called on submit even when name is empty (no navigation)` | `defaultPrevented === true` even when the input is empty — pins the order of operations in `handleSubmit`: `e.preventDefault()` runs *before* the `if (!name.trim()) return` early-exit. A refactor that reordered the early-return above the `preventDefault` call would let empty submits reload the page. Also asserts no POST is issued, confirming the early-return path took effect. |
+
+**Why these specifically.** Recent sessions have pinned the API and UI surface so densely (exact messages, OpenAPI metadata, CORS allow-list, content-type strictness, 422 schema shape, p95/p99 latency, frontend act() warnings, etc.) that the remaining regression vectors are subtle: SDK-generator-visible OpenAPI structure (component names, `$ref` vs inline, canonical schema URL), cacheability of timestamp-bearing responses, the open `allow_headers` config, the absence of Pydantic constraints on the echo field, and frontend-event-default behaviour that click-based tests don't observe. Each new test corresponds to a specific "regression that current tests would miss":
+
+- **OpenAPI URL aliasing:** every test reads `/openapi.json` incidentally, so an `openapi_url=None` regression would surface confusingly across multiple unrelated tests; pinning the canonical URL (and the absence of common aliases) makes that failure mode loud and singular.
+- **Component name renames:** SDK generators emit each Pydantic class name as a generated TypeScript / Python / Go type — silently changing them would break every downstream consumer.
+- **Unused `ErrorResponse`:** the model is one `response_model=ErrorResponse` annotation away from becoming part of the public OpenAPI surface; pinning its absence today documents the design choice.
+- **Caching dynamic responses:** any future "perf" middleware that added `Cache-Control: public, max-age=3600` would freeze `/health`'s timestamp and let stale liveness signals slip past DevOps monitoring; the pin keeps the negative contract visible.
+- **CORS `allow_headers=["*"]`:** a "tighten the allow-list" change would silently break any frontend that adds a header (`Authorization`, `X-Trace-Id`); pinning the open behaviour means such a change requires explicit acknowledgement.
+- **`response_model=` on every route:** an endpoint that forgets `response_model=` falls back to an "anything goes" schema; SDK generators emit `unknown` / `any` and silently lose type safety. The `$ref` check is the visible signal.
+- **`HelloRequest.name` constraints:** several tests in the suite exercise empty strings, 50K-char strings, and adversarial Unicode — a `Field(min_length=1)` or `pattern=` regression would break all of them at once with confusing per-test failures. Pinning the absence here gives a single, named failure.
+- **422 schema reference:** `TestOpenAPI422SchemaMatchesActual422Body` only pins that *some* 422 is declared and its body shape matches; it doesn't pin **how** the 422 is declared. A regression that inlined the schema or pointed it at a renamed component would slip past existing tests.
+- **OpenAPI spec family:** 3.0.x vs 3.1.x differ materially in nullable / oneOf handling; pinning the major.minor lets patch bumps through while making family changes loud.
+- **Frontend `preventDefault`:** every existing submit test fires `fireEvent.click(button)` and asserts on UI side-effects — none ever inspect the dispatched submit event's `defaultPrevented`. A regression that dropped `e.preventDefault()` from `handleSubmit` would still pass every click test (the click handler still fires) but would cause the browser to reload the page in real use.
+
+**Verification:** 266 backend tests (239 → 266) + 91 frontend tests (89 → 91) all pass, 3× in sequence with no flakiness. Backend coverage stays at 100% (36/36 statements + branches). Frontend coverage stays at 100% (layout.tsx + page.tsx).

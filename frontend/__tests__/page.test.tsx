@@ -1872,4 +1872,86 @@ describe('Home Page', () => {
       expect(body.name.length).toBe(5000);
     });
   });
+
+  describe('regression-prevention: form submit preventDefault', () => {
+    // The submit handler calls `e.preventDefault()` as its first statement.
+    // Without it, the browser would treat the form as a classic HTML form
+    // and navigate / reload the page on submit — destroying the SPA state
+    // and triggering a confusing full-page refresh for the user.
+    //
+    // Existing tests fire `fireEvent.click(button)` which synthesises a
+    // submit event under the hood, but never assert that the event's
+    // default was actually prevented. A regression that removed
+    // `e.preventDefault()` would still pass every click-based test
+    // (the click handler still fires and the fetch mock still resolves)
+    // while breaking the real browser behaviour.
+    //
+    // Both pinned cases — populated name and empty name — must call
+    // preventDefault. The current handler does so unconditionally (the
+    // early-return for empty name comes *after* preventDefault). Pinning
+    // both protects against a reordering bug that puts the early-return
+    // first and lets empty-name submits navigate the browser.
+
+    it('preventDefault is called on submit when name is populated', async () => {
+      mockFetch({ ...HEALTHY_RESPONSES, '/api/hello': { message: 'Hello, Alice!' } });
+      render(<Home />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Connected')).toBeInTheDocument();
+      });
+
+      const input = screen.getByPlaceholderText('Enter your name');
+      fireEvent.change(input, { target: { value: 'Alice' } });
+
+      const form = input.closest('form') as HTMLFormElement;
+      // Construct a real cancelable submit event so we can inspect
+      // `defaultPrevented` after React's handler has run. The dispatch is
+      // wrapped in act() because the in-flight POST triggers async state
+      // updates (setLoading → setGreeting) that must settle inside an
+      // act scope; the surrounding `afterEach` would otherwise fail the
+      // test with a leaked React warning.
+      const submitEvent = new Event('submit', { bubbles: true, cancelable: true });
+      await act(async () => {
+        form.dispatchEvent(submitEvent);
+      });
+
+      expect(submitEvent.defaultPrevented).toBe(true);
+
+      // Drain the in-flight POST so its state updates settle before teardown.
+      await waitFor(() => {
+        expect(screen.getByText('Hello, Alice!')).toBeInTheDocument();
+      });
+    });
+
+    it('preventDefault is called on submit even when name is empty (no navigation)', async () => {
+      // The empty-name branch returns early *after* preventDefault. Pinning
+      // this catches a refactor that reorders the early-return above the
+      // preventDefault call — which would let an empty submit reload the page.
+      mockFetch(HEALTHY_RESPONSES);
+      render(<Home />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Connected')).toBeInTheDocument();
+      });
+
+      const input = screen.getByPlaceholderText('Enter your name');
+      // Input is intentionally left empty — handleSubmit must still
+      // preventDefault before bailing out on `!name.trim()`.
+      expect((input as HTMLInputElement).value).toBe('');
+
+      const form = input.closest('form') as HTMLFormElement;
+      const submitEvent = new Event('submit', { bubbles: true, cancelable: true });
+      // No POST is issued on this path (early return), so no async state
+      // updates need to settle — a plain dispatch is sufficient.
+      form.dispatchEvent(submitEvent);
+
+      expect(submitEvent.defaultPrevented).toBe(true);
+
+      // And confirm no POST was issued — the early return path took effect.
+      const postCalls = (global.fetch as jest.Mock).mock.calls.filter(
+        ([, opts]: [string, RequestInit | undefined]) => opts?.method === 'POST'
+      );
+      expect(postCalls).toHaveLength(0);
+    });
+  });
 });
