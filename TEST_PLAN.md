@@ -1089,3 +1089,62 @@ regression that silently flips any of these would land green today.
 - **Frontend `preventDefault`:** every existing submit test fires `fireEvent.click(button)` and asserts on UI side-effects — none ever inspect the dispatched submit event's `defaultPrevented`. A regression that dropped `e.preventDefault()` from `handleSubmit` would still pass every click test (the click handler still fires) but would cause the browser to reload the page in real use.
 
 **Verification:** 266 backend tests (239 → 266) + 91 frontend tests (89 → 91) all pass, 3× in sequence with no flakiness. Backend coverage stays at 100% (36/36 statements + branches). Frontend coverage stays at 100% (layout.tsx + page.tsx).
+
+## Monday 2026-05-18 — coverage-sprint (behavioural pins; line coverage already at 100%)
+
+The Monday focus is officially "pick the lowest-coverage file and raise it
+by 15%+". Both surfaces already sit at the ceiling — `pytest --cov=app`
+reports 100% statement + branch on `app/__init__.py` and `app/main.py`,
+and `jest --coverage` reports 100% statements + branches + functions +
+lines on `layout.tsx` and `page.tsx`. The literal goal is mathematically
+unachievable, so this session pivots to the contract surface that
+`--cov` cannot measure: FastAPI/Pydantic auto-derive substantial OpenAPI
+metadata through metaprogramming (model docstrings → schema
+descriptions, function names → operation summaries, model class names →
+inner `title` fields, default `required: [...]` arrays). None of those
+fields are pinned anywhere in the existing suite — verified by grepping
+`tests/` for each candidate string — so a docstring rewrite or a
+handler-function rename would ship green today even though every SDK
+generator and the `/docs` UI sees the change.
+
+### Backend — `backend/tests/test_openapi_schema_metadata.py` (new file, 26 tests)
+
+| Suite | Test | Pins |
+|-------|------|------|
+| `TestOpenAPIInfoBlockInventory` | `test_info_block_keys_are_exactly_expected` | The `info` block exposes exactly `{title, version, description}` — a future `FastAPI(terms_of_service=...)` argument adding `info.termsOfService` would surface here before silently appearing in every generated SDK's documentation header. |
+| `TestOpenAPIInfoBlockInventory` | `test_info_version_equals_app_dunder_version` | `info.version` equals `app.__version__` — pins the wiring (not just the literal) so a future split that hard-codes the version string into the FastAPI constructor fails loudly. |
+| `TestComponentSchemaDescriptionsPinned` | `test_component_description_matches_model_docstring[HealthResponse-Health check response.]` | `HealthResponse` schema `description` matches its Pydantic docstring — pins that SDK-generated JSDoc/Python docstrings on the emitted type stay stable. |
+| `TestComponentSchemaDescriptionsPinned` | `test_component_description_matches_model_docstring[VersionResponse-Version information response.]` | Same pin for `VersionResponse`. |
+| `TestComponentSchemaDescriptionsPinned` | `test_component_description_matches_model_docstring[HelloRequest-Request model for personalized greeting.]` | Same pin for `HelloRequest` — input-side type doc comment stability. |
+| `TestComponentSchemaDescriptionsPinned` | `test_component_description_matches_model_docstring[HelloResponse-Response model for greeting.]` | Same pin for `HelloResponse`. |
+| `TestComponentSchemaTitlesPinned` | `test_component_inner_title_matches_class_name[HealthResponse-HealthResponse]` | `HealthResponse.title` (the inner field, distinct from the components-dict key) equals the class name — catches `model_config = {"title": "Greeting"}` overrides that would change the emitted SDK type name without altering the components-dict key. |
+| `TestComponentSchemaTitlesPinned` | `test_component_inner_title_matches_class_name[VersionResponse-VersionResponse]` | Same pin for `VersionResponse`. |
+| `TestComponentSchemaTitlesPinned` | `test_component_inner_title_matches_class_name[HelloRequest-HelloRequest]` | Same pin for `HelloRequest`. |
+| `TestComponentSchemaTitlesPinned` | `test_component_inner_title_matches_class_name[HelloResponse-HelloResponse]` | Same pin for `HelloResponse`. |
+| `TestComponentSchemaRequiredFieldsPinned` | `test_component_required_array_is_exact[HealthResponse-...]` | `HealthResponse.required` is exactly `{status, timestamp}` — a `timestamp: str = ""` default would silently drop `timestamp` from the required array while the cross-endpoint contract test in `TestOpenAPISchemaContract` still passes (the handler still emits the field). |
+| `TestComponentSchemaRequiredFieldsPinned` | `test_component_required_array_is_exact[VersionResponse-...]` | `VersionResponse.required` is exactly `{version, name, environment}`. |
+| `TestComponentSchemaRequiredFieldsPinned` | `test_component_required_array_is_exact[HelloRequest-...]` | `HelloRequest.required` is exactly `{name}` — catches an `Optional[str]` change that would flip the request field optional without rejecting empty-body POSTs (which is currently asserted elsewhere). |
+| `TestComponentSchemaRequiredFieldsPinned` | `test_component_required_array_is_exact[HelloResponse-...]` | `HelloResponse.required` is exactly `{message, timestamp}`. |
+| `TestComponentSchemaPropertyTitlesPinned` | `test_property_title_matches_pydantic_default[HealthResponse.status]` | The auto-derived property `title` for `HealthResponse.status` is `"Status"` (Pydantic's Title Case default). Catches a `Field(..., title="Operational Status")` override on the field. |
+| `TestComponentSchemaPropertyTitlesPinned` | `test_property_title_matches_pydantic_default[HealthResponse.timestamp]` | Same pin for `HealthResponse.timestamp` → `"Timestamp"`. |
+| `TestComponentSchemaPropertyTitlesPinned` | `test_property_title_matches_pydantic_default[VersionResponse.version]` | Same pin for `VersionResponse.version` → `"Version"`. |
+| `TestComponentSchemaPropertyTitlesPinned` | `test_property_title_matches_pydantic_default[VersionResponse.name]` | Same pin for `VersionResponse.name` → `"Name"`. |
+| `TestComponentSchemaPropertyTitlesPinned` | `test_property_title_matches_pydantic_default[VersionResponse.environment]` | Same pin for `VersionResponse.environment` → `"Environment"`. |
+| `TestComponentSchemaPropertyTitlesPinned` | `test_property_title_matches_pydantic_default[HelloRequest.name]` | Same pin for `HelloRequest.name` → `"Name"`. |
+| `TestComponentSchemaPropertyTitlesPinned` | `test_property_title_matches_pydantic_default[HelloResponse.message]` | Same pin for `HelloResponse.message` → `"Message"`. |
+| `TestComponentSchemaPropertyTitlesPinned` | `test_property_title_matches_pydantic_default[HelloResponse.timestamp]` | Same pin for `HelloResponse.timestamp` → `"Timestamp"`. |
+| `TestPathOperationSummariesPinned` | `test_operation_summary_matches_handler_name[GET /health]` | `GET /health` operation `summary` is `"Health Check"` (FastAPI's Title-Cased rendering of `health_check`). Catches a function rename even if an `operation_id=` decorator kwarg keeps `operationId` stable — every existing `operationId` test would still pass while the `/docs` UI header silently drifted. |
+| `TestPathOperationSummariesPinned` | `test_operation_summary_matches_handler_name[GET /api/version]` | Same pin for `GET /api/version` → `"Get Version"`. |
+| `TestPathOperationSummariesPinned` | `test_operation_summary_matches_handler_name[GET /api/hello]` | Same pin for `GET /api/hello` → `"Hello World"`. |
+| `TestPathOperationSummariesPinned` | `test_operation_summary_matches_handler_name[POST /api/hello]` | Same pin for `POST /api/hello` → `"Hello Name"`. |
+
+**Why these specifically.** Each new test corresponds to a regression vector that line coverage *cannot* detect because FastAPI/Pydantic emit the surface via metaprogramming — no Python statement in `app/main.py` produces these strings, so `pytest --cov` reports 100% even after the field is mutated.
+
+- **`info` inventory:** title/version/description are individually pinned by `TestRegressionMessageFormat` and `TestRegressionFastAPIDescription`, but the **set of keys** is not. A future `FastAPI(terms_of_service=..., contact=...)` argument would expose new fields on every SDK doc header.
+- **Component descriptions:** `TestOpenAPIComponentInventoryPinned` pins component names; `TestOpenAPISchemaContract` pins fields-vs-handler output; neither reads the schema `description`. SDK generators that emit JSDoc from this field (e.g. `openapi-typescript-codegen`) would silently churn.
+- **Component inner `title`:** distinct from the components-dict key — Pydantic exposes both. A `model_config = {"title": "Greeting"}` override would leave the dict key stable while changing the emitted SDK type name.
+- **`required: [...]` arrays:** an `Optional[str]` change drops the field from required without removing it from the response — the cross-endpoint match test still passes; consumers flip to optional and lose exhaustiveness checks.
+- **Property `title` defaults:** any `Field(..., title=...)` override is invisible to every other test in the suite.
+- **Operation summaries:** Pinned `operationId` encodes the function name *and* the path, but FastAPI users sometimes add `operation_id=` to stabilise the wire-level ID while renaming the handler for clarity. `operationId` stays green; `summary` (rendered as the `/docs` heading and used by some generators as the JSDoc title) drifts.
+
+**Verification:** 292 backend tests (266 → 292) + 91 frontend tests pass, 3× in sequence with no flakiness (~3.0s per backend run). Backend coverage stays at 100% (36/36 statements + branches). Frontend coverage unchanged (this session adds no frontend tests — the existing 91 frontend tests already saturate the 100% target).
