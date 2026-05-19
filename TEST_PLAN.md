@@ -1148,3 +1148,53 @@ generator and the `/docs` UI sees the change.
 - **Operation summaries:** Pinned `operationId` encodes the function name *and* the path, but FastAPI users sometimes add `operation_id=` to stabilise the wire-level ID while renaming the handler for clarity. `operationId` stays green; `summary` (rendered as the `/docs` heading and used by some generators as the JSDoc title) drifts.
 
 **Verification:** 292 backend tests (266 → 292) + 91 frontend tests pass, 3× in sequence with no flakiness (~3.0s per backend run). Backend coverage stays at 100% (36/36 statements + branches). Frontend coverage unchanged (this session adds no frontend tests — the existing 91 frontend tests already saturate the 100% target).
+
+## Tuesday 2026-05-19 — flaky-hunt (behavioural pins, no coverage change)
+
+**Goal.** Hunt for flaky tests and, finding none, pin the *sources* of stability so future regressions that would re-introduce flakiness fail loudly rather than appearing as intermittent CI failures weeks later.
+
+**Method.**
+1. Ran the full backend suite 5× back-to-back under `pytest-randomly` (different seed per run). All 292 tests passed every time, ~1.7s per run.
+2. Ran the full frontend Jest suite 5× back-to-back. All 91 tests passed every time, ~2.5s per run.
+3. With zero flakes found, designed a new file of *flakiness regression guards* — tests that target known sources of flakiness (non-deterministic handlers, lazy state, clock regressions, header mutation, lazy route registration) so a future change that re-introduces them fails on the first run rather than the hundredth.
+
+### Backend — `backend/tests/test_flakiness_guards.py` (new file, 22 tests)
+
+| Suite | Test | Pins |
+|-------|------|------|
+| `TestOpenAPISchemaByteStability` | `test_repeated_openapi_json_responses_are_byte_identical` | 20 back-to-back `GET /openapi.json` responses share one body hash — catches a future `app.openapi_schema = None` (regenerate-on-fetch) regression that would silently churn the schema and break clients that hash it for compatibility. |
+| `TestOpenAPISchemaByteStability` | `test_openapi_schema_dict_equal_across_repeated_calls` | Parsed schema dicts are deeply equal across 10 calls — catches *semantic* schema drift even if a future stable-but-reordered serialisation makes the bytes change. |
+| `TestHighIterationMessageDeterminism` | `test_post_hello_message_is_byte_identical_across_200_calls` | 200 identical POSTs return exactly one distinct `message` value — extends the existing 5-call idempotence check by 40× so a 1%-probability flake (e.g. accidentally appending a uuid suffix on some code path) trips here with ~86% confidence per run. |
+| `TestHighIterationMessageDeterminism` | `test_get_hello_message_is_byte_identical_across_200_calls` | Same pin for `GET /api/hello`. |
+| `TestHighIterationMessageDeterminism` | `test_health_status_field_is_byte_identical_across_200_calls` | The `status` literal value is exactly `"healthy"` across 200 calls — catches accidental locale leaks or per-request status mutation. |
+| `TestHighIterationMessageDeterminism` | `test_version_response_body_is_byte_identical_across_200_calls` | `/api/version` has no timestamp field, so the *entire* body must be byte-identical across 200 calls — a divergence means a non-deterministic field was added. |
+| `TestConcurrentIdenticalInputDeterminism` | `test_100_concurrent_identical_posts_return_one_message` | 100 concurrent POSTs with the same name return one distinct `message` — complements the existing distinct-name concurrency tests by checking the *opposite* property (pure-function semantics survive interleaving). |
+| `TestConcurrentIdenticalInputDeterminism` | `test_100_concurrent_health_calls_return_one_status` | 100 concurrent `/health` calls all return `status="healthy"` — guards against shared mutable state in the health handler that only surfaces under concurrency. |
+| `TestConcurrentIdenticalInputDeterminism` | `test_concurrent_identical_timestamps_are_all_valid_utc` | Every timestamp from 50 concurrent POSTs parses as UTC ISO 8601 — catches race conditions on shared timestamp state that produce malformed strings under interleaving. |
+| `TestMultipleTestClientIsolation` | `test_two_clients_against_same_app_return_identical_health` | Two independent `TestClient` instances see the same `/health` response — pins the parallel-test-runner model. |
+| `TestMultipleTestClientIsolation` | `test_ten_clients_serially_each_return_200` | Creating and tearing down 10 `TestClient` instances each succeeds — catches per-instance teardown side effects. |
+| `TestMultipleTestClientIsolation` | `test_new_client_after_post_does_not_inherit_prior_post_state` | A POST on one client doesn't leak into another — pins the stateless contract across the TestClient boundary, not just within one instance. |
+| `TestAppSingletonInvariant` | `test_repeated_imports_return_same_object` | `from app.main import app` always returns the same identity — catches an accidental refactor that moves `FastAPI()` construction inside a function (which would silently double-register middleware on re-import). |
+| `TestAppSingletonInvariant` | `test_app_routes_set_is_stable_across_repeated_access` | The `app.routes` inventory is identical on three repeated reads — catches lazy route registration that only surfaces under specific request orderings. |
+| `TestStressMonotonicTimestamps` | `test_500_sequential_health_timestamps_are_non_decreasing` | 500 sequential `/health` timestamps are monotonically non-decreasing — extends the existing 10-call check by 50× so a coarsely-rounded or cached clock that passes 10 calls fails here. |
+| `TestStressMonotonicTimestamps` | `test_500_sequential_post_timestamps_are_non_decreasing` | Same stress pin for `POST /api/hello` timestamps. |
+| `TestCORSPreflightByteDeterminism` | `test_repeated_preflight_returns_identical_cors_headers` | 20 preflights yield one distinct set of CORS headers (allow-origin/methods/headers/credentials/max-age) — catches a future change that binds CORS headers to a per-request random value, which would silently invalidate browser caches and double every cross-origin POST. |
+| `TestCORSPreflightByteDeterminism` | `test_preflight_followed_by_post_preflight_unchanged` | A POST between two preflights doesn't alter the preflight response — catches accidental per-origin or per-request state mutation in CORS middleware. |
+| `TestRouteInventoryStability` | `test_openapi_paths_set_is_identical_across_repeated_calls` | The set of declared paths in `/openapi.json` is identical across 10 calls — guards against lazy route registration visible only via the schema, not via direct `app.routes` access. |
+| `TestRouteInventoryStability` | `test_openapi_components_schemas_set_is_identical_across_repeated_calls` | The set of declared component-schema names is identical across 10 calls — guards against lazy Pydantic-model registration. |
+| `TestAsyncClientReuseDeterminism` | `test_50_sequential_calls_on_one_async_client_return_one_message` | 50 sequential POSTs on a *single* reused `AsyncClient` yield exactly one distinct `message` — catches httpx/Starlette connection-level state leaking into response bodies on reuse. |
+| `TestAsyncClientReuseDeterminism` | `test_alternating_get_post_on_one_async_client_each_correct` | Alternating GET and POST on the same `AsyncClient` each return their own correct shape across 20 cycles — catches shared-client request-level state mutation (e.g. headers carrying over). |
+
+**Why these specifically.** Each test targets a *source* of flakiness that the existing suite does not pin, picked from the flaky-test taxonomy commonly seen in async-Python services:
+
+- **Non-deterministic schema generation:** FastAPI's `app.openapi_schema` cache is implicit; a future handler that calls `app.openapi_schema = None` (or any code path that re-enters generation) would silently churn the schema. Byte-identity over 20 calls catches it.
+- **Low-probability handler randomness:** The existing 3–5-call idempotence checks would miss a 1%-per-call regression. 200 calls bring the detection probability to ~86% per run; over a few CI runs the probability of detection approaches 1.
+- **Concurrent state corruption under identical input:** All existing concurrency tests use *distinct* inputs (to catch name-leak bugs). 100 concurrent identical POSTs check the *opposite* property — pure-function semantics under interleaving — and would catch a shared mutable buffer that only manifests when two requests happen to hit the same instant.
+- **TestClient instance isolation:** Parallelism models (`pytest-xdist`, etc.) instantiate many clients per process. Pinning that the app is stateless across `TestClient` boundaries makes any future per-client-instance state regression fail loudly.
+- **App singleton invariant:** A future refactor that moves the `FastAPI()` constructor inside a function would cause every re-import to re-register middleware, producing weird double-CORS-headers flakes only on test runs that happen to trigger the re-import. The identity check catches it at the source.
+- **Clock regressions at scale:** A clock implementation that returns the same coarsely-rounded value most of the time but occasionally goes backwards (e.g. an accidental `time.time()` instead of `datetime.now(UTC)` on Windows) would pass the existing 10-call monotonicity test. 500 calls catch the failure window.
+- **CORS preflight mutation:** A future change that bound CORS allow-headers to a per-request hash would silently invalidate the browser CORS cache, doubling every cross-origin POST. Repeat-preflight byte-identity catches it.
+- **Lazy route/schema registration:** The OpenAPI route/component inventory can lag the actual `app.routes` inventory if FastAPI ever introduces request-driven schema generation. Repeat-fetch stability pins both views.
+- **Shared async-client state:** Reusing an `AsyncClient` across many calls or alternating verbs is the common test-fixture pattern. If httpx/Starlette ever leaked request-level state across calls on the same client, every async test would silently start coupling — these guards make that visible.
+
+**Verification:** 314 backend tests (292 → 314) + 91 frontend tests pass, 3× in sequence with no flakiness (~2.2s per `test_flakiness_guards.py` run, ~6.8s full backend suite). Backend coverage stays at 100% (36/36 statements + branches). Frontend coverage unchanged (this session adds backend-only tests). Pre-PR, the new file was run 3× in sequence to confirm the guards themselves are not flaky.
