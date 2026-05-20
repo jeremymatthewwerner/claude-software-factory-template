@@ -1198,3 +1198,73 @@ generator and the `/docs` UI sees the change.
 - **Shared async-client state:** Reusing an `AsyncClient` across many calls or alternating verbs is the common test-fixture pattern. If httpx/Starlette ever leaked request-level state across calls on the same client, every async test would silently start coupling — these guards make that visible.
 
 **Verification:** 314 backend tests (292 → 314) + 91 frontend tests pass, 3× in sequence with no flakiness (~2.2s per `test_flakiness_guards.py` run, ~6.8s full backend suite). Backend coverage stays at 100% (36/36 statements + branches). Frontend coverage unchanged (this session adds backend-only tests). Pre-PR, the new file was run 3× in sequence to confirm the guards themselves are not flaky.
+
+---
+
+## QA Run: Wednesday 2026-05-20 — Integration Gaps (issue #225)
+
+### Backend — `backend/tests/test_integration_gaps.py` (new file, 19 tests)
+
+Line coverage was already at 100% for both backend and frontend before this run, so the
+focus is on **cross-component integration gaps** that the existing 314 tests do not pin —
+behaviours that all pass today but for which no test would fail if a regression silently
+broke them.
+
+| Suite | Test | Pins |
+|-------|------|------|
+| `TestCORSOnErrorResponses` | `test_404_from_allowlisted_origin_carries_acao_and_vary` | A 404 from an allow-listed origin still carries `Access-Control-Allow-Origin` and `Vary: Origin`. Existing CORS tests only assert behaviour on 200s; a regression that registers an exception handler outside the CORSMiddleware chain would leave the browser unable to read the 404 body. |
+| `TestCORSOnErrorResponses` | `test_405_from_allowlisted_origin_carries_acao_and_vary` | Same pin for 405 (method-not-allowed) responses. |
+| `TestCORSOnErrorResponses` | `test_422_from_allowlisted_origin_carries_acao_and_vary` | Same pin for 422 (validation-error) responses — the most common error a CORS client will hit. |
+| `TestCORSOnErrorResponses` | `test_404_from_disallowed_origin_omits_acao` | A 404 from a non-allow-listed origin must not leak any `Access-Control-Allow-Origin` header. Catches a regression that would echo every requesting origin on error paths. |
+| `TestCORSOnErrorResponses` | `test_422_from_disallowed_origin_omits_acao` | Same pin for 422 — the path that's most likely to leak headers because FastAPI's validation-error handler runs before route-level config. |
+| `TestASGILifespanIntegration` | `test_app_serves_requests_inside_lifespan_window` | Entering `app.router.lifespan_context(app)` directly, a request inside the window returns 200 and exit doesn't raise. Catches a future startup hook that throws under uvicorn but never runs under `TestClient` because `TestClient` short-circuits lifespan unless told otherwise. |
+| `TestASGILifespanIntegration` | `test_lifespan_can_be_entered_and_exited_repeatedly` | Three back-to-back lifespan cycles all succeed. Catches a stuck startup-state regression where a one-shot initializer leaves global state behind. |
+| `TestDocsHTMLWiring` | `test_docs_html_references_canonical_openapi_url` | Swagger UI HTML payload contains `/openapi.json`. Existing tests only check the status code — they would still pass if `openapi_url=None` (no schema served), but the docs page would render empty. |
+| `TestDocsHTMLWiring` | `test_docs_html_embeds_app_title` | Swagger UI HTML embeds `Software Factory API` (the configured app title). Catches a regression that decouples the page title from the FastAPI metadata. |
+| `TestDocsHTMLWiring` | `test_redoc_html_references_canonical_openapi_url` | Same pin for ReDoc — both UIs depend on `/openapi.json` and both would silently break together. |
+| `TestDocsHTMLWiring` | `test_redoc_html_embeds_app_title` | Same title-pin for ReDoc. |
+| `TestAsyncClientSchemaContract` | `test_documented_get_routes_response_keys_match_schema` | Every documented GET 200 route, fetched via real `httpx.AsyncClient` + `ASGITransport`, returns a body whose top-level keys match the documented response component. `TestOpenAPISchemaContract` covers this via `TestClient` only; the async ASGI transport path was untested. |
+| `TestAsyncClientSchemaContract` | `test_documented_post_hello_response_keys_match_schema` | Same pin for the documented POST 200 on `/api/hello`. |
+| `TestCORSVaryOnRealRequest` | `test_allowlisted_get_response_includes_vary_origin` | A real (non-preflight) allow-listed GET still carries `Vary: Origin`. Existing tests pin Vary on preflights only; shared caches (CDN, browser disk cache) also need it on the actual response to keep per-origin entries safe. |
+| `TestCORSVaryOnRealRequest` | `test_allowlisted_post_response_includes_vary_origin` | Same pin for the actual POST response — the path that's most likely to be cached incorrectly if Vary is missing. |
+| `TestOPTIONSWithoutCORSHeaders` | `test_options_without_cors_headers_on_api_hello_returns_405` | Bare `OPTIONS /api/hello` (no `Origin`, no `Access-Control-Request-Method`) returns 405, not a synthesized 200. Catches a regression where CORSMiddleware starts answering 200 to any OPTIONS, which would mask a real CORS misconfiguration in integration tests. |
+| `TestOPTIONSWithoutCORSHeaders` | `test_options_without_cors_headers_on_health_returns_405` | Same pin for `/health`. |
+| `TestMultipleAllowListedOriginsInterleaved` | `test_acao_is_echoed_per_request_across_allowlisted_origins` | Interleaved GETs from `http://localhost:3000` and `http://127.0.0.1:3000` each receive their own origin echoed back. Catches a regression where the matched origin gets cached at module-import time (e.g. via `functools.cache`), making ACAO "stick" to whichever origin called first. |
+| `TestMultipleAllowListedOriginsInterleaved` | `test_acao_is_echoed_per_request_for_post` | Same per-request echo pin for POST requests. |
+
+**Why these specifically.** Each test targets an **integration boundary** that the existing
+suite does not pin, picked from where two components meet in `app/main.py`:
+
+- **CORSMiddleware × FastAPI exception handlers.** FastAPI's 404/405/422 responses are
+  generated by exception handlers, not by route handlers. Whether CORSMiddleware wraps
+  them depends on middleware ordering — a regression that registers a handler outside
+  the middleware chain would silently break cross-origin error reporting. The five
+  `TestCORSOnErrorResponses` tests pin this boundary for the three error status codes
+  on both allow-listed and disallowed origins.
+- **FastAPI × ASGI lifespan.** The `TestClient` and `AsyncClient` fixtures both run a
+  lifespan but never assert anything about it. Directly entering
+  `app.router.lifespan_context(app)` is the closest test-side mirror of how uvicorn
+  hosts the app in production, so a thrown startup hook fails *here* before it ships.
+- **FastAPI metadata × `/docs` and `/redoc` HTML.** The Swagger UI and ReDoc HTML pages
+  are generated by FastAPI at request time from the configured `title` and
+  `openapi_url`. A regression that nulls `openapi_url` or changes the title would still
+  pass the existing status-only tests but break both docs UIs in practice.
+- **AsyncClient × ASGITransport × Pydantic response model.** The full async response
+  path (httpx serialisation → ASGI framing → Starlette response → Pydantic dump) is
+  exercised by existing tests for status codes and field values, but the documented
+  schema vs. live response *keys* parity is only pinned on the sync `TestClient` path.
+- **Shared cache (CDN/browser) × CORSMiddleware.** `Vary: Origin` is pinned on preflights
+  only. The actual GET/POST response also needs it, otherwise a cached response served
+  to origin A could be replayed for origin B with the wrong ACAO header.
+- **CORSMiddleware OPTIONS handling × router.** Existing tests cover OPTIONS with
+  malformed CORS headers but not the bare-OPTIONS case. A middleware that synthesizes
+  200 for *any* OPTIONS would mask a real CORS misconfiguration in browser-style
+  integration tests.
+- **Per-request middleware state.** The two allow-listed origins
+  (`http://localhost:3000` and `http://127.0.0.1:3000`) interleaved 3× catches any
+  origin-matching cache that would make ACAO stick to the first caller.
+
+**Verification:** 333 backend tests (314 → 333) + 91 frontend tests pass, 3× in
+sequence with no flakiness (~0.07s per `test_integration_gaps.py` run, ~6.4s full
+backend suite). Backend coverage stays at 100% (36/36 statements + branches). Frontend
+coverage unchanged (this session adds backend-only tests).
