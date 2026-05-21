@@ -498,3 +498,216 @@ class TestBurstThenIdlePattern:
         assert bursts[-1] < max(bursts[0] * 3, 0.05), (
             f"burst regression: first={bursts[0] * 1000:.2f}ms, last={bursts[-1] * 1000:.2f}ms"
         )
+
+
+# ---------------------------------------------------------------------------
+# Additional e2e-performance regression guards (second Thursday rotation).
+#
+# These complement the suites above by covering paths that real E2E traffic
+# touches but the existing guards do not: error responses, Swagger/Redoc HTML
+# pages, higher-concurrency stress, sustained throughput floors, and a full
+# simulated browser first-paint sequence.
+# ---------------------------------------------------------------------------
+
+ERROR_PATH_CEILING_S = 0.5
+DOCS_HTML_CEILING_S = 0.5
+DOCS_HTML_AVG_CEILING_S = 0.2
+DOCS_HTML_SIZE_CEILING_BYTES = 8 * 1024
+CONCURRENT_100_CEILING_S = 2.0
+CONCURRENT_60_POST_CEILING_S = 2.0
+HEALTH_THROUGHPUT_FLOOR_RPS = 100.0
+POST_THROUGHPUT_FLOOR_RPS = 50.0
+FULL_FIRST_PAINT_CEILING_S = 1.5
+
+
+class TestErrorPathLatency:
+    """Error responses (404, 422, 405) must not be slower than the happy path.
+
+    A regression on the exception/validation pipeline can leave 200s fast and
+    error responses slow — invisible to all the happy-path guards above. Real
+    traffic hits these routinely (typos, schema drift, bots, retries after a
+    deploy), so we pin the same ceiling as happy-path single calls.
+    """
+
+    def test_404_latency_under_ceiling(self, client: TestClient) -> None:
+        """A 404 for an unknown route completes under 500ms."""
+        start = time.perf_counter()
+        response = client.get("/definitely-not-a-route")
+        elapsed = time.perf_counter() - start
+        assert response.status_code == 404
+        assert elapsed < ERROR_PATH_CEILING_S, f"404 took {elapsed:.3f}s"
+
+    def test_422_validation_error_latency_under_ceiling(self, client: TestClient) -> None:
+        """A 422 from a missing required field completes under 500ms."""
+        start = time.perf_counter()
+        response = client.post("/api/hello", json={})
+        elapsed = time.perf_counter() - start
+        assert response.status_code == 422
+        assert elapsed < ERROR_PATH_CEILING_S, f"422 took {elapsed:.3f}s"
+
+    def test_405_method_not_allowed_latency_under_ceiling(self, client: TestClient) -> None:
+        """A 405 for a wrong HTTP method completes under 500ms."""
+        start = time.perf_counter()
+        response = client.put("/api/hello", json={"name": "x"})
+        elapsed = time.perf_counter() - start
+        assert response.status_code == 405
+        assert elapsed < ERROR_PATH_CEILING_S, f"405 took {elapsed:.3f}s"
+
+
+class TestDocsHTMLPagePerformance:
+    """`/docs` and `/redoc` serve dynamically-rendered HTML and are the slowest
+    routes the app exposes by default. They're hit by humans opening the docs,
+    by health-checkers that probe the docs URL, and by some load balancers'
+    default warm-up checks. A regression here is the first one a developer
+    notices, so guard both latency and body-size.
+    """
+
+    @pytest.mark.parametrize("path", ["/docs", "/redoc"], ids=["docs", "redoc"])
+    def test_docs_html_page_under_ceiling(self, client: TestClient, path: str) -> None:
+        """The docs HTML page completes under 500ms."""
+        start = time.perf_counter()
+        response = client.get(path)
+        elapsed = time.perf_counter() - start
+        assert response.status_code == 200
+        assert elapsed < DOCS_HTML_CEILING_S, f"{path} took {elapsed:.3f}s"
+
+    def test_repeated_docs_html_avg_under_ceiling(self, client: TestClient) -> None:
+        """Five repeat /docs calls average under 200ms — catches template-render regressions."""
+        timings: list[float] = []
+        for _ in range(5):
+            start = time.perf_counter()
+            response = client.get("/docs")
+            timings.append(time.perf_counter() - start)
+            assert response.status_code == 200
+        avg = sum(timings) / len(timings)
+        assert avg < DOCS_HTML_AVG_CEILING_S, f"avg /docs latency {avg * 1000:.2f}ms"
+
+    def test_docs_html_body_under_size_ceiling(self, client: TestClient) -> None:
+        """The /docs HTML body stays under 8KB — bloat guard against accidental inlining.
+
+        The Swagger UI HTML is a small bootstrap shell that pulls JS/CSS from a
+        CDN; if it ever balloons (e.g. someone inlines the OpenAPI schema into
+        the page), the first-paint latency degrades for every docs visitor.
+        """
+        response = client.get("/docs")
+        assert response.status_code == 200
+        size = len(response.content)
+        assert size < DOCS_HTML_SIZE_CEILING_BYTES, (
+            f"/docs HTML is {size} bytes (ceiling {DOCS_HTML_SIZE_CEILING_BYTES})"
+        )
+
+
+class TestHighConcurrencyStress:
+    """Concurrency guards beyond the 50-request ceiling used by
+    :class:`TestConcurrentThroughput`. Real traffic (load-balancer warm-up,
+    retry storms after a transient blip, batch clients) routinely exceeds 50
+    in-flight requests; a collapse that only appears past that point would
+    slip through the existing guards.
+    """
+
+    @pytest.mark.asyncio
+    async def test_100_concurrent_health_under_ceiling(self, async_client: AsyncClient) -> None:
+        """100 concurrent /health requests complete in under 2s total."""
+        start = time.perf_counter()
+        responses = await asyncio.gather(*[async_client.get("/health") for _ in range(100)])
+        elapsed = time.perf_counter() - start
+        assert all(r.status_code == 200 for r in responses)
+        assert elapsed < CONCURRENT_100_CEILING_S, f"100 concurrent calls took {elapsed:.3f}s"
+
+    @pytest.mark.asyncio
+    async def test_60_concurrent_posts_return_distinct_names(
+        self, async_client: AsyncClient
+    ) -> None:
+        """60 concurrent POSTs each receive their own name back — correctness at 2x existing bound."""
+        names = [f"Stress{i:03d}" for i in range(60)]
+        start = time.perf_counter()
+        responses = await asyncio.gather(
+            *[async_client.post("/api/hello", json={"name": n}) for n in names]
+        )
+        elapsed = time.perf_counter() - start
+        assert all(r.status_code == 200 for r in responses)
+        assert elapsed < CONCURRENT_60_POST_CEILING_S, f"60 concurrent POSTs took {elapsed:.3f}s"
+
+        returned_names = [name_from_greeting(r.json()["message"]) for r in responses]
+        assert sorted(returned_names) == sorted(names)
+
+
+class TestThroughputFloor:
+    """Sustained-throughput regression guards.
+
+    The existing suites bound *total elapsed time* for N calls, which catches
+    catastrophic slowdowns but leaves a wide gap: a regression that halves
+    throughput while still fitting under the ceiling will pass silently. These
+    tests assert a *minimum requests-per-second rate*, which fails the moment
+    sustained throughput collapses even if total time is well under the
+    existing ceilings. Floors are deliberately well below observed CI rates
+    so noise can't flip them.
+    """
+
+    def test_health_sustained_throughput_floor(self, client: TestClient) -> None:
+        """/health sustains at least 100 req/sec over 200 sequential calls."""
+        n = 200
+        start = time.perf_counter()
+        for _ in range(n):
+            response = client.get("/health")
+            assert response.status_code == 200
+        elapsed = time.perf_counter() - start
+        rps = n / elapsed
+        assert rps >= HEALTH_THROUGHPUT_FLOOR_RPS, (
+            f"/health throughput {rps:.1f} req/s below floor {HEALTH_THROUGHPUT_FLOOR_RPS}"
+        )
+
+    def test_post_hello_sustained_throughput_floor(self, client: TestClient) -> None:
+        """POST /api/hello sustains at least 50 req/sec over 100 sequential calls."""
+        n = 100
+        start = time.perf_counter()
+        for i in range(n):
+            response = client.post("/api/hello", json={"name": f"T{i}"})
+            assert response.status_code == 200
+        elapsed = time.perf_counter() - start
+        rps = n / elapsed
+        assert rps >= POST_THROUGHPUT_FLOOR_RPS, (
+            f"POST /api/hello throughput {rps:.1f} req/s below floor {POST_THROUGHPUT_FLOOR_RPS}"
+        )
+
+
+class TestRealisticFrontendStartupPattern:
+    """Full simulated browser first-paint sequence.
+
+    A real first-time visitor opening `/docs` triggers, in rough order:
+      1. The docs HTML page render.
+      2. A schema fetch (`/openapi.json`) that Swagger UI uses to build the page.
+      3. Parallel init fetches (`/health`, `/api/version`, `/api/hello`) that
+         a frontend might issue concurrently after mount.
+      4. A first user-initiated POST.
+
+    Each individual leg is already guarded above; this test guards the
+    *end-to-end* perceived latency of the full sequence so a small regression
+    on each leg can't compound into a noticeable slowdown.
+    """
+
+    @pytest.mark.asyncio
+    async def test_full_first_paint_sequence_under_ceiling(self, async_client: AsyncClient) -> None:
+        """Full simulated first paint completes end-to-end under 1.5s."""
+        start = time.perf_counter()
+
+        docs = await async_client.get("/docs")
+        assert docs.status_code == 200
+
+        schema = await async_client.get("/openapi.json")
+        assert schema.status_code == 200
+
+        init_responses = await asyncio.gather(
+            async_client.get("/health"),
+            async_client.get("/api/version"),
+            async_client.get("/api/hello"),
+        )
+        assert all(r.status_code == 200 for r in init_responses)
+
+        post = await async_client.post("/api/hello", json={"name": "FirstUser"})
+        assert post.status_code == 200
+
+        elapsed = time.perf_counter() - start
+        assert elapsed < FULL_FIRST_PAINT_CEILING_S, (
+            f"full first-paint sequence took {elapsed:.3f}s, ceiling {FULL_FIRST_PAINT_CEILING_S}s"
+        )

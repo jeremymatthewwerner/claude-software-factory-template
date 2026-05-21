@@ -1268,3 +1268,80 @@ suite does not pin, picked from where two components meet in `app/main.py`:
 sequence with no flakiness (~0.07s per `test_integration_gaps.py` run, ~6.4s full
 backend suite). Backend coverage stays at 100% (36/36 statements + branches). Frontend
 coverage unchanged (this session adds backend-only tests).
+
+## QA Run: Thursday 2026-05-21 — E2E Performance (issue #228)
+
+### Backend — `backend/tests/test_performance.py` (12 new tests across 5 new classes)
+
+Line coverage is already at 100% on both backend (`app/main.py`) and frontend
+(`page.tsx`, `layout.tsx`), so this rotation widens the e2e-performance regression
+surface itself. The existing 12 classes guard happy-path latency, latency distribution,
+parallel/concurrent throughput, payload size, and burst patterns; the 5 new classes
+cover paths that real E2E traffic touches but the prior guards do not.
+
+#### `TestErrorPathLatency` (3 tests)
+| Test | Description |
+|------|-------------|
+| `test_404_latency_under_ceiling` | A 404 for an unknown route completes under 500ms — error paths must not be slower than the happy path |
+| `test_422_validation_error_latency_under_ceiling` | A 422 from a missing required field on POST /api/hello completes under 500ms |
+| `test_405_method_not_allowed_latency_under_ceiling` | A 405 for PUT on /api/hello completes under 500ms |
+
+#### `TestDocsHTMLPagePerformance` (4 tests)
+| Test | Description |
+|------|-------------|
+| `test_docs_html_page_under_ceiling[docs]` | GET /docs (Swagger UI HTML) completes under 500ms |
+| `test_docs_html_page_under_ceiling[redoc]` | GET /redoc (ReDoc HTML) completes under 500ms |
+| `test_repeated_docs_html_avg_under_ceiling` | Five repeat /docs calls average under 200ms — catches template-render regressions |
+| `test_docs_html_body_under_size_ceiling` | /docs HTML body stays under 8KB — bloat guard against accidentally inlining the OpenAPI schema |
+
+#### `TestHighConcurrencyStress` (2 tests)
+| Test | Description |
+|------|-------------|
+| `test_100_concurrent_health_under_ceiling` | 100 concurrent /health requests complete under 2s (2× the existing 50-request guard) |
+| `test_60_concurrent_posts_return_distinct_names` | 60 concurrent POSTs each receive their own name back — correctness at 2× the existing concurrent-POST bound |
+
+#### `TestThroughputFloor` (2 tests)
+| Test | Description |
+|------|-------------|
+| `test_health_sustained_throughput_floor` | /health sustains at least 100 req/sec over 200 sequential calls — catches throughput regressions that fit within existing total-time ceilings |
+| `test_post_hello_sustained_throughput_floor` | POST /api/hello sustains at least 50 req/sec over 100 sequential calls |
+
+#### `TestRealisticFrontendStartupPattern` (1 test)
+| Test | Description |
+|------|-------------|
+| `test_full_first_paint_sequence_under_ceiling` | Full simulated browser first paint (docs HTML → openapi.json → parallel init triad → user POST) completes end-to-end under 1.5s |
+
+**Why these specific cross-cuts:**
+
+- **Error pipeline × user-perceived latency.** Existing guards bound happy-path
+  latency only; a regression in FastAPI's exception/validation machinery (custom
+  `RequestValidationError` handler added on a hot path, a sync log call wired into
+  the 404 path) would leave 200s fast and error responses slow. Real traffic hits
+  these routinely — typos, schema drift between frontend and backend, retried POSTs
+  after a deploy, bots — so error-path latency is part of the user-perceived budget.
+- **Swagger/Redoc HTML × developer perception.** The docs HTML pages are the
+  largest dynamically-rendered HTML responses the app serves by default and are the
+  first surface a developer or operator notices a slowdown on. A regression here
+  (template change, accidental schema inlining) would not surface in any of the
+  JSON-endpoint guards.
+- **Concurrency stress past the 50-request line.** The existing
+  `TestConcurrentThroughput` caps concurrency at 50; a collapse that only appears
+  past that point (lock contention surfacing at higher fan-out, accidental
+  per-request resource hoarding) would slip through. 100 concurrent GETs and 60
+  concurrent POSTs with correctness verification close that gap.
+- **Throughput floor vs. total-time ceiling.** Every existing perf guard bounds
+  *total elapsed time* for N calls, which catches catastrophic slowdowns but leaves
+  a wide gap: a regression that halves throughput while still fitting under the
+  ceiling will pass silently. Asserting a minimum req/sec floor on `/health` (100
+  req/s) and POST `/api/hello` (50 req/s) fails the moment sustained throughput
+  collapses by half, even when total time stays within the existing budget.
+- **Full first-paint sequence × compounded regression.** Each individual leg
+  (docs HTML, openapi.json, parallel init triad, first POST) is already guarded in
+  isolation, but no test asserts the end-to-end perceived latency of the full
+  sequence. A small regression on each leg can compound into a noticeable slowdown
+  that none of the per-leg guards trips. The 1.5s end-to-end ceiling closes that gap.
+
+**Verification:** 345 backend tests (333 → 345) + 91 frontend tests pass, 3× in
+sequence with no flakiness (~1.3s per `test_performance.py` run, ~4.0s full backend
+suite). Backend and frontend line coverage stay at 100%. Bounds are deliberately
+generous (≥10× typical observed CI latency) so they fail only on real regressions.
