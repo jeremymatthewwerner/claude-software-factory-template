@@ -16,6 +16,15 @@ from app.main import app
 # middleware. Centralised here so a port/host change touches one location.
 LOCALHOST_ORIGIN = "http://localhost:3000"
 
+# Origin that is *not* allow-listed by the CORS middleware. Used by negative
+# CORS tests to assert that disallowed origins receive no allow-origin header.
+DISALLOWED_ORIGIN = "https://evil.example.com"
+
+# Exact greeting template produced by the /api/hello endpoints. Centralised so
+# a template change touches a single location instead of every assertion that
+# pins the full string.
+GREETING_TEMPLATE = "Hello, {name}! Welcome to your Software Factory."
+
 
 @pytest.fixture
 def client() -> TestClient:
@@ -29,6 +38,40 @@ async def async_client() -> AsyncGenerator[AsyncClient, None]:
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         yield ac
+
+
+def expected_greeting(name: str) -> str:
+    """Return the exact greeting message the API emits for ``name``.
+
+    Single source of truth for the ``"Hello, {name}! Welcome..."`` template
+    that tests pin verbatim. A template change touches one constant instead
+    of every assertion that hard-codes the full string.
+    """
+    return GREETING_TEMPLATE.format(name=name)
+
+
+def cors_preflight_headers(request_method: str, origin: str = LOCALHOST_ORIGIN) -> dict[str, str]:
+    """Return the header dict for a CORS preflight (OPTIONS) request.
+
+    A valid preflight carries both ``Origin`` and
+    ``Access-Control-Request-Method``. Centralising the dict construction
+    avoids the same two-key literal appearing in dozens of tests.
+    """
+    return {
+        "Origin": origin,
+        "Access-Control-Request-Method": request_method,
+    }
+
+
+def get_openapi_schema(client: TestClient) -> dict[str, Any]:
+    """Fetch the OpenAPI schema and return it as a parsed dict.
+
+    Centralises the ``client.get("/openapi.json").json()`` idiom that
+    appears in dozens of tests, both reducing duplication and giving the
+    pattern a name that documents intent at each call site.
+    """
+    data: dict[str, Any] = client.get("/openapi.json").json()
+    return data
 
 
 def assert_utc_iso8601(timestamp: str) -> datetime:

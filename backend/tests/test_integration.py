@@ -13,7 +13,11 @@ import pytest
 from fastapi.testclient import TestClient
 from httpx import AsyncClient
 
-from .conftest import assert_utc_iso8601, openapi_component_for_response
+from .conftest import (
+    assert_utc_iso8601,
+    get_openapi_schema,
+    openapi_component_for_response,
+)
 
 
 class TestFullWorkflow:
@@ -265,7 +269,7 @@ class TestOpenAPISchemaContract:
         introspection (or accidentally hidden via include_in_schema=False) would
         not appear in /docs and would be invisible to SDK generators.
         """
-        schema = client.get("/openapi.json").json()
+        schema = get_openapi_schema(client)
         paths = schema["paths"]
 
         assert "/health" in paths and "get" in paths["/health"]
@@ -281,7 +285,7 @@ class TestOpenAPISchemaContract:
         this schema. If the Pydantic model loses the `name` field or its type
         changes (e.g. to `int`), generated clients break — this test fails first.
         """
-        schema = client.get("/openapi.json").json()
+        schema = get_openapi_schema(client)
         ref = schema["paths"]["/api/hello"]["post"]["requestBody"]["content"]["application/json"][
             "schema"
         ]["$ref"]
@@ -320,7 +324,7 @@ class TestOpenAPISchemaContract:
         the assertion logic in one place so a single helper update covers
         every endpoint.
         """
-        schema = client.get("/openapi.json").json()
+        schema = get_openapi_schema(client)
         component = openapi_component_for_response(schema, path, method)
         documented_fields = set(component["properties"])
         actual_fields = set(client.request(method.upper(), path, json=json_body).json())
@@ -601,7 +605,7 @@ class TestOpenAPI422SchemaMatchesActual422Body:
         Without this declaration, generated clients have no idea the endpoint
         can return a structured validation error and may fail to parse it.
         """
-        schema = client.get("/openapi.json").json()
+        schema = get_openapi_schema(client)
         responses = schema["paths"]["/api/hello"]["post"]["responses"]
         assert "422" in responses, (
             f"POST /api/hello does not declare a 422 response in OpenAPI; got {list(responses)}"
@@ -615,7 +619,7 @@ class TestOpenAPI422SchemaMatchesActual422Body:
         The schema declares a single ``detail`` field; FastAPI must emit a
         body with exactly that top-level shape (no extra keys, no missing keys).
         """
-        schema = client.get("/openapi.json").json()
+        schema = get_openapi_schema(client)
         hve = schema["components"]["schemas"]["HTTPValidationError"]
         documented_fields = set(hve["properties"])
 
@@ -633,7 +637,7 @@ class TestOpenAPI422SchemaMatchesActual422Body:
         ``ValidationError.required`` is ``[loc, msg, type]``. If FastAPI ever
         drops one of these (or the model drifts), generated clients break.
         """
-        schema = client.get("/openapi.json").json()
+        schema = get_openapi_schema(client)
         ve = schema["components"]["schemas"]["ValidationError"]
         required_fields = set(ve["required"])
 
@@ -840,7 +844,7 @@ class TestAPIRouteInventoryPin:
 
     def test_openapi_paths_match_expected_route_inventory(self, client: TestClient) -> None:
         """``/openapi.json`` declares exactly the user-facing routes the project ships."""
-        schema = client.get("/openapi.json").json()
+        schema = get_openapi_schema(client)
         actual: set[tuple[str, str]] = {
             (method.upper(), path)
             for path, methods in schema["paths"].items()
