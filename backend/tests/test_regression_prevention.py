@@ -36,6 +36,8 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
+from .conftest import LOCALHOST_ORIGIN, get_openapi_schema
+
 # The exact set of Pydantic class names that the public OpenAPI surface exposes
 # as component schemas today. SDK generators emit these as TypeScript types /
 # generated client classes; a rename silently breaks every downstream consumer.
@@ -118,7 +120,7 @@ class TestOpenAPIComponentInventoryPinned:
 
     def test_component_inventory_is_exactly_the_expected_set(self, client: TestClient) -> None:
         """The OpenAPI components contain exactly the expected schema names — no more, no less."""
-        schema = client.get("/openapi.json").json()
+        schema = get_openapi_schema(client)
         actual: set[str] = set(schema["components"]["schemas"])
         unexpected = actual - EXPECTED_OPENAPI_COMPONENTS
         missing = EXPECTED_OPENAPI_COMPONENTS - actual
@@ -157,7 +159,7 @@ class TestUnusedErrorResponseNotExposedInOpenAPI:
 
     def test_error_response_is_not_in_openapi_components(self, client: TestClient) -> None:
         """``ErrorResponse`` is **not** in OpenAPI components — pin its unused status."""
-        schema = client.get("/openapi.json").json()
+        schema = get_openapi_schema(client)
         assert "ErrorResponse" not in schema["components"]["schemas"], (
             "ErrorResponse appeared in OpenAPI components — a route must now "
             "use it as a response_model. Update EXPECTED_OPENAPI_COMPONENTS in "
@@ -243,7 +245,7 @@ class TestCORSPreflightReflectsRequestedHeaders:
         response = client.options(
             "/api/hello",
             headers={
-                "Origin": "http://localhost:3000",
+                "Origin": LOCALHOST_ORIGIN,
                 "Access-Control-Request-Method": "POST",
                 "Access-Control-Request-Headers": "x-custom-header,content-type",
             },
@@ -273,7 +275,7 @@ class TestCORSPreflightReflectsRequestedHeaders:
         response = client.options(
             "/api/hello",
             headers={
-                "Origin": "http://localhost:3000",
+                "Origin": LOCALHOST_ORIGIN,
                 "Access-Control-Request-Method": "POST",
                 "Access-Control-Request-Headers": "authorization",
             },
@@ -314,7 +316,7 @@ class TestEveryRouteUses200ResponseModelComponentRef:
         self, client: TestClient, method: str, path: str
     ) -> None:
         """The 200 response schema for each route is a ``$ref`` to a component."""
-        schema = client.get("/openapi.json").json()
+        schema = get_openapi_schema(client)
         op = schema["paths"][path][method]
         success_schema = op["responses"]["200"]["content"]["application/json"]["schema"]
         assert "$ref" in success_schema, (
@@ -346,7 +348,7 @@ class TestHelloRequestNameHasNoConstraints:
 
     def test_name_property_has_no_length_constraints(self, client: TestClient) -> None:
         """``HelloRequest.name`` declares no ``minLength`` or ``maxLength``."""
-        schema = client.get("/openapi.json").json()
+        schema = get_openapi_schema(client)
         name_prop = schema["components"]["schemas"]["HelloRequest"]["properties"]["name"]
         assert "minLength" not in name_prop, (
             f"HelloRequest.name gained a minLength constraint: {name_prop.get('minLength')!r}. "
@@ -366,7 +368,7 @@ class TestHelloRequestNameHasNoConstraints:
         ``pattern=`` would start rejecting those inputs silently from
         the schema, even before reaching the handler.
         """
-        schema = client.get("/openapi.json").json()
+        schema = get_openapi_schema(client)
         name_prop = schema["components"]["schemas"]["HelloRequest"]["properties"]["name"]
         assert "pattern" not in name_prop, (
             f"HelloRequest.name gained a pattern constraint: {name_prop.get('pattern')!r}. "
@@ -393,7 +395,7 @@ class TestPostHello422IsHTTPValidationErrorRef:
 
     def test_422_response_uses_http_validation_error_ref(self, client: TestClient) -> None:
         """POST /api/hello 422 response schema is ``$ref`` to ``HTTPValidationError``."""
-        schema = client.get("/openapi.json").json()
+        schema = get_openapi_schema(client)
         body_schema = schema["paths"]["/api/hello"]["post"]["responses"]["422"]["content"][
             "application/json"
         ]["schema"]
@@ -415,7 +417,7 @@ class TestOpenAPISpecVersionPinned:
 
     def test_openapi_field_is_3_1_family(self, client: TestClient) -> None:
         """``openapi`` field starts with ``3.1.`` — pinning the OpenAPI spec family."""
-        schema = client.get("/openapi.json").json()
+        schema = get_openapi_schema(client)
         version = schema.get("openapi", "")
         assert isinstance(version, str) and version.startswith("3.1."), (
             f"OpenAPI spec version regressed from the 3.1.x family: got {version!r}. "

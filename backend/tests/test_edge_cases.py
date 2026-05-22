@@ -30,6 +30,8 @@ file existed; collectively they cover:
 
 from fastapi.testclient import TestClient
 
+from .conftest import expected_greeting
+
 
 class TestTopLevelNonObjectBodyReturns422:
     """The request body must be a JSON object — ``null``, booleans,
@@ -262,7 +264,7 @@ class TestNameEchoBoundaries:
         """
         response = client.post("/api/hello", json={"name": "X"})
         assert response.status_code == 200
-        assert response.json()["message"] == "Hello, X! Welcome to your Software Factory."
+        assert response.json()["message"] == expected_greeting("X")
 
     def test_fifty_thousand_character_name_round_trips_verbatim(self, client: TestClient) -> None:
         """A 50_000-character name is echoed verbatim with the exact length preserved.
@@ -293,7 +295,7 @@ class TestNameEchoBoundaries:
         """
         response = client.post("/api/hello", json={"name": "\t\r\n "})
         assert response.status_code == 200
-        assert response.json()["message"] == "Hello, \t\r\n ! Welcome to your Software Factory."
+        assert response.json()["message"] == expected_greeting("\t\r\n ")
 
     def test_ascii_bel_character_in_name_echoed_verbatim(self, client: TestClient) -> None:
         """The ASCII BEL byte (``\\x07``) inside a name is echoed verbatim.

@@ -33,7 +33,11 @@ from fastapi.testclient import TestClient
 from httpx import ASGITransport, AsyncClient
 
 from app.main import app
-from tests.conftest import LOCALHOST_ORIGIN, openapi_component_for_response
+from tests.conftest import (
+    LOCALHOST_ORIGIN,
+    get_openapi_schema,
+    openapi_component_for_response,
+)
 
 LOOPBACK_ORIGIN = "http://127.0.0.1:3000"
 DISALLOWED_ORIGIN = "http://evil.example"
@@ -163,7 +167,7 @@ class TestAsyncClientSchemaContract:
         self, async_client: AsyncClient, client: TestClient
     ) -> None:
         """For every documented GET 200, the live keys must match the component."""
-        schema = client.get("/openapi.json").json()
+        schema = get_openapi_schema(client)
         for path, methods in schema["paths"].items():
             if "get" not in methods:
                 continue
@@ -183,7 +187,7 @@ class TestAsyncClientSchemaContract:
         self, async_client: AsyncClient, client: TestClient
     ) -> None:
         """The documented POST 200 keys must match the live response keys."""
-        schema = client.get("/openapi.json").json()
+        schema = get_openapi_schema(client)
         component = openapi_component_for_response(schema, "/api/hello", "post", "200")
         documented_keys = set(component["properties"].keys())
         response = await async_client.post("/api/hello", json={"name": "Ada"})

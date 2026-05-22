@@ -49,7 +49,12 @@ from httpx import ASGITransport, AsyncClient
 
 from app.main import app
 
-from .conftest import LOCALHOST_ORIGIN, assert_utc_iso8601, name_from_greeting
+from .conftest import (
+    LOCALHOST_ORIGIN,
+    assert_utc_iso8601,
+    get_openapi_schema,
+    name_from_greeting,
+)
 
 # Iteration count for "high-iteration" determinism checks. 200 is high enough
 # to catch ~1% probability flakes (>86% chance of detection per run) but adds
@@ -93,9 +98,9 @@ class TestOpenAPISchemaByteStability:
         weaker check still catches *semantic* drift — the parsed dict must
         remain stable even if the bytes change order.
         """
-        first = client.get("/openapi.json").json()
+        first = get_openapi_schema(client)
         for i in range(1, 10):
-            other = client.get("/openapi.json").json()
+            other = get_openapi_schema(client)
             assert other == first, f"OpenAPI schema diverged on call {i}"
 
 
@@ -373,9 +378,7 @@ class TestRouteInventoryStability:
 
     def test_openapi_paths_set_is_identical_across_repeated_calls(self, client: TestClient) -> None:
         """The set of declared paths in ``/openapi.json`` is identical on repeated calls."""
-        snapshots = [
-            tuple(sorted(client.get("/openapi.json").json()["paths"].keys())) for _ in range(10)
-        ]
+        snapshots = [tuple(sorted(get_openapi_schema(client)["paths"].keys())) for _ in range(10)]
         assert len(set(snapshots)) == 1, (
             f"OpenAPI paths set varied across 10 calls: {set(snapshots)!r}"
         )
@@ -385,7 +388,7 @@ class TestRouteInventoryStability:
     ) -> None:
         """The set of declared component-schema names is identical on repeated calls."""
         snapshots = [
-            tuple(sorted(client.get("/openapi.json").json()["components"]["schemas"].keys()))
+            tuple(sorted(get_openapi_schema(client)["components"]["schemas"].keys()))
             for _ in range(10)
         ]
         assert len(set(snapshots)) == 1, (

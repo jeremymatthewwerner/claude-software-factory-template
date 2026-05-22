@@ -20,7 +20,7 @@ import pytest
 from fastapi.testclient import TestClient
 from httpx import AsyncClient
 
-from .conftest import LOCALHOST_ORIGIN, name_from_greeting
+from .conftest import LOCALHOST_ORIGIN, cors_preflight_headers, name_from_greeting
 
 # Latency bounds — generous to avoid flakiness on shared CI runners.
 # Single-call ceilings: 500 ms is ~100x typical observed latency for these
@@ -230,8 +230,7 @@ class TestCORSPreflightPerformance:
     def test_single_preflight_under_ceiling(self, client: TestClient) -> None:
         """One CORS preflight for POST /api/hello completes under 100ms."""
         headers = {
-            "Origin": LOCALHOST_ORIGIN,
-            "Access-Control-Request-Method": "POST",
+            **cors_preflight_headers("POST"),
             "Access-Control-Request-Headers": "content-type",
         }
         start = time.perf_counter()
@@ -248,8 +247,7 @@ class TestCORSPreflightPerformance:
         perceives a slow POST even when each leg looks fine in isolation.
         """
         headers = {
-            "Origin": LOCALHOST_ORIGIN,
-            "Access-Control-Request-Method": "POST",
+            **cors_preflight_headers("POST"),
             "Access-Control-Request-Headers": "content-type",
         }
         start = time.perf_counter()

@@ -44,18 +44,18 @@ from fastapi.testclient import TestClient
 
 from app import __version__
 
+from .conftest import get_openapi_schema
+
 
 def _components(client: TestClient) -> dict[str, dict[str, Any]]:
     """Return ``schema["components"]["schemas"]`` for the live OpenAPI doc."""
-    schema = client.get("/openapi.json").json()
-    components: dict[str, dict[str, Any]] = schema["components"]["schemas"]
+    components: dict[str, dict[str, Any]] = get_openapi_schema(client)["components"]["schemas"]
     return components
 
 
 def _operation(client: TestClient, path: str, method: str) -> dict[str, Any]:
     """Return the OpenAPI operation object at ``paths[path][method]``."""
-    schema = client.get("/openapi.json").json()
-    op: dict[str, Any] = schema["paths"][path][method]
+    op: dict[str, Any] = get_openapi_schema(client)["paths"][path][method]
     return op
 
 
@@ -75,7 +75,7 @@ class TestOpenAPIInfoBlockInventory:
 
     def test_info_block_keys_are_exactly_expected(self, client: TestClient) -> None:
         """``info`` block contains exactly ``title``, ``version`` and ``description`` — no extras."""
-        info: dict[str, Any] = client.get("/openapi.json").json()["info"]
+        info: dict[str, Any] = get_openapi_schema(client)["info"]
         actual = set(info.keys())
         unexpected = actual - self.EXPECTED_INFO_KEYS
         missing = self.EXPECTED_INFO_KEYS - actual
@@ -99,7 +99,7 @@ class TestOpenAPIInfoBlockInventory:
         future split of ``__version__`` from the FastAPI ``version=`` arg
         to surface in the same file as the inventory assertion.
         """
-        info: dict[str, Any] = client.get("/openapi.json").json()["info"]
+        info: dict[str, Any] = get_openapi_schema(client)["info"]
         assert info["version"] == __version__, (
             f"info.version regressed: got {info['version']!r}, "
             f"expected {__version__!r} from app/__init__.py"

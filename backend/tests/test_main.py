@@ -10,7 +10,14 @@ from httpx import AsyncClient
 
 from app import __version__
 
-from .conftest import LOCALHOST_ORIGIN, assert_utc_iso8601
+from .conftest import (
+    DISALLOWED_ORIGIN,
+    LOCALHOST_ORIGIN,
+    assert_utc_iso8601,
+    cors_preflight_headers,
+    expected_greeting,
+    get_openapi_schema,
+)
 
 
 class TestHealthEndpoint:
@@ -342,13 +349,7 @@ class TestCORSMiddleware:
 
     def test_cors_preflight_returns_ok_for_allowed_origin(self, client: TestClient) -> None:
         """OPTIONS preflight for an allowed origin returns 200 with CORS headers."""
-        response = client.options(
-            "/health",
-            headers={
-                "Origin": LOCALHOST_ORIGIN,
-                "Access-Control-Request-Method": "GET",
-            },
-        )
+        response = client.options("/health", headers=cors_preflight_headers("GET"))
         assert response.status_code == 200
         assert "access-control-allow-origin" in response.headers
 
@@ -370,13 +371,7 @@ class TestCORSMiddleware:
 
     def test_cors_preflight_allows_post_method(self, client: TestClient) -> None:
         """OPTIONS preflight for POST method on allowed origin returns CORS headers."""
-        response = client.options(
-            "/api/hello",
-            headers={
-                "Origin": LOCALHOST_ORIGIN,
-                "Access-Control-Request-Method": "POST",
-            },
-        )
+        response = client.options("/api/hello", headers=cors_preflight_headers("POST"))
         assert response.status_code == 200
         assert "access-control-allow-origin" in response.headers
 
@@ -506,7 +501,7 @@ class TestCORSDisallowedOrigin:
         self, client: TestClient
     ) -> None:
         """GET /health from a disallowed origin does NOT receive Access-Control-Allow-Origin."""
-        response = client.get("/health", headers={"Origin": "https://evil.example.com"})
+        response = client.get("/health", headers={"Origin": DISALLOWED_ORIGIN})
         assert response.status_code == 200
         assert response.headers.get("access-control-allow-origin") is None
 
@@ -515,11 +510,7 @@ class TestCORSDisallowedOrigin:
     ) -> None:
         """OPTIONS preflight from a disallowed origin does NOT expose Access-Control-Allow-Origin."""
         response = client.options(
-            "/health",
-            headers={
-                "Origin": "https://evil.example.com",
-                "Access-Control-Request-Method": "GET",
-            },
+            "/health", headers=cors_preflight_headers("GET", origin=DISALLOWED_ORIGIN)
         )
         assert response.headers.get("access-control-allow-origin") is None
 
@@ -558,7 +549,7 @@ class TestRegressionMessageFormat:
         your Software Factory.') is detected immediately.
         """
         response = client.get("/api/hello")
-        assert response.json()["message"] == "Hello, World! Welcome to your Software Factory."
+        assert response.json()["message"] == expected_greeting("World")
 
     def test_post_hello_exact_message_format(self, client: TestClient) -> None:
         """POST /api/hello message follows 'Hello, {name}! Welcome to your Software Factory.'
@@ -567,7 +558,7 @@ class TestRegressionMessageFormat:
         or suffix (e.g. 'Hi, Alice!' or 'Greetings Alice') is detected.
         """
         response = client.post("/api/hello", json={"name": "Alice"})
-        assert response.json()["message"] == "Hello, Alice! Welcome to your Software Factory."
+        assert response.json()["message"] == expected_greeting("Alice")
 
     def test_version_environment_is_development(self, client: TestClient) -> None:
         """GET /api/version environment field is 'development'.
@@ -584,8 +575,7 @@ class TestRegressionMessageFormat:
         Prevents accidental renames from propagating to generated clients and
         public docs before anyone notices.
         """
-        response = client.get("/openapi.json")
-        assert response.json()["info"]["title"] == "Software Factory API"
+        assert get_openapi_schema(client)["info"]["title"] == "Software Factory API"
 
     def test_openapi_version_matches_app_version(self, client: TestClient) -> None:
         """OpenAPI version matches app.__version__ (no drift allowed).
@@ -593,8 +583,7 @@ class TestRegressionMessageFormat:
         FastAPI is configured with version=__version__; this test ensures the
         wiring is never accidentally removed or overridden.
         """
-        response = client.get("/openapi.json")
-        assert response.json()["info"]["version"] == __version__
+        assert get_openapi_schema(client)["info"]["version"] == __version__
 
 
 class TestSecurityInputs:
@@ -806,7 +795,7 @@ class TestPathRouting:
         """
         response = client.get("/api/hello?name=Alice")
         assert response.status_code == 200
-        assert response.json()["message"] == "Hello, World! Welcome to your Software Factory."
+        assert response.json()["message"] == expected_greeting("World")
 
 
 class TestHTTPMethodEdgeCases:
@@ -840,6 +829,7 @@ class TestHTTPMethodEdgeCases:
         middleware doesn't claim it. Pinning this prevents a regression that
         accidentally returns 200 with empty CORS headers — confusing for clients.
         """
+        # Intentionally bypassing cors_preflight_headers() to send only Origin.
         response = client.options("/health", headers={"Origin": LOCALHOST_ORIGIN})
         assert response.status_code == 405
 
@@ -876,13 +866,7 @@ class TestCORSCacheCorrectness:
 
     def test_preflight_response_includes_vary_origin(self, client: TestClient) -> None:
         """The preflight response also includes ``Vary: Origin`` (caches the preflight correctly)."""
-        response = client.options(
-            "/api/hello",
-            headers={
-                "Origin": LOCALHOST_ORIGIN,
-                "Access-Control-Request-Method": "POST",
-            },
-        )
+        response = client.options("/api/hello", headers=cors_preflight_headers("POST"))
         assert response.status_code == 200
         assert "origin" in response.headers.get("vary", "").lower()
 
@@ -894,7 +878,7 @@ class TestCORSCacheCorrectness:
         guards against a regression that always sets ``Vary`` and would
         leak the existence of allowed-origin handling.
         """
-        response = client.get("/health", headers={"Origin": "https://evil.example.com"})
+        response = client.get("/health", headers={"Origin": DISALLOWED_ORIGIN})
         vary = response.headers.get("vary", "")
         # Either no vary header, or one that does not contain origin.
         assert "origin" not in vary.lower(), f"Disallowed origin emitted Vary: {vary!r}"
@@ -951,17 +935,17 @@ class TestExactGreetingFormat:
     def test_empty_name_message_format(self, client: TestClient) -> None:
         """``{"name": ""}`` produces ``"Hello, ! Welcome..."`` — no trimming."""
         response = client.post("/api/hello", json={"name": ""})
-        assert response.json()["message"] == "Hello, ! Welcome to your Software Factory."
+        assert response.json()["message"] == expected_greeting("")
 
     def test_whitespace_name_message_format(self, client: TestClient) -> None:
         """``{"name": "   "}`` produces ``"Hello,    ! Welcome..."`` — whitespace preserved verbatim."""
         response = client.post("/api/hello", json={"name": "   "})
-        assert response.json()["message"] == "Hello,    ! Welcome to your Software Factory."
+        assert response.json()["message"] == expected_greeting("   ")
 
     def test_tab_name_message_format(self, client: TestClient) -> None:
         """``{"name": "\\t"}`` produces ``"Hello, \\t! Welcome..."`` — tab preserved verbatim."""
         response = client.post("/api/hello", json={"name": "\t"})
-        assert response.json()["message"] == "Hello, \t! Welcome to your Software Factory."
+        assert response.json()["message"] == expected_greeting("\t")
 
     def test_duplicate_name_keys_last_wins(self, client: TestClient) -> None:
         """Duplicate ``name`` keys in the JSON body resolve last-wins.
@@ -978,7 +962,7 @@ class TestExactGreetingFormat:
             headers={"Content-Type": "application/json"},
         )
         assert response.status_code == 200
-        assert response.json()["message"] == "Hello, second! Welcome to your Software Factory."
+        assert response.json()["message"] == expected_greeting("second")
 
 
 class TestRegressionOpenAPIRouteMetadata:
@@ -1012,7 +996,7 @@ class TestRegressionOpenAPIRouteMetadata:
         self, client: TestClient, method: str, path: str, expected_tag: str
     ) -> None:
         """Each route is grouped under its documented tag in the OpenAPI schema."""
-        schema = client.get("/openapi.json").json()
+        schema = get_openapi_schema(client)
         operation = schema["paths"][path][method]
         assert operation.get("tags") == [expected_tag], (
             f"{method.upper()} {path} expected tag {expected_tag!r}, got {operation.get('tags')!r}"
@@ -1036,7 +1020,7 @@ class TestRegressionOpenAPIRouteMetadata:
         like ``hello_name`` → ``greet`` would silently change the SDK method
         name on every consumer; pinning the operationId catches that.
         """
-        schema = client.get("/openapi.json").json()
+        schema = get_openapi_schema(client)
         actual = schema["paths"][path][method].get("operationId")
         assert actual == expected_operation_id, (
             f"{method.upper()} {path} operationId regressed: "
@@ -1056,7 +1040,7 @@ class TestRegressionFastAPIDescription:
 
     def test_openapi_description_is_pinned(self, client: TestClient) -> None:
         """OpenAPI ``info.description`` matches the value declared in ``app.main``."""
-        schema = client.get("/openapi.json").json()
+        schema = get_openapi_schema(client)
         assert schema["info"]["description"] == "Backend API powered by Claude Software Factory"
 
 
@@ -1109,13 +1093,7 @@ class TestRegressionCORSPreflightContents:
         without ``POST`` in the advertised methods, browsers reject the
         actual request even though the server would have accepted it.
         """
-        response = client.options(
-            "/api/hello",
-            headers={
-                "Origin": LOCALHOST_ORIGIN,
-                "Access-Control-Request-Method": "POST",
-            },
-        )
+        response = client.options("/api/hello", headers=cors_preflight_headers("POST"))
         assert response.status_code == 200
         allowed = response.headers.get("access-control-allow-methods", "")
         assert "POST" in allowed, (
@@ -1128,13 +1106,7 @@ class TestRegressionCORSPreflightContents:
         The frontend's init sequence issues three ``GET`` requests; the
         complementary regression to the POST pin above.
         """
-        response = client.options(
-            "/health",
-            headers={
-                "Origin": LOCALHOST_ORIGIN,
-                "Access-Control-Request-Method": "GET",
-            },
-        )
+        response = client.options("/health", headers=cors_preflight_headers("GET"))
         assert response.status_code == 200
         allowed = response.headers.get("access-control-allow-methods", "")
         assert "GET" in allowed, (
@@ -1150,13 +1122,7 @@ class TestRegressionCORSPreflightContents:
         the exact value so a deliberate tuning change (e.g. to 3600) doesn't
         require a test edit.
         """
-        response = client.options(
-            "/api/hello",
-            headers={
-                "Origin": LOCALHOST_ORIGIN,
-                "Access-Control-Request-Method": "POST",
-            },
-        )
+        response = client.options("/api/hello", headers=cors_preflight_headers("POST"))
         max_age = response.headers.get("access-control-max-age")
         assert max_age is not None, "Preflight is missing Access-Control-Max-Age header"
         assert max_age.isdigit() and int(max_age) > 0, (

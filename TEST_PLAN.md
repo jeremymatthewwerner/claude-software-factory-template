@@ -1345,3 +1345,63 @@ cover paths that real E2E traffic touches but the prior guards do not.
 sequence with no flakiness (~1.3s per `test_performance.py` run, ~4.0s full backend
 suite). Backend and frontend line coverage stay at 100%. Bounds are deliberately
 generous (≥10× typical observed CI latency) so they fail only on real regressions.
+
+---
+
+## QA Run: Friday 2026-05-22 — Test Refactoring (issue #231)
+
+**Focus:** test-refactoring — reduce duplication and tighten readability without
+changing test behaviour or coverage. The backend suite has grown to 4,728 lines
+across 9 files and several literal patterns are now repeated dozens of times,
+making any future contract change a multi-file edit.
+
+**No new tests added.** All 345 backend tests pass unchanged at 100% line and
+branch coverage, 3× in a row.
+
+### Helpers and constants added to `backend/tests/conftest.py`
+
+| Name | Replaces |
+|------|----------|
+| `GREETING_TEMPLATE` constant | The literal `"Hello, {name}! Welcome to your Software Factory."` previously inlined in 8 assertion sites across `test_main.py` and `test_edge_cases.py`. |
+| `expected_greeting(name)` helper | Eight inline `"Hello, X! Welcome to your Software Factory."` literals in test assertions. Pinning the template now touches one constant. |
+| `DISALLOWED_ORIGIN` constant | Three inline `"https://evil.example.com"` literals in `test_main.py` (replaced) — a single source for negative-CORS tests so an origin rename is a one-line change. |
+| `cors_preflight_headers(method, origin=LOCALHOST_ORIGIN)` helper | Twelve inline two-key header dicts of the form `{"Origin": LOCALHOST_ORIGIN, "Access-Control-Request-Method": "..."}` across `test_main.py`, `test_regression_prevention.py`, and `test_performance.py`. Performance tests that need an extra `Access-Control-Request-Headers` use `{**cors_preflight_headers("POST"), "Access-Control-Request-Headers": "content-type"}`. |
+| `get_openapi_schema(client)` helper | Thirty-three inline `client.get("/openapi.json").json()` fetches across `test_main.py`, `test_integration.py`, `test_flakiness_guards.py`, `test_openapi_schema_metadata.py`, `test_integration_gaps.py`, and `test_regression_prevention.py`. Performance tests that intentionally measure the raw response timing keep the explicit `client.get(...)` so the timing window is unambiguous. |
+
+### Duplication count, before → after
+
+| Pattern | Before | After (excluding conftest.py canonical source) |
+|---------|--------|------------------------------------------------|
+| `"Hello, {name}! Welcome to your Software Factory."` literal in assertions | 11 | 2 (docstring references only) |
+| `client.get("/openapi.json").json()` | 35 | 0 (2 remaining call sites in `test_performance.py` intentionally measure raw response timing) |
+| `"Access-Control-Request-Method": "..."` header dict | 16 | 4 (each with extra `Access-Control-Request-Headers` and therefore an intentional non-default preflight) |
+| `"https://evil.example.com"` literal | 4 | 0 (the one match in `test_integration_gaps.py` is a local `"http://evil.example"` constant; intentionally not unified to avoid changing test behaviour) |
+
+### Refactor summary
+
+| File | Change |
+|------|--------|
+| `tests/conftest.py` | Added `GREETING_TEMPLATE`, `DISALLOWED_ORIGIN`, `expected_greeting()`, `cors_preflight_headers()`, and `get_openapi_schema()`. |
+| `tests/test_main.py` | Replaced 6 greeting literals with `expected_greeting()`, 4 preflight dicts with `cors_preflight_headers()`, 5 openapi.json fetches with `get_openapi_schema()`, and 2 evil-origin literals with `DISALLOWED_ORIGIN`. |
+| `tests/test_edge_cases.py` | Replaced 2 greeting literals with `expected_greeting()`. |
+| `tests/test_integration.py` | Replaced 7 openapi.json fetches with `get_openapi_schema()`. |
+| `tests/test_flakiness_guards.py` | Replaced 4 openapi.json fetches with `get_openapi_schema()`. |
+| `tests/test_openapi_schema_metadata.py` | Replaced 4 openapi.json fetches with `get_openapi_schema()` (including both module-level helpers). |
+| `tests/test_integration_gaps.py` | Replaced 2 openapi.json fetches with `get_openapi_schema()`. |
+| `tests/test_regression_prevention.py` | Replaced 7 openapi.json fetches with `get_openapi_schema()`; switched 2 inline `"http://localhost:3000"` literals to `LOCALHOST_ORIGIN`. |
+| `tests/test_performance.py` | Replaced 2 preflight dicts with `{**cors_preflight_headers("POST"), "Access-Control-Request-Headers": "content-type"}`. |
+
+**Why this matters:** A future single-character edit to the greeting template now
+touches one constant in `conftest.py` instead of 11 assertion sites in three
+files. The named `get_openapi_schema(client)` call documents intent at each call
+site (the raw `client.get("/openapi.json").json()` chain reads as a generic HTTP
+fetch). The `cors_preflight_headers(method)` helper makes the *intent* of each
+OPTIONS call visible — without it, the two-key dict can read as "any header
+dict" rather than specifically "this is a CORS preflight."
+
+**Behavioural guarantee:** every assertion is preserved byte-for-byte; only the
+*source* of the constant and the *construction* of the request dict moved.
+
+**Verification:** 345 backend tests pass 3× in sequence (~4.1s each). Backend
+line and branch coverage stay at 100%. `ruff format`, `ruff check --fix`, and
+`mypy` all pass clean.
