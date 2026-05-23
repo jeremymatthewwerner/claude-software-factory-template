@@ -355,3 +355,267 @@ class TestResponseContentTypePinned:
         """``GET /api/version`` returns ``Content-Type: application/json`` (no parameters)."""
         response = client.get("/api/version")
         assert response.headers.get("content-type") == "application/json"
+
+
+class TestAcceptHeaderIgnored:
+    """The server does not perform content negotiation — every successful
+    response is ``application/json`` regardless of ``Accept``.
+
+    ``TestResponseContentTypePinned`` pins the response media type when the
+    client sends *no* ``Accept``. These tests pin the same media type when
+    the client explicitly asks for something else (or excludes JSON). A
+    regression that adds a content-negotiation middleware — emitting HTML,
+    XML, or a 406 — would fail here.
+    """
+
+    def test_accept_text_html_still_returns_json(self, client: TestClient) -> None:
+        """``Accept: text/html`` is ignored — server returns JSON with 200."""
+        response = client.get("/health", headers={"Accept": "text/html"})
+        assert response.status_code == 200
+        assert response.headers.get("content-type") == "application/json"
+
+    def test_accept_application_xml_still_returns_json(self, client: TestClient) -> None:
+        """``Accept: application/xml`` is ignored — server returns JSON with 200.
+
+        Distinct from ``text/html`` because XML is a structured format some
+        misguided middleware might try to transcode to; pinning JSON here
+        guards against an "if XML is requested, serialise via xmltodict"
+        regression.
+        """
+        response = client.get("/health", headers={"Accept": "application/xml"})
+        assert response.status_code == 200
+        assert response.headers.get("content-type") == "application/json"
+
+    def test_accept_excludes_json_still_returns_json(self, client: TestClient) -> None:
+        """``Accept: application/json;q=0, text/html`` (JSON explicitly excluded)
+        still returns JSON with 200.
+
+        Per RFC 9110 §12.5.1 a ``q=0`` accept parameter means "not acceptable";
+        a content-negotiating server would respond 406. The current server has
+        no content negotiation, so it returns its only representation. Pinning
+        this guards against silently *adding* negotiation that would start
+        returning 406 to clients who happened to send this header.
+        """
+        response = client.get(
+            "/health",
+            headers={"Accept": "application/json;q=0, text/html"},
+        )
+        assert response.status_code == 200
+        assert response.headers.get("content-type") == "application/json"
+
+    def test_accept_wildcard_returns_json(self, client: TestClient) -> None:
+        """``Accept: */*`` returns JSON — the only representation the server has."""
+        response = client.get("/health", headers={"Accept": "*/*"})
+        assert response.status_code == 200
+        assert response.headers.get("content-type") == "application/json"
+
+
+class TestNullOriginNotAllowlisted:
+    """The literal Origin string ``"null"`` (sent by sandboxed iframes,
+    ``file://`` pages, and some data-URI contexts) is **not** allow-listed.
+
+    Browsers send ``Origin: null`` from contexts where the real origin is
+    sensitive or undefined. Allow-listing ``null`` is a common
+    misconfiguration that effectively re-enables CORS for any attacker that
+    can host a sandboxed iframe. ``TestRegressionCORSAllowListBoundary``
+    pins three realistic same-host near-misses; these tests pin the
+    cross-context ``"null"`` case.
+    """
+
+    def test_get_with_null_origin_receives_no_acao(self, client: TestClient) -> None:
+        """``GET /health`` with ``Origin: null`` returns no ``Access-Control-Allow-Origin``."""
+        response = client.get("/health", headers={"Origin": "null"})
+        assert response.status_code == 200
+        assert response.headers.get("access-control-allow-origin") is None
+
+    def test_preflight_with_null_origin_is_rejected(self, client: TestClient) -> None:
+        """OPTIONS preflight with ``Origin: null`` is rejected (no ``Access-Control-Allow-Origin``).
+
+        Starlette's ``CORSMiddleware`` short-circuits a preflight from a
+        disallowed origin with a 400 and no allow-origin header. Whether the
+        status code is exactly 400 is a middleware-internal detail, but the
+        absence of the allow-origin header is the security-relevant pin —
+        and that is what we assert.
+        """
+        response = client.options(
+            "/api/hello",
+            headers={
+                "Origin": "null",
+                "Access-Control-Request-Method": "POST",
+            },
+        )
+        assert response.headers.get("access-control-allow-origin") is None
+
+
+class TestRequestBodyJSONStrictness:
+    """Strict JSON parsing pins — extensions to ``TestJSONBodyParsingEdges``.
+
+    Those tests cover BOM / trailing whitespace / trailing garbage. The
+    cases below pin behaviours adjacent to "valid JSON object" that
+    permissive parsers sometimes accept: mixed-case keys, JS-style
+    comments, multiple concatenated objects, and a trailing extra brace.
+    A swap to a lenient parser (``demjson``, ``json5``) would fail here.
+    """
+
+    def test_mixed_case_name_key_returns_422(self, client: TestClient) -> None:
+        """``{"Name":"Alice"}`` (capital ``N``) returns 422 — field names are case-sensitive.
+
+        Pydantic does not auto-fold field-name casing. Pinning this prevents
+        a regression that adds ``populate_by_name`` with a case-insensitive
+        alias generator (a "helpful" change that would silently start
+        accepting two distinct spellings as the same field).
+        """
+        response = client.post("/api/hello", json={"Name": "Alice"})
+        assert response.status_code == 422
+
+    def test_javascript_comment_in_body_returns_422(self, client: TestClient) -> None:
+        """A JS-style comment inside the JSON object returns 422 — strict JSON, no JSON5.
+
+        RFC 8259 forbids comments; some hand-rolled clients (and a few
+        config-file libraries) emit them anyway. Pinning the 422 prevents
+        a regression to a JSON5/HJSON-tolerant parser that would silently
+        accept the comment and parse the surrounding object.
+        """
+        response = client.post(
+            "/api/hello",
+            content=b'{"name":"Alice"/* a comment */}',
+            headers={"Content-Type": "application/json"},
+        )
+        assert response.status_code == 422
+
+    def test_multiple_concatenated_json_objects_returns_422(self, client: TestClient) -> None:
+        """``{"name":"X"}{"name":"Y"}`` returns 422 — exactly one object per request.
+
+        Distinct from ``test_trailing_garbage_after_json_object_returns_422``:
+        the bytes after the first ``}`` here are themselves *valid JSON*. A
+        regression to a "parse the first JSON value, ignore the rest"
+        strategy would silently accept and the second object would be
+        dropped. The 422 guards against that — and also against an
+        accidental switch to a streaming/NDJSON parser.
+        """
+        response = client.post(
+            "/api/hello",
+            content=b'{"name":"X"}{"name":"Y"}',
+            headers={"Content-Type": "application/json"},
+        )
+        assert response.status_code == 422
+
+    def test_extra_closing_brace_returns_422(self, client: TestClient) -> None:
+        """``{"name":"X"}}`` (extra ``}``) returns 422 — distinct from the ``xxx`` case.
+
+        ``test_trailing_garbage_after_json_object_returns_422`` pins that
+        non-whitespace *letters* after the object fail. This pins the
+        specific case where the trailing byte is a JSON structural
+        character — a more plausible client bug (over-quoted/over-braced
+        template output) — and guards against a parser that re-uses
+        balanced-brace counting and would close the outer object early.
+        """
+        response = client.post(
+            "/api/hello",
+            content=b'{"name":"X"}}',
+            headers={"Content-Type": "application/json"},
+        )
+        assert response.status_code == 422
+
+
+class TestTrailingSlashOnAllEndpoints:
+    """Trailing-slash tolerance pinned for every public route.
+
+    ``TestPathRouting.test_health_with_trailing_slash_succeeds`` pins
+    ``GET /health/``. These tests pin the same behaviour for the other
+    three public routes so a future ``redirect_slashes=False`` (or a
+    custom router) can't silently start returning 404 / 307 for only a
+    subset of paths. A consistent contract across endpoints is what
+    callers — and frontend URL-join helpers — actually depend on.
+    """
+
+    def test_api_version_with_trailing_slash_succeeds(self, client: TestClient) -> None:
+        """``GET /api/version/`` returns 200 with the same body shape as ``/api/version``."""
+        response = client.get("/api/version/")
+        assert response.status_code == 200
+        body = response.json()
+        assert set(body.keys()) == {"version", "name", "environment"}
+
+    def test_get_api_hello_with_trailing_slash_succeeds(self, client: TestClient) -> None:
+        """``GET /api/hello/`` returns 200 with the standard hello message."""
+        response = client.get("/api/hello/")
+        assert response.status_code == 200
+        assert "Hello, World" in response.json()["message"]
+
+    def test_post_api_hello_with_trailing_slash_succeeds(self, client: TestClient) -> None:
+        """``POST /api/hello/`` returns 200 — the trailing slash does not switch HTTP method.
+
+        A misconfigured router that auto-redirects trailing slashes via 307
+        would here downgrade the POST to a follow-up GET (most clients
+        preserve method on 307, but some don't) — pinning the direct 200
+        guards against that subtle regression.
+        """
+        response = client.post("/api/hello/", json={"name": "Alice"})
+        assert response.status_code == 200
+        assert "Alice" in response.json()["message"]
+
+
+class TestSpuriousURLsReturn404:
+    """Convention-named URLs that the app does not serve must 404 — not
+    silently start responding with default content.
+
+    These guard against three plausible regressions:
+
+    * A future ``openapi_yaml_url=`` flag (FastAPI does not provide one
+      today, but a custom adapter could) silently exposes a second
+      schema format.
+    * A static-files middleware mounted at ``/`` accidentally serving a
+      bundled ``favicon.ico``.
+    * A URL-normalisation middleware that collapses whitespace inside
+      path segments (so ``/he alth`` would resolve to ``/health``).
+    """
+
+    def test_openapi_yaml_returns_404(self, client: TestClient) -> None:
+        """``GET /openapi.yaml`` returns 404 — only ``/openapi.json`` is served."""
+        response = client.get("/openapi.yaml")
+        assert response.status_code == 404
+
+    def test_favicon_ico_returns_404(self, client: TestClient) -> None:
+        """``GET /favicon.ico`` returns 404 — no implicit favicon is served.
+
+        Browsers request ``/favicon.ico`` unsolicited on every navigation.
+        Returning an empty 200 (a common "fix" to silence browser logs) or
+        a default image would surprise monitoring and complicate
+        ``/`` routing later. Pinning 404 keeps the surface deliberately
+        minimal.
+        """
+        response = client.get("/favicon.ico")
+        assert response.status_code == 404
+
+    def test_path_with_embedded_space_returns_404(self, client: TestClient) -> None:
+        """``GET /he alth`` returns 404 — whitespace inside a path segment is not collapsed.
+
+        Some URL-normalisation libraries strip or collapse whitespace before
+        routing; a regression that introduced one would create silent
+        aliases for every endpoint. Pinning 404 keeps each canonical URL
+        singular.
+        """
+        # ``%20`` is the wire-encoding of the space; httpx encodes spaces
+        # this way automatically, but using the literal makes the intent
+        # explicit.
+        response = client.get("/he%20alth")
+        assert response.status_code == 404
+
+
+class TestPostQueryStringIgnored:
+    """Query strings on ``POST /api/hello`` do not affect body parsing.
+
+    ``TestPathRouting.test_hello_get_query_string_is_ignored`` pins the
+    GET side. The POST side is structurally different (FastAPI dispatches
+    on the body, not the URL) and a regression that introduced a
+    ``Query()`` parameter on the POST handler — perhaps a "name override"
+    feature gone stale — would silently change behaviour for any client
+    that happens to append a tracking parameter. Pinning the body-only
+    contract guards against that.
+    """
+
+    def test_post_hello_ignores_query_string(self, client: TestClient) -> None:
+        """``POST /api/hello?name=Bob`` with body ``{"name":"Alice"}`` greets ``Alice``."""
+        response = client.post("/api/hello?name=Bob", json={"name": "Alice"})
+        assert response.status_code == 200
+        assert response.json()["message"] == expected_greeting("Alice")
