@@ -1405,3 +1405,44 @@ dict" rather than specifically "this is a CORS preflight."
 **Verification:** 345 backend tests pass 3× in sequence (~4.1s each). Backend
 line and branch coverage stay at 100%. `ruff format`, `ruff check --fix`, and
 `mypy` all pass clean.
+
+---
+
+## Saturday Edge-Case Pins (test_edge_cases.py extension)
+
+**Focus:** edge-case behaviour pins. Both backend and frontend are already at
+100% line + branch coverage, so this run targets the *unpinned-behaviour* gap
+rather than the *uncovered-line* gap. Each new test asserts a concrete HTTP
+contract behaviour that the live server exhibits today but that no existing
+test guards — a future regression would fail one of these first.
+
+### New test classes in `tests/test_edge_cases.py`
+
+| Class | Tests | What it pins |
+|-------|-------|--------------|
+| `TestAcceptHeaderIgnored` | 4 | Server ignores the request `Accept` header and always returns `application/json`. Covers `text/html`, `application/xml`, `application/json;q=0, text/html` (JSON explicitly excluded), and `*/*`. Guards against a regression that adds a content-negotiation middleware emitting HTML/XML or a 406. |
+| `TestNullOriginNotAllowlisted` | 2 | The literal Origin string `"null"` (sandboxed iframes, `file://` pages) is not allow-listed. Pins both the real-request side (no `Access-Control-Allow-Origin` echoed back on `GET /health`) and the preflight side (OPTIONS preflight from `Origin: null` carries no allow-origin header). Guards against accidental `null` allow-listing — a common CORS misconfiguration. |
+| `TestRequestBodyJSONStrictness` | 4 | Strict JSON request parsing. Pins 422 for: mixed-case field name (`{"Name":"Alice"}`); a JS-style comment inside the object; multiple concatenated valid JSON objects in one body; a single extra trailing `}` after a valid object. Each case targets a different lenient-parser regression (alias generators, JSON5, NDJSON, balanced-brace counting). |
+| `TestTrailingSlashOnAllEndpoints` | 3 | Trailing-slash tolerance for `GET /api/version/`, `GET /api/hello/`, and `POST /api/hello/`. Extends the existing `/health/` pin to every public route so a future `redirect_slashes=False` (or a custom router) cannot silently flip a subset of paths to 404/307. |
+| `TestSpuriousURLsReturn404` | 3 | `GET /openapi.yaml`, `GET /favicon.ico`, and `GET /he%20alth` all return 404. Guards against a future YAML schema flag, a static-files middleware serving a default favicon, and a URL-normalisation middleware that collapses whitespace inside path segments. |
+| `TestPostQueryStringIgnored` | 1 | `POST /api/hello?name=Bob` with body `{"name":"Alice"}` greets `Alice`. Complements the GET-side query-string-ignored pin; guards against a future `Query()` parameter on the POST handler that would silently override or merge with the body. |
+
+### Why these specific edges?
+
+The pre-existing `test_edge_cases.py` already pinned: top-level non-object
+bodies, Content-Type permissiveness/strictness, BOM and trailing-whitespace
+tolerance, double-slash and percent-encoded paths, length/character-class
+boundaries, and exact response Content-Type. This run extended that list along
+the **request-header axis** (`Accept`, `Origin: null`), the **JSON-strictness
+axis** (mixed-case key, comments, multi-object, extra brace), the **path-shape
+axis** (trailing slash on every endpoint, spurious convention names,
+whitespace-in-segment), and the **URL/body interaction axis** (POST query
+string).
+
+### Verification
+
+- 362 backend tests pass 3× in sequence (~7.6s each).
+- Backend line and branch coverage stay at 100% (no production code touched).
+- All 14 new tests use only existing fixtures and helpers (`client`,
+  `expected_greeting`) — no new test infrastructure.
+- `ruff format`, `ruff check --fix`, and `mypy` all pass clean.
