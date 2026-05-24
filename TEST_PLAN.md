@@ -1446,3 +1446,61 @@ string).
 - All 14 new tests use only existing fixtures and helpers (`client`,
   `expected_greeting`) — no new test infrastructure.
 - `ruff format`, `ruff check --fix`, and `mypy` all pass clean.
+
+---
+
+## QA Run: Sunday 2026-05-24 — Regression Prevention (issue #237)
+
+**Focus:** behavioural regression pins for HTTP-contract edges exercised but
+not asserted by the past week of commits. Both surfaces stay at 100% line +
+branch coverage; the lever is **behaviour pinning**, not coverage. Each new
+test asserts a concrete behaviour the live server exhibits today that no
+existing test guards — a future regression would fail one of these first.
+
+### Backend — `backend/tests/test_regression_prevention.py` (10 new classes, 26 new tests)
+
+| Class | Tests | What it pins |
+|-------|-------|--------------|
+| `TestOperationIdsAreGloballyUnique` | 1 | Every OpenAPI `operationId` appears at most once across paths × methods. SDK generators emit one function per operationId — a collision silently drops a route from the SDK. Existing tests pin each value individually but not the *distinctness* contract. |
+| `TestOpenAPITopLevelKeysPinned` | 7 | Required top-level keys (`openapi`, `info`, `paths`, `components`) are present; six optional keys (`servers`, `security`, `externalDocs`, `webhooks`, `tags`, `jsonSchemaDialect`) are absent. Adding e.g. `servers=` to `FastAPI(...)` would silently rewrite every SDK's base URL — this pin makes that loud. |
+| `TestResponseBodyHasNoTrailingNewline` | 4 | The last byte of every 200 body is `}` (no trailing `\n` / whitespace). Pinning the byte-shape catches a swap to a pretty-printing response class (`ORJSONResponse(..., indent=2)`, or a manual `Response` with `"\n"` concatenated) before it inflates Content-Length and confuses byte-exact comparisons elsewhere. |
+| `TestServerHeaderNotEmitted` | 4 | No `Server` header on any 200 response. Pins that server-software fingerprinting stays disabled and that no future "Powered-By" middleware silently leaks framework identity to clients. |
+| `TestAcceptHeaderIgnoredOnPost` | 3 | Content negotiation is disabled on the POST path too. Saturday's `TestAcceptHeaderIgnored` covered `GET /health` only; this class pins `POST /api/hello` with `Accept: text/html`, `application/xml`, and the `application/json;q=0, text/html` (JSON explicitly excluded) cases. |
+| `TestNullOriginOnPostNotAllowlisted` | 1 | `Origin: null` is rejected on the real POST path. Saturday's `TestNullOriginNotAllowlisted` covered the GET path and the OPTIONS preflight; this class pins the security-relevant POST case so a custom middleware that allow-lists `"null"` for the "real" path would fail loudly. |
+| `TestAdditionalSpuriousURLsReturn404` | 5 | `/robots.txt`, `/sitemap.xml`, `/`, `/api`, and `/api/` all return 404. Extends Saturday's `TestSpuriousURLsReturn404` (which covered `/openapi.yaml`, `/favicon.ico`, `/he%20alth`) to SEO conventions and common-prefix "directory" URLs that some routers would silently 200 on. |
+| `TestPostQueryStringWithoutBodyIs422` | 1 | `POST /api/hello?name=Bob` with **no body** returns 422. Saturday's `TestPostQueryStringIgnored` pinned the body-present case; this pins the complementary case so a regression that introduced a `Query()` parameter named `name` on the POST handler fails here. |
+| `TestHelloRequestNameLiteralNullIs422` | 1 | `POST /api/hello` with `{"name": null}` returns 422 — Pydantic does not coerce `None` to `"None"`. Pins that `HelloRequest.name` stays typed `str` (not `Optional[str]`), guarding against a silent type-widening that would render `"Hello, None!"` to clients passing null on accident. |
+| `TestHealthTrailingSlashReturnsSameShape` | 1 | `GET /health/` returns the same key set and the same `status` value as `GET /health` (timestamps differ by design). Saturday's `TestTrailingSlashOnAllEndpoints` pinned **status codes**; this pins **body shape** so a hand-rolled fallback handler for the trailing-slash form cannot return a different shape (HTML redirect notice, stripped response) while keeping the 200. |
+
+### Why these specific edges?
+
+The previous five Sunday + Saturday runs accreted a dense behavioural surface:
+exact greeting strings, OpenAPI title/version/description/operationIds/tags,
+CORS allow-list and near-miss origins, preflight contents, content-type
+strictness/permissiveness, BOM/trailing-byte parsing, path routing edges, 50K
+echo, 422 schema shape, p95/p99 latency, response_model coverage, schema $ref
+shape, openapi component inventory, cache-control absence, allow-headers echo.
+
+This run targets four orthogonal axes the existing pins do not cover:
+
+* **OpenAPI structural integrity** — operationId uniqueness and the absence of
+  optional top-level keys (`servers`, `security`, `externalDocs`, etc.). Both
+  are SDK-generation contracts that no existing test asserts.
+* **Response byte shape** — `Server` header absence and trailing-byte shape.
+  These pin "how" the response is framed, complementing the existing "what
+  the response contains" pins.
+* **Cross-axis extensions of last week's edge-case work** — Saturday pinned
+  Accept/Origin behaviours on GET only; this run extends them to POST and adds
+  the `/robots.txt`/`/sitemap.xml`/`/`/`/api` URL fan-out.
+* **Type-system contracts** — `name: null` returns 422 (not coerced), and
+  `/health/` returns the same body shape as `/health` (not just the same
+  status). Both guard against silent type-widening or fallback-handler drift.
+
+### Verification
+
+- 390 backend tests pass 3× in sequence (~3.0s each).
+- Backend line and branch coverage stay at 100% (no production code touched).
+- 91 frontend tests still pass (no frontend changes this run).
+- All 26 new tests use only existing fixtures (`client`) and the
+  `get_openapi_schema` conftest helper — no new test infrastructure.
+- `ruff format`, `ruff check --fix`, and `mypy` all pass clean.

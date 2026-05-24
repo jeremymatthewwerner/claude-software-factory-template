@@ -423,3 +423,361 @@ class TestOpenAPISpecVersionPinned:
             f"OpenAPI spec version regressed from the 3.1.x family: got {version!r}. "
             f"A change in the openapi spec family affects every downstream SDK generator."
         )
+
+
+# ---------------------------------------------------------------------------
+# Sunday regression-prevention additions (extending the unpinned-behaviour
+# surface uncovered while reviewing the past week's commits).
+# ---------------------------------------------------------------------------
+
+# The four (method, path, json_body) request tuples used by the byte-shape
+# and Server-header pins below. Sharing one constant keeps the surface
+# enumerated in a single place — if a new route ships, this list updates
+# once and every shape-level pin picks it up.
+ALL_SUCCESSFUL_REQUESTS: list[tuple[str, str, dict[str, str] | None]] = [
+    ("GET", "/health", None),
+    ("GET", "/api/version", None),
+    ("GET", "/api/hello", None),
+    ("POST", "/api/hello", {"name": "RegressionPin"}),
+]
+
+
+class TestOperationIdsAreGloballyUnique:
+    """Every OpenAPI ``operationId`` is unique across paths × methods.
+
+    SDK generators (``openapi-typescript``, ``openapi-python-client``,
+    ``oapi-codegen``) emit **one function per operationId** — a collision
+    drops one of the colliding operations from the generated client with
+    no warning. FastAPI's default operationId is
+    ``{function_name}_{path_with_underscores}_{method}``, which is
+    collision-free by construction, but an explicit
+    ``operation_id=`` kwarg on a route decorator (a common "give it a
+    friendly name" refactor) can silently collide.
+
+    ``TestRegressionOpenAPIRouteMetadata.test_route_operation_id_pinned``
+    pins each individual value but does **not** assert that the four
+    values are distinct from each other. Pinning uniqueness explicitly
+    documents the SDK-generation contract.
+    """
+
+    def test_every_operation_has_a_unique_operation_id(self, client: TestClient) -> None:
+        """No two (path, method) operations share an ``operationId``."""
+        schema = get_openapi_schema(client)
+        seen: dict[str, tuple[str, str]] = {}
+        for path, methods in schema["paths"].items():
+            for method, op in methods.items():
+                if not isinstance(op, dict) or "operationId" not in op:
+                    continue
+                op_id = op["operationId"]
+                assert op_id not in seen, (
+                    f"operationId {op_id!r} appears on both "
+                    f"{seen[op_id][0].upper()} {seen[op_id][1]} and "
+                    f"{method.upper()} {path} — SDK generators emit one "
+                    f"function per operationId and would silently drop one."
+                )
+                seen[op_id] = (method, path)
+
+
+class TestOpenAPITopLevelKeysPinned:
+    """The OpenAPI document exposes exactly the expected top-level keys.
+
+    ``TestRegressionMessageFormat`` and ``TestOpenAPIInfoBlockInventory``
+    pin the **contents** of ``info``, ``paths`` and ``components``, but
+    the set of **top-level keys themselves** is unpinned. A regression
+    that adds a ``servers=`` argument to ``FastAPI(...)`` would silently
+    introduce a ``servers`` block into every SDK's generated client base
+    URL — the kind of "well-intentioned" change that surfaces only
+    when a deploy points at the wrong environment.
+
+    Pin both halves of the contract:
+
+    * Required top-level keys are present.
+    * Optional top-level keys (``servers``, ``security``, ``externalDocs``,
+      ``webhooks``, ``tags``, ``jsonSchemaDialect``) are absent — adding
+      any of them changes the public surface.
+    """
+
+    def test_required_top_level_keys_present(self, client: TestClient) -> None:
+        """``openapi``, ``info``, ``paths`` and ``components`` are all present."""
+        schema = get_openapi_schema(client)
+        required = {"openapi", "info", "paths", "components"}
+        missing = required - set(schema)
+        assert not missing, (
+            f"OpenAPI document is missing required top-level keys {missing} — "
+            f"a base structural contract regression."
+        )
+
+    @pytest.mark.parametrize(
+        "optional_key",
+        [
+            "servers",
+            "security",
+            "externalDocs",
+            "webhooks",
+            "tags",
+            "jsonSchemaDialect",
+        ],
+    )
+    def test_optional_top_level_keys_absent(self, client: TestClient, optional_key: str) -> None:
+        """Optional top-level OpenAPI keys are absent — public surface stays minimal.
+
+        Each of these keys, when present, has consumer-visible side
+        effects:
+
+        * ``servers`` rewrites every SDK's base URL.
+        * ``security`` adds an auth requirement clients must satisfy.
+        * ``externalDocs`` adds a link many docs UIs surface prominently.
+        * ``webhooks`` is OpenAPI 3.1's reverse-callback surface — adding
+          it implies the server invokes callers, a major capability bump.
+        * ``tags`` at the document level (vs. per-operation tags, which
+          *are* used today) controls tag grouping in Swagger UI.
+        * ``jsonSchemaDialect`` switches the validation dialect for every
+          consumer.
+        """
+        schema = get_openapi_schema(client)
+        assert optional_key not in schema, (
+            f"OpenAPI document gained a top-level {optional_key!r} key — "
+            f"public surface changed in a consumer-visible way. If this is "
+            f"intentional, update test_optional_top_level_keys_absent."
+        )
+
+
+class TestResponseBodyHasNoTrailingNewline:
+    """Successful response bodies end at the closing ``}`` byte — no
+    trailing newline.
+
+    Some web frameworks (and many hand-written wrappers) append ``\\n``
+    to JSON responses "for readability". A trailing newline:
+
+    * Inflates the Content-Length by one byte on every response.
+    * Confuses byte-exact comparison in ``TestOpenAPISchemaByteStability``
+      and the existing flakiness suite.
+    * Can produce subtle bugs in HTTP/2 clients that count bytes for
+      flow control.
+
+    FastAPI's default response (``JSONResponse``) does **not** append
+    a newline. Pin that contract directly so a regression to a custom
+    response class (``ORJSONResponse`` with ``indent=2``, or a manual
+    ``Response`` with ``"\\n"`` concatenated) fails here.
+    """
+
+    @pytest.mark.parametrize(
+        "method,path,json_body",
+        ALL_SUCCESSFUL_REQUESTS,
+        ids=["health", "version", "hello_get", "hello_post"],
+    )
+    def test_response_body_ends_with_closing_brace_byte(
+        self,
+        client: TestClient,
+        method: str,
+        path: str,
+        json_body: dict[str, str] | None,
+    ) -> None:
+        """The last byte of every 200 body is ``}`` (no trailing newline / whitespace)."""
+        response = client.request(method, path, json=json_body)
+        assert response.status_code == 200
+        assert response.content.endswith(b"}"), (
+            f"{method} {path} body does not end with '}}' — trailing bytes were "
+            f"{response.content[-8:]!r}. Likely a response class change added a "
+            f"trailing newline or pretty-print whitespace."
+        )
+
+
+class TestServerHeaderNotEmitted:
+    """No ``Server`` header is emitted on any response.
+
+    ``TestClient`` runs Starlette directly (no uvicorn), so the Server
+    header would only appear if FastAPI / Starlette itself set one — or
+    if a future middleware (a "Powered-By: FastAPI" marketing header)
+    explicitly added it. Pinning the absence guards against:
+
+    * Server-software fingerprinting being silently re-enabled.
+    * A custom middleware (e.g. for proxy hop counting) leaking the
+      header to clients.
+    """
+
+    @pytest.mark.parametrize(
+        "method,path,json_body",
+        ALL_SUCCESSFUL_REQUESTS,
+        ids=["health", "version", "hello_get", "hello_post"],
+    )
+    def test_no_server_header_on_200_responses(
+        self,
+        client: TestClient,
+        method: str,
+        path: str,
+        json_body: dict[str, str] | None,
+    ) -> None:
+        """``Server`` header is absent on every successful response."""
+        response = client.request(method, path, json=json_body)
+        assert response.status_code == 200
+        lower_headers = {k.lower() for k in response.headers}
+        assert "server" not in lower_headers, (
+            f"{method} {path} returned a Server header "
+            f"({response.headers.get('server')!r}) — server-software "
+            f"fingerprinting should stay disabled."
+        )
+
+
+class TestAcceptHeaderIgnoredOnPost:
+    """Content negotiation is also disabled on the **POST** path.
+
+    ``TestAcceptHeaderIgnored`` (in ``test_edge_cases.py``) pins this
+    on ``GET /health`` only. POST has a request body — a future change
+    that wires content negotiation based on ``Accept`` could plausibly
+    treat the two paths differently (e.g. negotiate on writes but not
+    reads, to avoid breaking ``/health``). Pin the POST side too so the
+    contract is uniform.
+    """
+
+    @pytest.mark.parametrize(
+        "accept_header",
+        ["text/html", "application/xml", "application/json;q=0, text/html"],
+    )
+    def test_post_hello_with_non_json_accept_still_returns_json(
+        self, client: TestClient, accept_header: str
+    ) -> None:
+        """``POST /api/hello`` with non-JSON ``Accept`` still returns JSON 200."""
+        response = client.post(
+            "/api/hello",
+            json={"name": "Alice"},
+            headers={"Accept": accept_header},
+        )
+        assert response.status_code == 200, (
+            f"POST with Accept: {accept_header!r} returned "
+            f"{response.status_code} — content negotiation may have been added"
+        )
+        assert response.headers.get("content-type") == "application/json"
+
+
+class TestNullOriginOnPostNotAllowlisted:
+    """``Origin: null`` is rejected on the **POST** path too.
+
+    ``TestNullOriginNotAllowlisted`` covers ``GET /health`` and the
+    preflight on ``/api/hello``. The real POST request itself (the one
+    that actually mutates / receives the body) is unpinned. A regression
+    that re-uses request-level origin matching distinct from preflight
+    matching (e.g. a custom middleware that allow-lists ``"null"`` for
+    "developer convenience") would slip past the GET pin and the
+    preflight pin while breaking the POST contract.
+    """
+
+    def test_post_with_null_origin_receives_no_acao(self, client: TestClient) -> None:
+        """``POST /api/hello`` with ``Origin: null`` returns no ``Access-Control-Allow-Origin``."""
+        response = client.post(
+            "/api/hello",
+            json={"name": "Alice"},
+            headers={"Origin": "null"},
+        )
+        # Request succeeds (CORS is enforced by the browser, not the server),
+        # but the security-relevant header is absent.
+        assert response.status_code == 200
+        assert response.headers.get("access-control-allow-origin") is None, (
+            "POST with Origin: null received an Access-Control-Allow-Origin "
+            "header — sandboxed iframes / file:// pages would gain CORS access."
+        )
+
+
+class TestAdditionalSpuriousURLsReturn404:
+    """Convention-named URLs the app does not serve must 404.
+
+    Extends ``TestSpuriousURLsReturn404`` (which covers ``/openapi.yaml``,
+    ``/favicon.ico``, ``/he%20alth``) with five more URLs that a static-files
+    middleware, a route-prefix regression, or a "catch-all" fallback handler
+    could silently start answering:
+
+    * ``/robots.txt`` and ``/sitemap.xml`` — SEO-related URLs many web
+      frameworks serve by default.
+    * ``/`` — root URL; if a future ``HTMLResponse`` landing page is mounted
+      there, it should be a deliberate choice, not an accident from a
+      mis-configured static-files mount.
+    * ``/api`` and ``/api/`` — common-prefix "directory" URLs that some
+      routers will silently 200 on as a listing page.
+    """
+
+    @pytest.mark.parametrize(
+        "spurious_path",
+        ["/robots.txt", "/sitemap.xml", "/", "/api", "/api/"],
+    )
+    def test_spurious_url_returns_404(self, client: TestClient, spurious_path: str) -> None:
+        """``GET {spurious_path}`` returns 404 — only the documented routes are served."""
+        response = client.get(spurious_path)
+        assert response.status_code == 404, (
+            f"{spurious_path!r} unexpectedly returned {response.status_code} — "
+            f"a static-files middleware or catch-all route may have been added."
+        )
+
+
+class TestPostQueryStringWithoutBodyIs422:
+    """``POST /api/hello?name=Bob`` with **no body** returns 422.
+
+    ``TestPostQueryStringIgnored`` (Saturday) pins that the query
+    string is ignored *when a body is present*. The complementary case
+    — query string with **no** body — is unpinned. A regression that
+    introduced a ``Query()`` parameter named ``name`` on the POST
+    handler (perhaps reusing the variable name from the body model)
+    would silently start succeeding here with ``"Hello, Bob!"``,
+    breaking the body-only contract pinned by Saturday's test.
+    """
+
+    def test_post_hello_with_query_only_returns_422(self, client: TestClient) -> None:
+        """``POST /api/hello?name=Bob`` without a JSON body returns 422 (body required)."""
+        response = client.post("/api/hello?name=Bob")
+        assert response.status_code == 422, (
+            f"POST /api/hello?name=Bob without a body returned {response.status_code} — "
+            f"the request body is no longer required, possibly because a Query() "
+            f"parameter was introduced on the handler."
+        )
+
+
+class TestHelloRequestNameLiteralNullIs422:
+    """``{"name": null}`` returns 422 — Pydantic does not coerce ``None`` to ``"None"``.
+
+    ``HelloRequest.name`` is typed ``str`` (not ``Optional[str]``), so
+    a literal JSON ``null`` fails validation. Several tests deliberately
+    submit unusual *string* values (empty string, whitespace, 50K chars)
+    — pinning the **null** case explicitly catches a regression that
+    silently widened the type to ``str | None``, which would start
+    rendering ``"Hello, None!"`` to clients passing null on accident.
+    """
+
+    def test_post_with_null_name_returns_422(self, client: TestClient) -> None:
+        """``POST /api/hello`` with body ``{"name": null}`` returns 422."""
+        response = client.post("/api/hello", json={"name": None})
+        assert response.status_code == 422, (
+            f"POST with {{'name': null}} returned {response.status_code} — "
+            f"HelloRequest.name may have silently become Optional[str], which "
+            f"would let null inputs render as 'Hello, None!' to real clients."
+        )
+
+
+class TestHealthTrailingSlashReturnsSameShape:
+    """``/health/`` and ``/health`` return bodies with the same key set
+    and the same ``status`` field.
+
+    ``TestPathRouting.test_health_with_trailing_slash_succeeds`` (and
+    Saturday's ``TestTrailingSlashOnAllEndpoints``) pin **status codes**
+    of 200, but neither asserts that the **body shape** is the same on
+    both URL forms. A future ``redirect_slashes=False`` plus a hand-rolled
+    fallback handler for the trailing-slash form could plausibly return a
+    different body shape (e.g. an HTML redirect notice, or a stripped
+    response) while keeping the status at 200. Pinning shape equivalence
+    catches that.
+
+    The ``timestamp`` field deliberately differs across calls (different
+    instants of ``datetime.now(UTC)``), so the comparison is
+    shape-level only.
+    """
+
+    def test_health_trailing_slash_returns_same_keys_and_status(self, client: TestClient) -> None:
+        """``/health/`` and ``/health`` return the same key set and status value."""
+        no_slash = client.get("/health").json()
+        with_slash = client.get("/health/").json()
+        assert set(no_slash) == set(with_slash), (
+            f"/health/ returned keys {set(with_slash)}, /health returned "
+            f"{set(no_slash)} — trailing-slash form is no longer the same handler."
+        )
+        assert no_slash["status"] == with_slash["status"], (
+            f"/health/ status {with_slash['status']!r} != /health status "
+            f"{no_slash['status']!r} — different code paths."
+        )
