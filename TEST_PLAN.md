@@ -1504,3 +1504,105 @@ This run targets four orthogonal axes the existing pins do not cover:
 - All 26 new tests use only existing fixtures (`client`) and the
   `get_openapi_schema` conftest helper — no new test infrastructure.
 - `ruff format`, `ruff check --fix`, and `mypy` all pass clean.
+
+## QA Run: Monday 2026-05-25 — coverage-sprint (issue #241)
+
+**Goal.** The Monday focus is officially "pick the lowest-coverage file and
+raise it by 15%+." Both surfaces have been saturated for several weeks — `pytest --cov=app`
+reports 100% statement + branch on `app/__init__.py` and `app/main.py`, and
+`jest --coverage` reports 100% statements + branches + functions + lines on `layout.tsx` and
+`page.tsx` (390 backend + 91 frontend tests passing pre-run). The literal goal is
+mathematically unachievable, so this session continues the pivot established by the
+2026-05-18 run: add behavioural pins that fail on real regressions the existing
+coverage-blind tests would silently miss.
+
+The 2026-05-18 run already pinned the OpenAPI metadata layer (`info` block inventory,
+component descriptions/titles, `required` arrays, property titles, operation
+summaries). This run targets the next layer up — the **Python attributes on the
+`FastAPI` app instance**, the **constructor kwargs of the installed CORS middleware**,
+the **`app.openapi()` caching invariant**, the **`__version__` string shape**, the
+**Pydantic v2 `extra` policy** on request models, the **`async`-ness of every
+handler**, and the **package module docstring**. Every pin in this run targets a
+regression class that would not be caught by `--cov` because the behaviour is derived
+by a third-party library (FastAPI / Starlette / Pydantic) from the source we ship — no
+Python statement in `app/main.py` produces these values, so `--cov` reports 100% even
+after they mutate.
+
+### Backend — `backend/tests/test_app_instance_invariants.py` (new file, 22 tests)
+
+| Suite | Test | Pins |
+|-------|------|------|
+| `TestAppInstancePythonAttributes` | `test_app_is_a_fastapi_instance` | `type(app) is FastAPI` (not a subclass / not wrapped in `Starlette(routes=[Mount('/', app)])`). A wrapper refactor changes the public route surface silently. |
+| `TestAppInstancePythonAttributes` | `test_app_title_attribute_pinned` | `app.title == "Software Factory API"` read off the Python attribute (the OpenAPI `info.title` is pinned elsewhere; this catches a post-construction `app.title = ...` reassignment that flows through a different code path). |
+| `TestAppInstancePythonAttributes` | `test_app_description_attribute_pinned` | `app.description == "Backend API powered by Claude Software Factory"` — Python attribute. |
+| `TestAppInstancePythonAttributes` | `test_app_version_attribute_equals_dunder_version` | `app.version == __version__` directly via the attribute, pinning the wiring at the Python level (a regression that hard-codes `version="0.1.0"` in the constructor while changing `__version__` would still pass the OpenAPI-side wiring test if both happened together; this attribute pin keeps the link inspectable). |
+| `TestAppInstancePythonAttributes` | `test_app_docs_url_attribute_pinned` | `app.docs_url == "/docs"`. |
+| `TestAppInstancePythonAttributes` | `test_app_redoc_url_attribute_pinned` | `app.redoc_url == "/redoc"`. |
+| `TestAppInstancePythonAttributes` | `test_app_openapi_url_attribute_is_default` | `app.openapi_url == "/openapi.json"` — FastAPI default. A future override that moves the schema endpoint (e.g. to `/api/openapi.json`) is loud here. |
+| `TestAppInstancePythonAttributes` | `test_app_root_path_is_empty` | `app.root_path == ""` — no ASGI sub-mount prefix; a non-empty `root_path` would alter the URLs in the OpenAPI `servers` block. |
+| `TestCORSMiddlewareInstanceConfiguration` | `test_exactly_one_cors_middleware_installed` | Exactly one `CORSMiddleware` is registered in `app.user_middleware` — guards against an accidental duplicate `add_middleware(CORSMiddleware, ...)` call that would apply CORS twice and duplicate `Vary: Origin` headers. |
+| `TestCORSMiddlewareInstanceConfiguration` | `test_cors_middleware_kwargs_match_documented_config` | The CORS middleware's kwargs `{allow_origins, allow_credentials, allow_methods, allow_headers}` equal the documented values exactly — pins the **source** of the response-header contract that downstream tests pin via observed headers. |
+| `TestCORSMiddlewareInstanceConfiguration` | `test_cors_allow_origins_excludes_wildcard` | `allow_origins` does not contain `'*'` — the CORS spec **forbids** the combination of `allow_credentials=True` and `allow_origins=['*']`; browsers reject every credentialed request silently. A future "open up CORS" change would silently break production. |
+| `TestOpenAPISchemaCached` | `test_openapi_returns_same_object_across_calls` | `app.openapi() is app.openapi()` — pins the FastAPI schema-cache invariant. A regression that disables the cache multiplies schema-generation work on every `/openapi.json` request. |
+| `TestOpenAPISchemaCached` | `test_openapi_schema_attribute_is_populated_after_call` | `app.openapi_schema is not None` after the first `app.openapi()` call — pins the underlying mechanism (the `openapi_schema` attribute) that backs the caching invariant above. |
+| `TestVersionStringShape` | `test_version_is_a_nonempty_string` | `__version__` is a non-empty `str`. |
+| `TestVersionStringShape` | `test_version_matches_three_part_dotted_shape` | `__version__` matches `\d+\.\d+\.\d+` (PEP 440 `MAJOR.MINOR.MICRO`). A regression that drops to `"dev"` or `""` would silently break client `packaging.version.parse(...)` logic. |
+| `TestHelloRequestExtraFieldsPolicy` | `test_hello_request_extra_field_is_dropped_silently` | `HelloRequest(name='Alice', surprise='ignored')` doesn't raise and `model_dump()` excludes `surprise` (Pydantic v2 default `extra='ignore'`). Pins the public API tolerance for extra fields — tightening to `extra='forbid'` would start returning 422 to clients silently. |
+| `TestHelloRequestExtraFieldsPolicy` | `test_hello_request_model_config_is_empty` | `HelloRequest.model_config == {}` — pins the **cause** of the behaviour above so a regression that adds an override flags this test at the source. |
+| `TestHandlersAreCoroutines` | `test_handler_is_coroutine_function[health_check]` | `inspect.iscoroutinefunction(health_check)` — pins that the handler is `async def`. A regression dropping `async` would silently route the handler through FastAPI's threadpool, changing ASGI scheduling profile and adding threadpool overhead per request. |
+| `TestHandlersAreCoroutines` | `test_handler_is_coroutine_function[get_version]` | Same pin for `get_version`. |
+| `TestHandlersAreCoroutines` | `test_handler_is_coroutine_function[hello_world]` | Same pin for `hello_world`. |
+| `TestHandlersAreCoroutines` | `test_handler_is_coroutine_function[hello_name]` | Same pin for `hello_name`. |
+| `TestPackageModuleDocstring` | `test_app_package_has_expected_docstring` | `app.__doc__ == "Software Factory Backend API."` — pins the package-level docstring that shows in `pydoc`, sphinx-autodoc, and IDE hovers. |
+
+### Why these specifically
+
+Each pin targets a regression vector that line + branch coverage **cannot** detect:
+
+- **App-instance attributes** (`title`, `description`, `version`, `docs_url`,
+  `redoc_url`, `openapi_url`, `root_path`): set via constructor kwargs; FastAPI reads
+  them lazily when serving routes. Existing tests pin the OpenAPI `info` block and the
+  HTTP 200 status of `/docs` / `/redoc` — but not the Python attribute that backs
+  them. A future programmatic reassignment (`app.title = configured_title`) flowing
+  through a different code path would change OpenAPI without touching constructor kwargs.
+
+- **CORS middleware kwargs**: `TestCORSMiddleware`, `TestCORSCacheCorrectness`,
+  `TestRegressionCORSPreflightContents` pin observed response headers. None inspect
+  the live middleware kwargs. The wildcard-with-credentials pin is particularly
+  load-bearing — it's the kind of "tighten" regression that ships green if you only
+  test the response header path (header is still present), but breaks every browser.
+
+- **`app.openapi()` caching**: every existing test fetches the schema via
+  `client.get("/openapi.json").json()` which deserialises a fresh dict each call.
+  None assert identity. A cache-disabling regression multiplies schema-generation cost
+  on every request.
+
+- **`__version__` shape**: existing tests pin the literal **value** (`"0.1.0"`) but
+  not the **shape**. A change to `"dev"` would still satisfy the equality assertions
+  in `TestRegressionMessageFormat` (after updating the literal there) but break
+  client-side `packaging.version.parse(...)` comparisons silently.
+
+- **`HelloRequest` extra-fields policy**: tightening Pydantic's default
+  `extra='ignore'` to `extra='forbid'` is a small one-line change with public-API
+  consequences (clients passing forward-compatible extra fields start getting 422s).
+  Both the behaviour and the cause (empty `model_config`) are pinned so the change is
+  visible no matter which path a future edit takes.
+
+- **Handler coroutine-ness**: dropping `async` from a handler changes FastAPI's
+  dispatch path to a threadpool. Every existing test still passes (the response is
+  identical), but the scheduling profile changes. No prior test calls
+  `inspect.iscoroutinefunction` on any handler.
+
+- **Package docstring**: shows up in `pydoc`, sphinx, IDE hovers — but invisible to
+  every other test in the suite.
+
+### Verification
+
+- 412 backend tests (390 → 412) pass 3× in sequence with no flakiness (~0.04s per
+  isolated run, ~7.7s full-suite run).
+- Backend line and branch coverage stay at 100% (36/36 statements + branches, no
+  production code touched).
+- 91 frontend tests still pass (no frontend changes this run).
+- All 22 new tests use direct imports from `app` and `app.main` — no new conftest
+  helpers or fixtures.
+- `ruff format`, `ruff check --fix`, and `mypy` all pass clean.
