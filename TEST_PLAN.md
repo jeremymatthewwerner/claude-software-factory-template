@@ -1606,3 +1606,67 @@ Each pin targets a regression vector that line + branch coverage **cannot** dete
 - All 22 new tests use direct imports from `app` and `app.main` — no new conftest
   helpers or fixtures.
 - `ruff format`, `ruff check --fix`, and `mypy` all pass clean.
+
+## QA Run: Tuesday 2026-05-26 — flaky-hunt (issue #245)
+
+**Focus:** Tuesday flaky-hunt. Five back-to-back runs of the full backend suite
+(412 tests) and five frontend runs (91 tests) produced zero flakes — the suite
+is already deterministic at the assertion level. This session extends the
+flakiness *regression surface* by pinning four classes of stability that the
+existing `test_flakiness_guards.py` does not yet cover.
+
+### Backend — `backend/tests/test_flakiness_guards.py` (4 new classes, 9 new tests)
+
+| Class | Test | What it validates |
+|-------|------|-------------------|
+| `TestOpenAPISchemaUnderConcurrency` | `test_50_concurrent_openapi_fetches_return_one_body` | 50 concurrent `GET /openapi.json` fetches yield exactly one body hash. The existing byte-identity guard exercises only the cached read path; this exercises the *hot-cache* concurrent path. |
+| `TestOpenAPISchemaUnderConcurrency` | `test_concurrent_cold_cache_openapi_fetches_return_one_body` | With `app.openapi_schema` reset to `None`, 30 concurrent fetches must each regenerate and agree on one parsed schema. Forces the cache-fill race path that the hot-cache test cannot reach. State is restored in `finally` so it cannot leak. |
+| `TestMixedMethodConcurrentDeterminism` | `test_interleaved_mixed_calls_each_return_correct_shape` | 40 concurrent calls mixing `GET /health`, `GET /api/hello`, `POST /api/hello`, `GET /api/version`, and `GET /openapi.json` each return a body matching their own route (health → `status: healthy` + UTC timestamp; POST → echoes its `Mixed{i}` name; etc.). Catches cross-handler state leakage that identical-input fan-out cannot. |
+| `TestGCInvariance` | `test_health_body_byte_identical_across_forced_gc_cycles` | `gc.collect()` fired before and after each of 20 `/health` calls; status field is always `"healthy"`. Catches any future cache keyed on `id()` that the garbage collector could disturb. |
+| `TestGCInvariance` | `test_post_hello_message_byte_identical_across_forced_gc_cycles` | Same gc-bracketed protocol for 20 `POST /api/hello` calls; the `message` field is byte-identical. |
+| `TestGCInvariance` | `test_openapi_body_byte_identical_across_forced_gc_cycles` | Same gc-bracketed protocol for 10 `/openapi.json` calls; the response bytes are identical. Catches schema-cache invalidation triggered by gc. |
+| `TestGlobalRandomSeedIndependence` | `test_health_unchanged_across_random_seeds` | The global `random` module is seeded with values 0–29 before each `/health` call; status field is invariant under seed choice. Restores RNG state in `finally`. Catches any future accidental `random.*` call inside a handler that would produce per-session variance. |
+| `TestGlobalRandomSeedIndependence` | `test_post_hello_message_unchanged_across_random_seeds` | Same protocol for 30 `POST /api/hello` calls; the `message` field is invariant under seed choice. |
+| `TestGlobalRandomSeedIndependence` | `test_version_body_unchanged_across_random_seeds` | Same protocol for 30 `GET /api/version` calls; the *entire* body is byte-identical under seed choice. `/api/version` has no timestamp field, so any accidental random injection anywhere in the body would surface here first. |
+
+### Why these specific edges?
+
+Each new class targets a regression vector that existing flakiness guards do
+**not** reach:
+
+- **Concurrent schema fetch (hot + cold cache)** — `TestOpenAPISchemaByteStability`
+  pins sequential reads of the cached schema. Neither the hot-cache concurrent
+  path (could a future change wire schema generation to per-request state?) nor
+  the cold-cache path (the first wave of requests after a deploy regenerates
+  the schema in parallel) is covered. A non-deterministic generator would only
+  surface intermittently and only during the cold-cache window — exactly the
+  kind of bug that "passes in CI, fails in prod first hour after deploy".
+
+- **Mixed-method concurrent fan-out** — `TestConcurrentIdenticalInputDeterminism`
+  interleaves a handler with itself. That catches per-handler races but not
+  cross-handler ones. A regression that mutated a module-level dict in one
+  handler and read it in another would pass every existing test but trip this.
+
+- **GC-bracketed invariance** — CPython's garbage collector fires on allocation
+  thresholds that depend on the order in which prior tests ran. Any handler
+  that ever stored an `id(obj)`-keyed cache would produce different responses
+  across runs depending on when gc fired — a textbook intermittent failure.
+  Forcing `gc.collect()` between calls turns this from "Heisenbug" into
+  "deterministic test failure".
+
+- **Global RNG seed independence** — `pytest-randomly` (already enabled in
+  this project) reseeds `random` on every session. If a handler ever consults
+  the global RNG, two runs of the same test produce different outputs and the
+  test goes flaky. Seeding `random` explicitly inside the test bracket lets us
+  *prove* the handler doesn't consult it.
+
+### Verification
+
+- 421 backend tests (412 → 421) pass 3× in sequence with no flakiness
+  (~2.4s per isolated `test_flakiness_guards.py` run, ~7.5s full-suite run).
+- The 9 new tests were run 3× in isolation to confirm they themselves are not
+  flaky before the full-suite run.
+- Backend line and branch coverage stays at 100% (36/36 statements + branches,
+  no production code touched).
+- 91 frontend tests still pass (no frontend changes this run).
+- `ruff format`, `ruff check --fix`, and `mypy` all pass clean.
