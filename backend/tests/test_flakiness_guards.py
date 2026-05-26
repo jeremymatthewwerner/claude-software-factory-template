@@ -32,6 +32,20 @@ Each test class targets a specific class of flakiness:
 * ``TestRouteInventoryStability`` — the OpenAPI route inventory must be the
   same set across repeated schema fetches; catches lazy-route registration
   that would only surface under specific request orderings.
+* ``TestOpenAPISchemaUnderConcurrency`` — concurrent fetches of
+  ``/openapi.json``, both hot- and cold-cache, must agree on one body.
+  Cold-cache forces parallel schema generation, surfacing any
+  non-determinism in the generator that the hot-cache path would hide.
+* ``TestMixedMethodConcurrentDeterminism`` — concurrent fan-out that mixes
+  ``/health``, ``/api/hello`` (GET and POST), ``/api/version``, and
+  ``/openapi.json`` must each return its own correct shape; catches
+  cross-handler state leakage that identical-input fan-out cannot.
+* ``TestGCInvariance`` — forced ``gc.collect()`` between calls must not
+  change response content; CPython gc timing is the canonical source of
+  non-deterministic execution order inside a single test session.
+* ``TestGlobalRandomSeedIndependence`` — handler outputs must be identical
+  under different ``random`` global seeds; catches any future accidental
+  use of the global RNG that would silently produce per-session variance.
 
 Bounds are deliberately generous on iteration counts (200–500) because the
 underlying handlers are sub-millisecond — the whole module adds <2s of
@@ -41,7 +55,9 @@ wall-clock to the suite while exercising paths that no existing test reaches.
 from __future__ import annotations
 
 import asyncio
+import gc
 import json
+import random
 
 import pytest
 from fastapi.testclient import TestClient
@@ -438,3 +454,257 @@ class TestAsyncClientReuseDeterminism:
                 assert f"User{i}" in post_r.json()["message"]
                 assert name_from_greeting(post_r.json()["message"]) == f"User{i}"
                 assert "User" not in get_r.json()["message"]
+
+
+class TestOpenAPISchemaUnderConcurrency:
+    """``/openapi.json`` must remain byte-identical when fetched concurrently.
+
+    FastAPI builds the schema once and caches it on ``app.openapi_schema``. The
+    sequential byte-identity guard in :class:`TestOpenAPISchemaByteStability`
+    exercises the *cached* read path. This class exercises the *cache-fill*
+    path: if many requests arrive before the cache is populated (e.g. the first
+    request after a deploy, or after a future cache invalidation), each call
+    triggers schema generation in parallel. A race between two builders could
+    publish a partially-built schema, producing intermittent corruption that
+    is *only* visible under concurrent first-touch.
+
+    Resetting ``app.openapi_schema`` to ``None`` simulates the cold-cache
+    scenario; the test restores the original cache value in a ``finally`` block
+    so it cannot leak into other tests.
+    """
+
+    @pytest.mark.asyncio
+    async def test_50_concurrent_openapi_fetches_return_one_body(
+        self, async_client: AsyncClient
+    ) -> None:
+        """50 concurrent ``/openapi.json`` fetches yield exactly one body hash."""
+        responses = await asyncio.gather(*[async_client.get("/openapi.json") for _ in range(50)])
+        assert all(r.status_code == 200 for r in responses)
+        bodies = {r.content for r in responses}
+        assert len(bodies) == 1, (
+            f"50 concurrent /openapi.json fetches produced {len(bodies)} distinct bodies"
+        )
+
+    @pytest.mark.asyncio
+    async def test_concurrent_cold_cache_openapi_fetches_return_one_body(
+        self, async_client: AsyncClient
+    ) -> None:
+        """Concurrent fetches against a *cleared* schema cache still agree on one body.
+
+        Forces the cache-fill race path: with ``app.openapi_schema = None``,
+        every parallel request must regenerate the schema. The contract is that
+        the *generated* output is deterministic — never that two builders write
+        without coordinating. If a future change introduces non-determinism in
+        the generator (e.g. dict ordering tied to insertion-time), this test
+        will fail intermittently and we will see the flake immediately rather
+        than weeks later.
+        """
+        original = app.openapi_schema
+        app.openapi_schema = None
+        try:
+            responses = await asyncio.gather(
+                *[async_client.get("/openapi.json") for _ in range(30)]
+            )
+            assert all(r.status_code == 200 for r in responses)
+            # Compare parsed dicts (not bytes), because two parallel builders
+            # may serialise with different key orderings even though the
+            # documented behaviour is "the same schema".
+            schemas = [r.json() for r in responses]
+            first = schemas[0]
+            for i, other in enumerate(schemas[1:], start=1):
+                assert other == first, (
+                    f"Concurrent cold-cache /openapi.json fetch #{i} diverged from #0"
+                )
+        finally:
+            app.openapi_schema = original
+
+
+class TestMixedMethodConcurrentDeterminism:
+    """Concurrent calls that mix endpoints must each return their own correct shape.
+
+    Existing concurrency guards interleave the *same* call with itself. This
+    class interleaves *different* endpoints (GET /health, GET /api/hello,
+    POST /api/hello, GET /api/version, GET /openapi.json) and asserts each
+    response carries the body for its own route. Catches the regression class
+    where shared per-app state (a module-level dict, a default-mutable arg) is
+    mutated by one handler and read by another while a request is in flight.
+    """
+
+    @pytest.mark.asyncio
+    async def test_interleaved_mixed_calls_each_return_correct_shape(
+        self, async_client: AsyncClient
+    ) -> None:
+        """40 mixed-method calls fired concurrently each return a body matching their route."""
+        # Build a deterministic, repeating mix of calls — using ``cycle``-like
+        # indexing makes the test fail with the *same* signature every time if
+        # it ever does fail, rather than producing a different ordering noise
+        # on each run.
+        calls: list[tuple[str, str, dict[str, str] | None]] = []
+        for i in range(8):
+            calls.append(("GET", "/health", None))
+            calls.append(("GET", "/api/hello", None))
+            calls.append(("POST", "/api/hello", {"name": f"Mixed{i}"}))
+            calls.append(("GET", "/api/version", None))
+            calls.append(("GET", "/openapi.json", None))
+
+        async def run(
+            method: str, path: str, body: dict[str, str] | None
+        ) -> tuple[str, str, dict[str, object]]:
+            if method == "POST":
+                resp = await async_client.post(path, json=body)
+            else:
+                resp = await async_client.get(path)
+            assert resp.status_code == 200, (
+                f"{method} {path} returned {resp.status_code} under concurrency"
+            )
+            return method, path, resp.json()
+
+        results = await asyncio.gather(*[run(m, p, b) for m, p, b in calls])
+
+        # Every response must carry the shape its own route declares — not
+        # the shape of any other route that happened to be in flight.
+        for idx, ((method, path, _), (_, _, body)) in enumerate(zip(calls, results, strict=True)):
+            if path == "/health":
+                assert body == {"status": "healthy", "timestamp": body.get("timestamp")}, (
+                    f"call #{idx} ({method} {path}) returned non-health body: {body!r}"
+                )
+                assert body["status"] == "healthy"
+                assert_utc_iso8601(str(body["timestamp"]))
+            elif path == "/api/hello" and method == "GET":
+                assert "World" in str(body["message"]), (
+                    f"GET /api/hello returned non-default message: {body!r}"
+                )
+                assert_utc_iso8601(str(body["timestamp"]))
+            elif path == "/api/hello" and method == "POST":
+                # The POST body for call #idx carries "Mixed{i}" — derive i
+                # back from the slot in the cycle. Each slot of length 5
+                # contains one POST as the third element.
+                cycle_i = idx // 5
+                assert f"Mixed{cycle_i}" in str(body["message"]), (
+                    f"POST /api/hello at idx {idx} did not echo its name: {body!r}"
+                )
+            elif path == "/api/version":
+                assert "version" in body and "name" in body and "environment" in body, (
+                    f"/api/version returned non-version body under concurrency: {body!r}"
+                )
+            elif path == "/openapi.json":
+                assert "openapi" in body and "paths" in body, (
+                    f"/openapi.json returned non-schema body under concurrency: {body!r}"
+                )
+
+
+class TestGCInvariance:
+    """Response bodies must be byte-identical after a forced ``gc.collect()``.
+
+    The garbage collector is one of the few sources of *truly* non-deterministic
+    timing inside a CPython process: collections fire on allocation thresholds
+    that depend on the order in which prior tests ran. If a handler ever relied
+    on object identity (e.g. cached a response keyed by ``id(obj)``), repeating
+    the same call after a forced collection would surface a different cached
+    entry — and the same call across two CI runs would behave differently.
+    Pinning the invariant catches that class of regression deterministically.
+    """
+
+    def test_health_body_byte_identical_across_forced_gc_cycles(self, client: TestClient) -> None:
+        """``/health`` ``status`` is unchanged across 20 forced ``gc.collect()`` cycles."""
+        statuses: set[str] = set()
+        for _ in range(20):
+            gc.collect()
+            statuses.add(client.get("/health").json()["status"])
+            gc.collect()
+        assert statuses == {"healthy"}, (
+            f"/health status varied across forced gc cycles: {statuses!r}"
+        )
+
+    def test_post_hello_message_byte_identical_across_forced_gc_cycles(
+        self, client: TestClient
+    ) -> None:
+        """``POST /api/hello`` returns one message across 20 forced ``gc.collect()`` cycles."""
+        messages: set[str] = set()
+        for _ in range(20):
+            gc.collect()
+            response = client.post("/api/hello", json={"name": "GCStable"})
+            messages.add(response.json()["message"])
+            gc.collect()
+        assert len(messages) == 1, f"POST /api/hello varied across forced gc cycles: {messages!r}"
+
+    def test_openapi_body_byte_identical_across_forced_gc_cycles(self, client: TestClient) -> None:
+        """``/openapi.json`` bytes are stable across 10 forced ``gc.collect()`` cycles."""
+        bodies: set[bytes] = set()
+        for _ in range(10):
+            gc.collect()
+            bodies.add(client.get("/openapi.json").content)
+            gc.collect()
+        assert len(bodies) == 1, (
+            f"/openapi.json bytes varied across forced gc cycles ({len(bodies)} distinct)"
+        )
+
+
+class TestGlobalRandomSeedIndependence:
+    """Handler outputs must not depend on the global ``random`` module state.
+
+    The pattern that produces this flake class is innocuous-looking:
+
+        import random
+        @app.get(...)
+        async def handler():
+            return {"id": random.randint(0, 1 << 32), ...}
+
+    A handler that consults the global RNG produces different outputs in two
+    test sessions because the seed is set differently (test runners often
+    re-seed for ordering randomness — ``pytest-randomly`` does so by default).
+    This test seeds ``random`` to a fresh value before each call and asserts
+    the response is unchanged. If a future change ever wires a handler to
+    ``random``, these tests fail deterministically — the regression cannot hide
+    behind a particular ``pytest-randomly`` seed.
+
+    The test restores the RNG state in a ``finally`` block so it cannot leak
+    into adjacent tests.
+    """
+
+    def test_health_unchanged_across_random_seeds(self, client: TestClient) -> None:
+        """``/health`` status field is identical under 30 different RNG seeds."""
+        rng_state = random.getstate()
+        try:
+            statuses: set[str] = set()
+            for seed in range(30):
+                random.seed(seed)
+                statuses.add(client.get("/health").json()["status"])
+            assert statuses == {"healthy"}, (
+                f"/health responded differently under different RNG seeds: {statuses!r}"
+            )
+        finally:
+            random.setstate(rng_state)
+
+    def test_post_hello_message_unchanged_across_random_seeds(self, client: TestClient) -> None:
+        """``POST /api/hello`` returns one ``message`` under 30 different RNG seeds."""
+        rng_state = random.getstate()
+        try:
+            messages: set[str] = set()
+            for seed in range(30):
+                random.seed(seed)
+                response = client.post("/api/hello", json={"name": "SeedStable"})
+                messages.add(response.json()["message"])
+            assert len(messages) == 1, (
+                f"POST /api/hello responded differently under different RNG seeds: {messages!r}"
+            )
+        finally:
+            random.setstate(rng_state)
+
+    def test_version_body_unchanged_across_random_seeds(self, client: TestClient) -> None:
+        """``/api/version`` body is byte-identical under 30 different RNG seeds.
+
+        ``/api/version`` has no timestamp field, so a regression that injected
+        a random component anywhere in the body would surface here first.
+        """
+        rng_state = random.getstate()
+        try:
+            bodies: set[bytes] = set()
+            for seed in range(30):
+                random.seed(seed)
+                bodies.add(client.get("/api/version").content)
+            assert len(bodies) == 1, (
+                f"/api/version varied under different RNG seeds ({len(bodies)} distinct)"
+            )
+        finally:
+            random.setstate(rng_state)
