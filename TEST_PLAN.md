@@ -4,6 +4,77 @@ Documents test coverage, test descriptions, and quality improvements.
 
 ---
 
+## 2026-05-27 — QA Agent: integration-gaps session (issue #248)
+
+**Coverage was already 100% backend / 100% frontend.** This Wednesday top-up
+extends `backend/tests/test_integration_gaps.py` with eight new test classes
+(23 new tests, 421 → 444 in the suite) targeting cross-component integration
+behaviours that no existing test pins. Every gap was verified absent by
+`grep` before being added — none duplicate existing assertions in
+`test_integration.py`, `test_main.py`, or `test_edge_cases.py`.
+
+| Class | Test | Pins |
+|-------|------|------|
+| `TestCORSPreflightShortCircuitsBeforeRouting` | `test_preflight_on_nonexistent_path_returns_200` | A real preflight (Origin + ACRM) on `/api/missing` returns 200 — CORSMiddleware short-circuits *before* the router so 404 paths still pass preflight. |
+| `TestCORSPreflightShortCircuitsBeforeRouting` | `test_preflight_on_nonexistent_path_carries_acao` | The short-circuited preflight still echoes the allow-listed origin. |
+| `TestCORSPreflightShortCircuitsBeforeRouting` | `test_preflight_on_nonexistent_path_advertises_allow_methods` | The short-circuited preflight advertises `Access-Control-Allow-Methods` with the requested method. |
+| `TestOPTIONSWithOriginButNoACRMFallsThrough` | `test_options_with_origin_only_returns_405` | OPTIONS with `Origin` but no `Access-Control-Request-Method` is *not* a preflight — falls through to the router and 405s. |
+| `TestOPTIONSWithOriginButNoACRMFallsThrough` | `test_options_with_origin_only_still_carries_acao` | The fall-through 405 still carries the allow-listed CORS headers so the browser can read the status. |
+| `TestOPTIONSWithOriginButNoACRMFallsThrough` | `test_options_with_disallowed_origin_only_omits_acao` | The fall-through 405 from a disallowed origin omits `Access-Control-Allow-Origin`. |
+| `TestOpenAPIPathsDoNotDeclareOptionsOrHead` | `test_no_path_declares_an_options_operation` | No documented path declares an `options` operation — CORSMiddleware handles OPTIONS, not the router. |
+| `TestOpenAPIPathsDoNotDeclareOptionsOrHead` | `test_no_path_declares_a_head_operation` | No documented path declares a `head` operation — FastAPI auto-handles HEAD via GET. |
+| `TestAsyncClientErrorPathParity` | `test_404_via_async_client_has_documented_shape` | A 404 via the real ASGI transport (AsyncClient) returns `{"detail": "Not Found"}` with `application/json`. |
+| `TestAsyncClientErrorPathParity` | `test_405_via_async_client_has_documented_shape` | A 405 via the real ASGI transport returns `{"detail": "Method Not Allowed"}` with `application/json`. |
+| `TestOpenAPIByteEquivalentAcrossTransports` | `test_openapi_bytes_are_identical_via_both_transports` | `/openapi.json` body bytes are identical between TestClient and AsyncClient — catches a transport-specific framing regression. |
+| `TestNoExposeHeadersAdvertised` | `test_get_response_does_not_advertise_expose_headers` | GET responses do not advertise `Access-Control-Expose-Headers` — guards against accidental information disclosure to JS. |
+| `TestNoExposeHeadersAdvertised` | `test_post_response_does_not_advertise_expose_headers` | POST responses do not advertise `Access-Control-Expose-Headers`. |
+| `TestNoExposeHeadersAdvertised` | `test_preflight_response_does_not_advertise_expose_headers` | Preflight responses do not advertise `Access-Control-Expose-Headers`. |
+| `TestSequentialReuseAcrossPersistentAsyncClient` | `test_sequential_posts_through_one_client_isolate_names` | Five sequential POSTs through one persistent AsyncClient each echo their own name — handler isolation under connection reuse (different code path from `asyncio.gather`). |
+| `TestSequentialReuseAcrossPersistentAsyncClient` | `test_sequential_get_then_post_through_one_client` | GET then POST through one persistent AsyncClient each return their endpoint-specific shape. |
+| `TestCORSPreflightACRMIsCaseSensitive` | `test_uppercase_acrm_succeeds[POST]` | Uppercase ACRM `POST` passes preflight (200). |
+| `TestCORSPreflightACRMIsCaseSensitive` | `test_uppercase_acrm_succeeds[GET]` | Uppercase ACRM `GET` passes preflight (200). |
+| `TestCORSPreflightACRMIsCaseSensitive` | `test_uppercase_acrm_succeeds[PUT]` | Uppercase ACRM `PUT` passes preflight (200). |
+| `TestCORSPreflightACRMIsCaseSensitive` | `test_uppercase_acrm_succeeds[DELETE]` | Uppercase ACRM `DELETE` passes preflight (200). |
+| `TestCORSPreflightACRMIsCaseSensitive` | `test_non_uppercase_acrm_returns_400[lowercase]` | Lowercase ACRM `post` is rejected with 400 `Disallowed CORS method` — pins Starlette's case-sensitive comparison. |
+| `TestCORSPreflightACRMIsCaseSensitive` | `test_non_uppercase_acrm_returns_400[titlecase]` | Title-case ACRM `Post` is rejected with 400. |
+| `TestCORSPreflightACRMIsCaseSensitive` | `test_non_uppercase_acrm_returns_400[mixedcase]` | Mixed-case ACRM `pOST` is rejected with 400. |
+
+**Why these specifically.** Backend line coverage is already 100%, and the
+prior `test_integration_gaps.py` already pinned the obvious integration
+points (CORS on error responses, lifespan, docs HTML wiring, AsyncClient
+schema contract, `Vary: Origin` on real responses, bare OPTIONS, interleaved
+allow-listed origins). The gaps remaining are subtler middleware-vs-router
+interactions and transport-vs-transport parity:
+
+- **Middleware ordering** (the preflight-short-circuit and Origin-only-OPTIONS
+  cases) is invisible to single-endpoint tests because both succeed by
+  *bypassing* the route they target.
+- **OpenAPI surface negatives** (no OPTIONS / HEAD operations) catch an
+  accidental `methods=[...]` decorator that the existing inventory pin
+  in `TestAPIRouteInventoryPin` doesn't surface (that test only enumerates
+  documented methods on documented paths).
+- **AsyncClient error-path parity** complements the existing 422-only
+  AsyncClient test by pinning 404 and 405, so a regression that broke error
+  framing only on the real ASGI transport surfaces before production.
+- **Cross-transport byte equality** for `/openapi.json` extends the existing
+  intra-transport byte-stability guards.
+- **`expose_headers` negative** pins a configuration boundary that has no
+  positive assertion anywhere — silently adding `expose_headers=[...]` would
+  go unnoticed.
+- **Sequential persistent-client reuse** exercises a different code path
+  from `asyncio.gather`-based concurrency tests: the ASGI transport is kept
+  alive across calls, which is how real SDKs use a single client for many
+  requests.
+- **Case-sensitive ACRM** pins a real Starlette behavior (browsers always
+  send uppercase, but a "permissive" regression would mask malformed
+  clients).
+
+**Verification:** All 444 backend tests pass 3× in sequence with no
+flakiness (full-suite runs: 9.16s, 9.79s, 9.71s). Backend coverage stays
+at 100% line / 100% branch (36/36 statements).
+
+---
+
 ## Backend Tests (`backend/tests/test_main.py`)
 
 ### `TestHealthEndpoint`
