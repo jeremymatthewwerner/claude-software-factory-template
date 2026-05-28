@@ -4,6 +4,90 @@ Documents test coverage, test descriptions, and quality improvements.
 
 ---
 
+## 2026-05-28 — QA Agent: e2e-performance session (issue #251)
+
+**Backend coverage 100% / frontend coverage 100% (unchanged).** This Thursday
+top-up extends `backend/tests/test_performance.py` with seven new test classes
+(10 new tests, 444 → 454 in the suite) targeting e2e-performance regression
+vectors that the existing 17 performance classes do **not** cover. Each gap was
+verified absent by reading the existing 712-line file before being added — none
+duplicate existing assertions.
+
+| Class | Test | Pins |
+|-------|------|------|
+| `TestColdStartLatency` | `test_first_request_on_fresh_client_under_ceiling` | A brand-new `TestClient`'s first `/health` call completes under 1s — catches lazy-init regressions (import-on-first-call, one-time connection setup) that are invisible to every other test because they all reuse a warm client. |
+| `TestColdStartLatency` | `test_first_post_on_fresh_client_under_ceiling` | A brand-new `TestClient`'s first `POST /api/hello` completes under 1s — POST has a larger setup surface than GET (body parsing, validation), so a cold-start regression there can be worse. |
+| `TestLatencyJitter` | `test_health_latency_stddev_under_ceiling` | Stddev of 200 `/health` calls stays under 50ms — distinct from p95/p99, which catch *high outliers*; stddev catches a regression that lifts the whole low end of the distribution while keeping percentiles below ceiling. |
+| `TestNonHealthTailLatency` | `test_endpoint_p95_under_ceiling[version]` | p95 latency of 200 `GET /api/version` calls stays under 50ms — closes the gap left by `TestLatencyDistribution`, which only measures `/health`. |
+| `TestNonHealthTailLatency` | `test_endpoint_p95_under_ceiling[hello_get]` | p95 latency of 200 `GET /api/hello` calls stays under 50ms. |
+| `TestNonHealthTailLatency` | `test_endpoint_p95_under_ceiling[hello_post]` | p95 latency of 200 `POST /api/hello` calls stays under 50ms — POST has a wider regression surface (body parsing, validation) than the GETs. |
+| `TestSustainedCORSPreflight` | `test_10_sequential_preflights_under_total_and_avg_ceilings` | 10 sequential CORS preflights complete in under 1s total and average under 100ms — catches a per-call allocation leak in the OPTIONS handler that the existing single-preflight test cannot see. |
+| `TestVersionThroughputFloor` | `test_version_sustained_throughput_floor` | `/api/version` sustains at least 100 req/sec over 200 sequential calls — closes the gap left by `TestThroughputFloor`, which only pins `/health` and POST `/api/hello`. |
+| `TestConcurrentFanOutAllEndpoints` | `test_all_four_endpoints_concurrent_under_ceiling` | Two of each of the four public endpoints issued concurrently (8 requests) complete in under 500ms, and both POSTs echo their own distinct names — catches coordination bugs that surface only when all four routes are in flight at once. |
+| `TestOpenAPISchemaCacheDeep` | `test_openapi_warm_cache_calls_average_and_max_under_ceiling` | After one warm-up call (excluded), 20 subsequent `/openapi.json` calls each average under 50ms and worst-case stay under 200ms — distinguishes a real cache from a happenstance-fast miss path. The existing 5-call cache test includes the cold miss, so a never-warming cache can still pass it. |
+
+### Why these specific edges?
+
+Each new class targets a regression vector that existing performance guards
+do **not** reach:
+
+- **Cold-start cost on a fresh client.** Every other test in
+  `test_performance.py` uses the module-scoped `app` and a function-scoped
+  `client` fixture. By the time a percentile or throughput test runs, the
+  ASGI app has been exercised hundreds of times and is fully warm. A
+  regression that adds work to the *very first* request (lazy import,
+  first-call schema build, one-time connection setup) is invisible to all of
+  them. Creating a brand-new `TestClient` inside the test body and measuring
+  the very first request closes that gap.
+- **Latency jitter (stddev), distinct from p95/p99.** p95/p99 caps catch
+  sporadic *high outliers* but leave a blind spot: a regression that lifts
+  the whole low end of the distribution toward the percentile ceilings will
+  degrade perceived UX (more visible animations, jitter in the chat input
+  echo) while still passing every existing guard. Standard deviation across
+  the same sample is a direct measurement of that effect.
+- **Tail latency for non-`/health` endpoints.** `TestLatencyDistribution`
+  only measures `/health`, so a tail-latency regression that affects
+  `/api/version` (extra serializer field) or `/api/hello` (a slow Pydantic
+  serializer added on the response model) would slip through.
+- **Sustained CORS preflight cost.** `TestCORSPreflightPerformance`
+  exercises a single preflight; a regression that only manifests on the
+  10th-or-later preflight (e.g. per-call header allocation in CORSMiddleware,
+  a regex compile leaked into the OPTIONS path) would not show up there but
+  *would* show up under a sustained run of preflights — the shape real
+  cross-origin frontends exhibit.
+- **Per-endpoint throughput floor for `/api/version`.** `TestThroughputFloor`
+  pins sustained rps for `/health` and `POST /api/hello` but leaves
+  `/api/version` unguarded. `/api/version` returns one extra field over
+  `/health` and is the route most often hit by deploy-verification probes,
+  so a throughput regression there is visible end-to-end.
+- **Concurrent fan-out across all four endpoints.** `TestMixedWorkloadConcurrent`
+  interleaves only `GET` and `POST` on `/api/hello`. A coordination
+  regression that surfaces only when `/health`, `/api/version`, `/api/hello`
+  GET, and `/api/hello` POST are all in flight at once (e.g. a shared lock
+  or a global counter contended across handlers) would slip through. This
+  test exercises that exact shape and verifies the two POSTs in the fan-out
+  do not cross-contaminate.
+- **Deep OpenAPI cache effectiveness.** `test_openapi_json_cached_repeat_call_fast`
+  averages 5 calls *including* the first uncached call, so a regression
+  where the cache never warms can still pass if the 4 misses happen to
+  average below the ceiling. Excluding the warm-up call and measuring 20
+  subsequent calls with a tight per-call ceiling (50ms avg, 200ms worst)
+  distinguishes a real cache from a happenstance-fast miss path.
+
+### Verification
+
+- 454 backend tests (444 → 454) pass 3× in sequence with no flakiness
+  (~2.4s per isolated `test_performance.py` run, ~7.8s full-suite run).
+- The 10 new tests were also run 3× in isolation to confirm they themselves
+  are not flaky before the full-suite run.
+- Backend line and branch coverage stays at 100% (36/36 statements + branches,
+  no production code touched).
+- 91 frontend tests still pass (no frontend changes this run).
+- Bounds are deliberately generous (≥10× typical observed CI latency) so
+  they fail only on real regressions.
+
+---
+
 ## 2026-05-27 — QA Agent: integration-gaps session (issue #248)
 
 **Coverage was already 100% backend / 100% frontend.** This Wednesday top-up

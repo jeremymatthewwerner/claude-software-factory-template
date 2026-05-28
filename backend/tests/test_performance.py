@@ -14,11 +14,14 @@ the contract holds under repeated and concurrent load.
 from __future__ import annotations
 
 import asyncio
+import statistics
 import time
 
 import pytest
 from fastapi.testclient import TestClient
-from httpx import AsyncClient
+from httpx import ASGITransport, AsyncClient
+
+from app.main import app
 
 from .conftest import LOCALHOST_ORIGIN, cors_preflight_headers, name_from_greeting
 
@@ -708,4 +711,275 @@ class TestRealisticFrontendStartupPattern:
         elapsed = time.perf_counter() - start
         assert elapsed < FULL_FIRST_PAINT_CEILING_S, (
             f"full first-paint sequence took {elapsed:.3f}s, ceiling {FULL_FIRST_PAINT_CEILING_S}s"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Additional e2e-performance regression guards (third Thursday rotation).
+#
+# These cover dimensions the suites above leave open:
+#   - Cold-start cost on a fresh TestClient (lazy-init regressions).
+#   - Latency jitter (stddev), distinct from p95/p99 — catches variance
+#     regressions that keep percentiles low but degrade perceived UX.
+#   - Tail latency for endpoints other than /health, which currently has the
+#     only p95/p99 guards.
+#   - Sustained CORS preflight cost (single-preflight tests miss leaks that
+#     surface only after several preflights).
+#   - Per-endpoint throughput floor for /api/version (no rps floor today).
+#   - All-four-endpoints concurrent fan-out (existing mixed test only
+#     interleaves GET/POST /api/hello).
+#   - OpenAPI schema cache effectiveness past 5 calls, with the warm-up call
+#     excluded so the cache miss can't mask a per-call cost regression.
+# ---------------------------------------------------------------------------
+
+COLD_START_CEILING_S = 1.0
+JITTER_STDDEV_CEILING_S = 0.05
+NON_HEALTH_P95_CEILING_S = 0.05
+SEQUENTIAL_PREFLIGHT_TOTAL_CEILING_S = 1.0
+SEQUENTIAL_PREFLIGHT_AVG_CEILING_S = 0.1
+VERSION_THROUGHPUT_FLOOR_RPS = 100.0
+FAN_OUT_CEILING_S = 0.5
+OPENAPI_WARM_AVG_CEILING_S = 0.05
+OPENAPI_WARM_MAX_CEILING_S = 0.2
+
+
+class TestColdStartLatency:
+    """First-request latency on a fresh TestClient.
+
+    Every other test in this file uses the module-scoped ``app`` and a
+    function-scoped ``client`` fixture — by the time a percentile or
+    throughput test runs, the ASGI app has been exercised hundreds of times
+    and is fully warm. A regression that adds work to the *very first*
+    request (lazy import, first-call schema build, one-time connection setup)
+    is invisible to all of them.
+
+    This test creates a brand-new ``TestClient`` inside the test body and
+    measures the latency of its first request. The ceiling is intentionally
+    generous (1s) — the first call on the test runner is typically tens of
+    ms; we only fail on a real lazy-init regression of 10x+ that cost.
+    """
+
+    def test_first_request_on_fresh_client_under_ceiling(self) -> None:
+        """A fresh TestClient's first /health call completes under 1s."""
+        fresh_client = TestClient(app)
+        start = time.perf_counter()
+        response = fresh_client.get("/health")
+        elapsed = time.perf_counter() - start
+        assert response.status_code == 200
+        assert elapsed < COLD_START_CEILING_S, (
+            f"cold-start first call took {elapsed:.3f}s, ceiling {COLD_START_CEILING_S}s"
+        )
+
+    def test_first_post_on_fresh_client_under_ceiling(self) -> None:
+        """A fresh TestClient's first POST /api/hello completes under 1s.
+
+        POST has a larger setup surface than GET (body parsing, validation),
+        so a cold-start regression there can be worse than on /health.
+        """
+        fresh_client = TestClient(app)
+        start = time.perf_counter()
+        response = fresh_client.post("/api/hello", json={"name": "ColdStart"})
+        elapsed = time.perf_counter() - start
+        assert response.status_code == 200
+        assert elapsed < COLD_START_CEILING_S, (
+            f"cold-start POST took {elapsed:.3f}s, ceiling {COLD_START_CEILING_S}s"
+        )
+
+
+class TestLatencyJitter:
+    """Latency variance (stddev) guard.
+
+    p95/p99 caps catch sporadic *high* outliers but leave a blind spot:
+    a regression that lifts the whole low end of the distribution toward
+    the percentile ceilings will degrade perceived UX (more jittery typing,
+    more visible animations) while still passing every existing guard.
+    Standard deviation across the same sample is a direct measurement of
+    that effect.
+
+    The 50ms ceiling is roughly 10x typical observed stddev on these
+    trivial endpoints on a shared CI runner — only a real regression
+    moves it.
+    """
+
+    def test_health_latency_stddev_under_ceiling(self, client: TestClient) -> None:
+        """Stddev of /health latency stays under 50ms over 200 calls."""
+        timings: list[float] = []
+        for _ in range(200):
+            start = time.perf_counter()
+            response = client.get("/health")
+            timings.append(time.perf_counter() - start)
+            assert response.status_code == 200
+        stddev = statistics.stdev(timings)
+        assert stddev < JITTER_STDDEV_CEILING_S, (
+            f"latency stddev {stddev * 1000:.2f}ms exceeds {JITTER_STDDEV_CEILING_S * 1000:.0f}ms"
+        )
+
+
+class TestNonHealthTailLatency:
+    """Per-endpoint p95 guard for endpoints other than /health.
+
+    :class:`TestLatencyDistribution` only measures /health, so a tail-latency
+    regression that affects /api/version or /api/hello (e.g. a slow Pydantic
+    serialiser added on the response model) would slip through. This test
+    pins p95 for every other public endpoint.
+    """
+
+    @pytest.mark.parametrize(
+        "method,path,json_body",
+        [
+            ("GET", "/api/version", None),
+            ("GET", "/api/hello", None),
+            ("POST", "/api/hello", {"name": "Tail"}),
+        ],
+        ids=["version", "hello_get", "hello_post"],
+    )
+    def test_endpoint_p95_under_ceiling(
+        self,
+        client: TestClient,
+        method: str,
+        path: str,
+        json_body: dict[str, str] | None,
+    ) -> None:
+        """p95 latency for the endpoint stays under 50ms over 200 calls."""
+        timings: list[float] = []
+        for _ in range(200):
+            start = time.perf_counter()
+            response = client.request(method, path, json=json_body)
+            timings.append(time.perf_counter() - start)
+            assert response.status_code == 200
+        sorted_timings = sorted(timings)
+        p95 = sorted_timings[int(len(sorted_timings) * 0.95)]
+        assert p95 < NON_HEALTH_P95_CEILING_S, (
+            f"{method} {path} p95 {p95 * 1000:.2f}ms exceeds "
+            f"{NON_HEALTH_P95_CEILING_S * 1000:.0f}ms"
+        )
+
+
+class TestSustainedCORSPreflight:
+    """Many cross-origin POSTs in a row each pay a preflight. A regression
+    that allocates per-call (e.g. rebuilds the allow-origin list on every
+    OPTIONS) would not show up in the existing single-preflight test, but
+    a sustained run of preflights would compound the cost. Guard the
+    sustained behaviour explicitly.
+    """
+
+    def test_10_sequential_preflights_under_total_and_avg_ceilings(
+        self, client: TestClient
+    ) -> None:
+        """10 sequential CORS preflights total under 1s and average under 100ms."""
+        headers = {
+            **cors_preflight_headers("POST"),
+            "Access-Control-Request-Headers": "content-type",
+        }
+        start = time.perf_counter()
+        timings: list[float] = []
+        for _ in range(10):
+            call_start = time.perf_counter()
+            response = client.options("/api/hello", headers=headers)
+            timings.append(time.perf_counter() - call_start)
+            assert response.status_code == 200
+        total = time.perf_counter() - start
+        avg = sum(timings) / len(timings)
+        assert total < SEQUENTIAL_PREFLIGHT_TOTAL_CEILING_S, (
+            f"10 preflights took {total:.3f}s total"
+        )
+        assert avg < SEQUENTIAL_PREFLIGHT_AVG_CEILING_S, (
+            f"avg preflight {avg * 1000:.2f}ms exceeds {SEQUENTIAL_PREFLIGHT_AVG_CEILING_S * 1000:.0f}ms"
+        )
+
+
+class TestVersionThroughputFloor:
+    """:class:`TestThroughputFloor` pins sustained rps for /health and
+    POST /api/hello but leaves /api/version unguarded. /api/version returns
+    one extra field over /health and is the route most often hit by
+    deploy-verification probes, so a throughput regression there is
+    visible end-to-end.
+    """
+
+    def test_version_sustained_throughput_floor(self, client: TestClient) -> None:
+        """/api/version sustains at least 100 req/sec over 200 sequential calls."""
+        n = 200
+        start = time.perf_counter()
+        for _ in range(n):
+            response = client.get("/api/version")
+            assert response.status_code == 200
+        elapsed = time.perf_counter() - start
+        rps = n / elapsed
+        assert rps >= VERSION_THROUGHPUT_FLOOR_RPS, (
+            f"/api/version throughput {rps:.1f} req/s below floor {VERSION_THROUGHPUT_FLOOR_RPS}"
+        )
+
+
+class TestConcurrentFanOutAllEndpoints:
+    """Concurrent fan-out across *all four* public endpoints.
+
+    :class:`TestMixedWorkloadConcurrent` interleaves only GET and POST on
+    /api/hello. A coordination regression that surfaces only when /health,
+    /api/version, /api/hello GET, and /api/hello POST are all in flight at
+    once (e.g. a shared lock or a global counter contended across handlers)
+    would slip through. This test exercises that exact shape.
+    """
+
+    @pytest.mark.asyncio
+    async def test_all_four_endpoints_concurrent_under_ceiling(self) -> None:
+        """Two of each endpoint (8 requests total) issued concurrently complete under 500ms."""
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as ac:
+            start = time.perf_counter()
+            responses = await asyncio.gather(
+                ac.get("/health"),
+                ac.get("/health"),
+                ac.get("/api/version"),
+                ac.get("/api/version"),
+                ac.get("/api/hello"),
+                ac.get("/api/hello"),
+                ac.post("/api/hello", json={"name": "FanOutA"}),
+                ac.post("/api/hello", json={"name": "FanOutB"}),
+            )
+            elapsed = time.perf_counter() - start
+            assert all(r.status_code == 200 for r in responses)
+            assert elapsed < FAN_OUT_CEILING_S, f"fan-out across all endpoints took {elapsed:.3f}s"
+            # The two POSTs must each echo their own name back — concurrent
+            # fan-out across heterogeneous routes must not cross-contaminate
+            # the POST handler's per-request state.
+            post_a, post_b = responses[-2], responses[-1]
+            assert name_from_greeting(post_a.json()["message"]) == "FanOutA"
+            assert name_from_greeting(post_b.json()["message"]) == "FanOutB"
+
+
+class TestOpenAPISchemaCacheDeep:
+    """Deeper OpenAPI cache-effectiveness guard.
+
+    ``test_openapi_json_cached_repeat_call_fast`` averages 5 calls *including*
+    the first (uncached) call, so a regression where the cache never warms
+    can still pass if 4 misses average below the ceiling. By excluding the
+    first call and measuring 20 subsequent calls with a tight per-call
+    ceiling, this test distinguishes a real cache from a happenstance-fast
+    miss path.
+    """
+
+    def test_openapi_warm_cache_calls_average_and_max_under_ceiling(
+        self, client: TestClient
+    ) -> None:
+        """After one warm-up call, 20 subsequent /openapi.json calls each stay fast."""
+        # Warm-up call — excluded from the measurement.
+        warmup = client.get("/openapi.json")
+        assert warmup.status_code == 200
+
+        timings: list[float] = []
+        for _ in range(20):
+            start = time.perf_counter()
+            response = client.get("/openapi.json")
+            timings.append(time.perf_counter() - start)
+            assert response.status_code == 200
+
+        avg = sum(timings) / len(timings)
+        worst = max(timings)
+        assert avg < OPENAPI_WARM_AVG_CEILING_S, (
+            f"warm-cache avg {avg * 1000:.2f}ms exceeds "
+            f"{OPENAPI_WARM_AVG_CEILING_S * 1000:.0f}ms — cache likely cold on each call"
+        )
+        assert worst < OPENAPI_WARM_MAX_CEILING_S, (
+            f"warm-cache worst {worst * 1000:.2f}ms exceeds "
+            f"{OPENAPI_WARM_MAX_CEILING_S * 1000:.0f}ms"
         )
