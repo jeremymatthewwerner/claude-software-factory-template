@@ -73,6 +73,7 @@ from httpx import ASGITransport, AsyncClient
 from app.main import app
 from tests.conftest import (
     LOCALHOST_ORIGIN,
+    cors_preflight_headers,
     get_openapi_schema,
     openapi_component_for_response,
 )
@@ -337,13 +338,7 @@ class TestCORSPreflightShortCircuitsBeforeRouting:
 
     def test_preflight_on_nonexistent_path_returns_200(self, client: TestClient) -> None:
         """OPTIONS + Origin + ACRM on ``/api/missing`` is handled by CORSMiddleware (200)."""
-        response = client.options(
-            "/api/missing",
-            headers={
-                "Origin": LOCALHOST_ORIGIN,
-                "Access-Control-Request-Method": "POST",
-            },
-        )
+        response = client.options("/api/missing", headers=cors_preflight_headers("POST"))
         assert response.status_code == 200, (
             f"Preflight on a non-existent path must be handled by CORSMiddleware "
             f"before routing — got {response.status_code} (router-level 404 would "
@@ -352,26 +347,14 @@ class TestCORSPreflightShortCircuitsBeforeRouting:
 
     def test_preflight_on_nonexistent_path_carries_acao(self, client: TestClient) -> None:
         """The short-circuited preflight still echoes the allow-listed origin."""
-        response = client.options(
-            "/api/missing",
-            headers={
-                "Origin": LOCALHOST_ORIGIN,
-                "Access-Control-Request-Method": "POST",
-            },
-        )
+        response = client.options("/api/missing", headers=cors_preflight_headers("POST"))
         assert response.headers.get("access-control-allow-origin") == LOCALHOST_ORIGIN
 
     def test_preflight_on_nonexistent_path_advertises_allow_methods(
         self, client: TestClient
     ) -> None:
         """The short-circuited preflight advertises ``Access-Control-Allow-Methods``."""
-        response = client.options(
-            "/api/missing",
-            headers={
-                "Origin": LOCALHOST_ORIGIN,
-                "Access-Control-Request-Method": "POST",
-            },
-        )
+        response = client.options("/api/missing", headers=cors_preflight_headers("POST"))
         allow_methods = response.headers.get("access-control-allow-methods")
         assert allow_methods is not None and "POST" in allow_methods, (
             f"Preflight short-circuit must advertise allowed methods; got {allow_methods!r}"
@@ -560,13 +543,7 @@ class TestNoExposeHeadersAdvertised:
 
     def test_preflight_response_does_not_advertise_expose_headers(self, client: TestClient) -> None:
         """The preflight response itself also omits Access-Control-Expose-Headers."""
-        response = client.options(
-            "/api/hello",
-            headers={
-                "Origin": LOCALHOST_ORIGIN,
-                "Access-Control-Request-Method": "POST",
-            },
-        )
+        response = client.options("/api/hello", headers=cors_preflight_headers("POST"))
         assert response.status_code == 200
         assert response.headers.get("access-control-expose-headers") is None
 
@@ -630,13 +607,7 @@ class TestCORSPreflightACRMIsCaseSensitive:
     )
     def test_uppercase_acrm_succeeds(self, client: TestClient, method: str) -> None:
         """Uppercase ACRM tokens pass the preflight and return 200."""
-        response = client.options(
-            "/api/hello",
-            headers={
-                "Origin": LOCALHOST_ORIGIN,
-                "Access-Control-Request-Method": method,
-            },
-        )
+        response = client.options("/api/hello", headers=cors_preflight_headers(method))
         assert response.status_code == 200, (
             f"Uppercase ACRM {method!r} should pass preflight, got {response.status_code}"
         )
@@ -648,13 +619,7 @@ class TestCORSPreflightACRMIsCaseSensitive:
     )
     def test_non_uppercase_acrm_returns_400(self, client: TestClient, method: str) -> None:
         """Lower/mixed-case ACRM tokens are rejected with 400."""
-        response = client.options(
-            "/api/hello",
-            headers={
-                "Origin": LOCALHOST_ORIGIN,
-                "Access-Control-Request-Method": method,
-            },
-        )
+        response = client.options("/api/hello", headers=cors_preflight_headers(method))
         assert response.status_code == 400, (
             f"ACRM {method!r} (non-uppercase) should be rejected with 400, "
             f"got {response.status_code}"

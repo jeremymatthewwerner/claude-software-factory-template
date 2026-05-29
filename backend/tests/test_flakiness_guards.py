@@ -68,6 +68,7 @@ from app.main import app
 from .conftest import (
     LOCALHOST_ORIGIN,
     assert_utc_iso8601,
+    cors_preflight_headers,
     get_openapi_schema,
     name_from_greeting,
 )
@@ -351,8 +352,7 @@ class TestCORSPreflightByteDeterminism:
         response = client.options(
             "/api/hello",
             headers={
-                "Origin": LOCALHOST_ORIGIN,
-                "Access-Control-Request-Method": "POST",
+                **cors_preflight_headers("POST"),
                 "Access-Control-Request-Headers": "content-type",
             },
         )

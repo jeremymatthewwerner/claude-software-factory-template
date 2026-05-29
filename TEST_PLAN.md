@@ -4,6 +4,85 @@ Documents test coverage, test descriptions, and quality improvements.
 
 ---
 
+## 2026-05-29 — QA Agent: test-refactoring session (issue #254)
+
+**Backend coverage 100% / frontend coverage 100% (unchanged).** This Friday
+refactor is purely structural: it removes duplicated CORS-preflight header
+literals and a hard-coded frontend-origin string across five backend test
+files by pointing each call site at the existing helpers in
+`backend/tests/conftest.py`. No tests were added, removed, or renamed; no
+assertions changed. All 454 backend tests pass three consecutive runs after
+the refactor.
+
+### What changed
+
+The shared helpers in `conftest.py` already exist and were already used by
+the most-recently-written tests (`test_main.py`, `test_performance.py`).
+Older tests built the same header dicts inline, missing the helper. This
+session unifies all call sites.
+
+| Helper (in `conftest.py`) | Files now using it | Sites consolidated |
+|---|---|---|
+| `cors_preflight_headers(method, origin=LOCALHOST_ORIGIN)` — returns `{"Origin": ..., "Access-Control-Request-Method": ...}` | `test_integration_gaps.py`, `test_edge_cases.py`, `test_flakiness_guards.py`, `test_regression_prevention.py` | 10 inline preflight-header dicts |
+| `LOCALHOST_ORIGIN` constant | `test_integration.py` | 3 hard-coded `"http://localhost:3000"` literals (one local variable, two inline header dicts) |
+
+### Why each refactor is behaviour-preserving
+
+- `cors_preflight_headers(method)` returns exactly
+  `{"Origin": LOCALHOST_ORIGIN, "Access-Control-Request-Method": method}` —
+  byte-identical to the inline dict it replaces.
+- For the one call site that previously passed `Origin: "null"`
+  (`test_edge_cases.py::test_preflight_with_null_origin_is_rejected`), the
+  refactor uses the helper's existing `origin=` keyword override:
+  `cors_preflight_headers("POST", origin="null")`.
+- Where the inline dict carried an *extra* header
+  (`Access-Control-Request-Headers`) — three sites in
+  `test_flakiness_guards.py` and `test_regression_prevention.py` — the
+  refactor spreads the helper's return into a larger dict literal
+  (`{**cors_preflight_headers("POST"), "Access-Control-Request-Headers": ...}`),
+  preserving every byte of the original request.
+- `LOCALHOST_ORIGIN` is the literal `"http://localhost:3000"` — substitution
+  is a textual identity.
+
+### Why this matters
+
+The helpers exist precisely so a future change to the CORS request shape
+(e.g. ACRM renamed by a Starlette version bump, an extra preflight header
+the browser now sends) touches exactly one constant in `conftest.py`
+instead of a dozen literal dicts scattered across the suite. The
+refactored sites are now positioned to benefit from that.
+
+### Files touched
+
+- `backend/tests/test_integration_gaps.py` — added `cors_preflight_headers`
+  to the conftest import; consolidated 6 inline preflight-header literals
+  (3 in `TestCORSPreflightOnNonExistentPath`, 1 in `TestExposeHeadersAbsentByDefault`,
+  2 in `TestCORSPreflightACRMIsCaseSensitive`).
+- `backend/tests/test_edge_cases.py` — added `cors_preflight_headers` to
+  the conftest import; consolidated 1 inline preflight-header literal in
+  `TestNullOriginHeaderRejected::test_preflight_with_null_origin_is_rejected`
+  using the helper's `origin=` override.
+- `backend/tests/test_flakiness_guards.py` — added `cors_preflight_headers`
+  to the conftest import; consolidated the inline preflight-header literal in
+  `TestCORSPreflightByteDeterminism._do_preflight` via dict-spread (extra
+  ACRH header preserved).
+- `backend/tests/test_regression_prevention.py` — replaced `LOCALHOST_ORIGIN`
+  with `cors_preflight_headers` in the conftest import (it became unused
+  after the refactor); consolidated 2 inline preflight-header literals in
+  `TestCORSPreflightAllowHeadersOpen` via dict-spread.
+- `backend/tests/test_integration.py` — added `LOCALHOST_ORIGIN` to the
+  conftest import; replaced 3 hard-coded `"http://localhost:3000"` strings
+  in `TestCORSFrontendOriginInitSequence` with the constant.
+
+### Verification
+
+- `uv run pytest --cov=app --cov-report=term-missing` → **454 passed, 100% line + branch coverage** for `app/__init__.py` and `app/main.py`.
+- Same suite ran three more times back-to-back, all green (`6.83s / 6.78s / 7.01s`).
+- `uv run ruff format .` → no files changed.
+- `uv run ruff check . --fix` → all checks passed.
+
+---
+
 ## 2026-05-28 — QA Agent: e2e-performance session (issue #251)
 
 **Backend coverage 100% / frontend coverage 100% (unchanged).** This Thursday

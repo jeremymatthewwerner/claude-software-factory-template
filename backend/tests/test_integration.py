@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 from httpx import AsyncClient
 
 from .conftest import (
+    LOCALHOST_ORIGIN,
     assert_utc_iso8601,
     get_openapi_schema,
     openapi_component_for_response,
@@ -416,11 +417,10 @@ class TestFrontendInitSequenceCORS:
         self, client: TestClient
     ) -> None:
         """All three init endpoints return Access-Control-Allow-Origin for localhost:3000."""
-        origin = "http://localhost:3000"
         for path in ("/health", "/api/version", "/api/hello"):
-            response = client.get(path, headers={"Origin": origin})
+            response = client.get(path, headers={"Origin": LOCALHOST_ORIGIN})
             assert response.status_code == 200, f"{path} returned {response.status_code}"
-            assert response.headers.get("access-control-allow-origin") == origin, (
+            assert response.headers.get("access-control-allow-origin") == LOCALHOST_ORIGIN, (
                 f"{path} missing or wrong Access-Control-Allow-Origin header "
                 f"(got {response.headers.get('access-control-allow-origin')!r})"
             )
@@ -435,10 +435,10 @@ class TestFrontendInitSequenceCORS:
         response = client.post(
             "/api/hello",
             json={"name": "CorsCheck"},
-            headers={"Origin": "http://localhost:3000"},
+            headers={"Origin": LOCALHOST_ORIGIN},
         )
         assert response.status_code == 200
-        assert response.headers.get("access-control-allow-origin") == "http://localhost:3000", (
+        assert response.headers.get("access-control-allow-origin") == LOCALHOST_ORIGIN, (
             f"POST /api/hello missing CORS header (got "
             f"{response.headers.get('access-control-allow-origin')!r})"
         )

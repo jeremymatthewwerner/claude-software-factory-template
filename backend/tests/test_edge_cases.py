@@ -30,7 +30,7 @@ file existed; collectively they cover:
 
 from fastapi.testclient import TestClient
 
-from .conftest import expected_greeting
+from .conftest import cors_preflight_headers, expected_greeting
 
 
 class TestTopLevelNonObjectBodyReturns422:
@@ -439,10 +439,7 @@ class TestNullOriginNotAllowlisted:
         """
         response = client.options(
             "/api/hello",
-            headers={
-                "Origin": "null",
-                "Access-Control-Request-Method": "POST",
-            },
+            headers=cors_preflight_headers("POST", origin="null"),
         )
         assert response.headers.get("access-control-allow-origin") is None
 
