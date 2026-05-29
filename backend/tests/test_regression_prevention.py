@@ -36,7 +36,7 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
-from .conftest import LOCALHOST_ORIGIN, get_openapi_schema
+from .conftest import cors_preflight_headers, get_openapi_schema
 
 # The exact set of Pydantic class names that the public OpenAPI surface exposes
 # as component schemas today. SDK generators emit these as TypeScript types /
@@ -245,8 +245,7 @@ class TestCORSPreflightReflectsRequestedHeaders:
         response = client.options(
             "/api/hello",
             headers={
-                "Origin": LOCALHOST_ORIGIN,
-                "Access-Control-Request-Method": "POST",
+                **cors_preflight_headers("POST"),
                 "Access-Control-Request-Headers": "x-custom-header,content-type",
             },
         )
@@ -275,8 +274,7 @@ class TestCORSPreflightReflectsRequestedHeaders:
         response = client.options(
             "/api/hello",
             headers={
-                "Origin": LOCALHOST_ORIGIN,
-                "Access-Control-Request-Method": "POST",
+                **cors_preflight_headers("POST"),
                 "Access-Control-Request-Headers": "authorization",
             },
         )
