@@ -26,8 +26,19 @@ file existed; collectively they cover:
 * Response ``Content-Type`` is exactly ``application/json`` (no charset
   suffix) — pinned so a later switch to a custom response class can't
   silently drop the bare media type that some strict clients require.
+* JSON ``\\u...`` escape decoding fidelity in the request body, and
+  surrogate-pair recovery of astral-plane code points.
+* CORS origin exact-match semantics for the remaining near-miss
+  variants not covered by ``TestRegressionCORSAllowListBoundary``.
+* HTTP method routing on **non-existent** paths (404, not 405).
+* Response header hygiene — absence of identifying / cookie /
+  framing-policy headers that the app does not emit today.
+* Method restrictions on the documentation and schema endpoints.
+* CORS allow-list semantics applied to ``/openapi.json`` and ``/docs``.
+* ``Content-Length`` consistency with response body byte length.
 """
 
+import pytest
 from fastapi.testclient import TestClient
 
 from .conftest import cors_preflight_headers, expected_greeting
@@ -616,3 +627,319 @@ class TestPostQueryStringIgnored:
         response = client.post("/api/hello?name=Bob", json={"name": "Alice"})
         assert response.status_code == 200
         assert response.json()["message"] == expected_greeting("Alice")
+
+
+class TestNameValueJSONEscapeSequences:
+    """JSON ``\\u...`` escapes in the request body decode server-side before
+    the value reaches the handler — the echoed greeting carries the decoded
+    code point, not the literal escape.
+
+    None of the existing tests send raw bytes with escape sequences; they
+    use ``json={"name": ...}`` which performs encoding on the *client*
+    side. These tests pin the *server-side* JSON decoder behaviour, which
+    is a different parser pass. A regression that swaps to a raw-bytes
+    parser, or that double-decodes (turning ``\\u0041`` into the literal
+    six bytes ``\\u0041``), would silently change the response for any
+    client that escapes its inputs — common from JavaScript clients that
+    use ``JSON.stringify`` on non-ASCII strings under strict ASCII mode.
+    """
+
+    def test_basic_bmp_escape_decodes_to_character(self, client: TestClient) -> None:
+        """``{"name":"\\u0041lice"}`` decodes ``\\u0041`` to ``A`` → greeting echoes ``Alice``.
+
+        ``\\u0041`` is the JSON escape for ASCII ``A``. The pin guards
+        against a regression where the body is read as raw bytes and the
+        six-character literal ``\\u0041`` reaches the handler unchanged.
+        """
+        response = client.post(
+            "/api/hello",
+            content=b'{"name":"\\u0041lice"}',
+            headers={"Content-Type": "application/json"},
+        )
+        assert response.status_code == 200
+        assert response.json()["message"] == expected_greeting("Alice")
+
+    def test_surrogate_pair_escape_decodes_to_astral_codepoint(self, client: TestClient) -> None:
+        """``{"name":"\\uD83D\\uDE00"}`` decodes the surrogate pair to ``U+1F600`` (😀).
+
+        Astral-plane code points (above U+FFFF) cannot be expressed as a
+        single ``\\uXXXX`` escape — RFC 8259 §7 requires a UTF-16
+        surrogate pair. ``TestHelloNameSpecialCharacters`` covers astral
+        Unicode passed as raw UTF-8; this pins the *escape-pair* decode
+        path that a parser swap could regress (lone-surrogate tolerance,
+        joining-failure, or double-encoding).
+        """
+        response = client.post(
+            "/api/hello",
+            content=b'{"name":"\\uD83D\\uDE00"}',
+            headers={"Content-Type": "application/json"},
+        )
+        assert response.status_code == 200
+        assert response.json()["message"] == expected_greeting("\U0001f600")
+
+    def test_mixed_escape_and_literal_chars_round_trip(self, client: TestClient) -> None:
+        """``{"name":"A\\u00e9B"}`` decodes to ``AéB`` — escapes and literal bytes interleave cleanly.
+
+        A regression that handled bytes-vs-escapes via two separate code
+        paths (and joined them incorrectly) could mis-position the
+        decoded character. Mixing the two within one value catches that.
+        """
+        response = client.post(
+            "/api/hello",
+            content=b'{"name":"A\\u00e9B"}',
+            headers={"Content-Type": "application/json"},
+        )
+        assert response.status_code == 200
+        assert response.json()["message"] == expected_greeting("AéB")
+
+    def test_escaped_tab_decodes_to_horizontal_tab(self, client: TestClient) -> None:
+        """``{"name":"A\\tB"}`` (``\\t`` shorthand escape) decodes to ASCII ``HT``.
+
+        ``\\t`` is one of RFC 8259's named short escapes (distinct from
+        the ``\\u0009`` numeric form). Pinning the named form guards
+        against a parser swap that only handles ``\\uXXXX`` and silently
+        drops the named escapes — turning a tabbed input into a malformed
+        string.
+        """
+        response = client.post(
+            "/api/hello",
+            content=b'{"name":"A\\tB"}',
+            headers={"Content-Type": "application/json"},
+        )
+        assert response.status_code == 200
+        assert response.json()["message"] == expected_greeting("A\tB")
+
+
+class TestCORSOriginExactMatchRequiresByteIdenticalString:
+    """The CORS allow-list match is byte-exact against the inbound ``Origin``
+    header — no scheme/host case-folding, no trailing-slash tolerance, no
+    subdomain implication, no IPv4↔IPv6 loopback equivalence.
+
+    ``TestRegressionCORSAllowListBoundary`` already pins three near-miss
+    origins (``https://localhost:3000``, ``http://localhost:3001``, and
+    ``http://localhost`` — i.e. wrong scheme, drifted port, missing port).
+    These pin the remaining realistic variants a future regression to
+    case-insensitive or path-normalising matching would silently accept.
+    Each variant maps to a known deployment mistake:
+
+    * Uppercase host — some browser extensions / dev tools normalise host
+      casing inbound; pinning rejection prevents a "let's match
+      case-insensitively" change.
+    * Uppercase scheme — same class of mistake on the scheme.
+    * Trailing-slash origin — clients that mistakenly include the path's
+      leading ``/`` in the configured origin string.
+    * IPv6 loopback — ``[::1]`` is semantically equivalent to
+      ``127.0.0.1`` but textually different; the allow-list lists only
+      the IPv4 form.
+    * Subdomain (``app.localhost``) — pinning rejection prevents a future
+      switch to suffix-matching (a common "let's accept all of our
+      subdomains" change).
+    """
+
+    @pytest.mark.parametrize(
+        "near_miss_origin,reason",
+        [
+            ("http://LOCALHOST:3000", "host uppercased"),
+            ("HTTP://localhost:3000", "scheme uppercased"),
+            ("http://localhost:3000/", "trailing slash on origin"),
+            ("http://[::1]:3000", "IPv6 loopback (only IPv4 is allow-listed)"),
+            ("http://app.localhost:3000", "subdomain of allow-listed host"),
+        ],
+    )
+    def test_get_does_not_expose_allow_origin_for_origin_variant(
+        self, client: TestClient, near_miss_origin: str, reason: str
+    ) -> None:
+        """Near-miss origin variants do NOT receive ``Access-Control-Allow-Origin``."""
+        response = client.get("/health", headers={"Origin": near_miss_origin})
+        assert response.status_code == 200
+        assert response.headers.get("access-control-allow-origin") is None, (
+            f"CORS regression: {near_miss_origin!r} ({reason}) was accepted "
+            f"by the allow-list — got "
+            f"{response.headers.get('access-control-allow-origin')!r}"
+        )
+
+
+class TestMethodOnUndefinedPathReturns404NotMethodNotAllowed:
+    """Calling a non-GET method on a path that does not exist must return
+    404 — not 405.
+
+    ``TestHTTPMethodNotAllowed`` pins 405 for unsupported methods on
+    *defined* routes. The complementary contract — that an unsupported
+    method on an *undefined* route is 404, not 405 — is unpinned. The
+    distinction matters: a 405 advertises the path as a real endpoint
+    (and the ``Allow`` header would list registered methods); a 404
+    correctly tells the client the path is not served. A future router
+    swap that builds a method-allow map per *path prefix* (rather than
+    per exact path) could silently start returning 405 for unknown URLs.
+    """
+
+    @pytest.mark.parametrize("method", ["POST", "PUT", "DELETE", "PATCH"])
+    def test_unsupported_method_on_unknown_path_returns_404(
+        self, client: TestClient, method: str
+    ) -> None:
+        """``<METHOD> /unknown-path`` returns 404 (no route exists at all)."""
+        response = client.request(method, "/unknown-path")
+        assert response.status_code == 404, (
+            f"{method} /unknown-path returned {response.status_code} — expected 404 "
+            f"(405 would falsely advertise the path as a real route)"
+        )
+
+
+class TestResponseHeaderHygiene:
+    """Successful responses do NOT carry identifying / cookie / framing-policy
+    headers that the app deliberately does not emit today.
+
+    ``TestServerHeaderNotEmitted`` pins the absence of the ``Server``
+    header. These extend the same hygiene contract to four other headers
+    a future middleware addition could leak unintentionally:
+
+    * ``Set-Cookie`` — the API is stateless; emitting a cookie would
+      silently introduce server-side session state and break the
+      stateless contract relied on by ``TestStatelessUserFlow``.
+    * ``X-Powered-By`` — common framework fingerprint; emitting it would
+      expand the deployment's published attack surface.
+    * ``Strict-Transport-Security`` — a security-policy header that
+      belongs at the edge (CDN / reverse proxy), not the app server;
+      emitting it from the app would let staging-mode HSTS escape to
+      browsers and pin them to HTTPS for the configured max-age.
+    * ``X-Frame-Options`` — a framing-policy header. Same argument:
+      belongs at the edge, not the app. A regression that hard-codes
+      ``DENY`` here would break any future embed flow without an
+      obvious code-search target.
+    """
+
+    @pytest.mark.parametrize(
+        "forbidden_header,why",
+        [
+            ("set-cookie", "app is stateless — no server-side session"),
+            ("x-powered-by", "framework fingerprint — should not be advertised"),
+            ("strict-transport-security", "HSTS belongs at the edge, not the app"),
+            ("x-frame-options", "framing policy belongs at the edge, not the app"),
+        ],
+    )
+    def test_health_response_omits_forbidden_header(
+        self, client: TestClient, forbidden_header: str, why: str
+    ) -> None:
+        """``GET /health`` does not emit the named header."""
+        response = client.get("/health")
+        header_names_lower = {k.lower() for k in response.headers}
+        assert forbidden_header not in header_names_lower, (
+            f"GET /health unexpectedly emitted {forbidden_header!r} — {why}. "
+            f"Got headers: {dict(response.headers)!r}"
+        )
+
+
+class TestDocumentationEndpointMethodRestrictions:
+    """``/docs``, ``/redoc``, and ``/openapi.json`` accept GET only.
+
+    The existing suite pins that GETs against these URLs return 200 with
+    the expected body shape, but no test pins that *non-GET* methods are
+    rejected. A regression that registered a default ``_dispatch`` or
+    write-handler on the schema URL — for example, a future "schema
+    upload" admin feature gone stale — would silently expand the surface
+    and could expose the schema to mutation. Pinning 405 here keeps the
+    contract narrow.
+    """
+
+    @pytest.mark.parametrize("method", ["POST", "PUT", "DELETE", "PATCH"])
+    def test_non_get_on_openapi_json_returns_405(self, client: TestClient, method: str) -> None:
+        """``<METHOD> /openapi.json`` returns 405 — only GET is registered."""
+        response = client.request(method, "/openapi.json")
+        assert response.status_code == 405
+
+    @pytest.mark.parametrize("method", ["POST", "PUT", "DELETE", "PATCH"])
+    def test_non_get_on_docs_returns_405(self, client: TestClient, method: str) -> None:
+        """``<METHOD> /docs`` returns 405 — Swagger UI is GET-only."""
+        response = client.request(method, "/docs")
+        assert response.status_code == 405
+
+    @pytest.mark.parametrize("method", ["POST", "PUT", "DELETE", "PATCH"])
+    def test_non_get_on_redoc_returns_405(self, client: TestClient, method: str) -> None:
+        """``<METHOD> /redoc`` returns 405 — ReDoc is GET-only."""
+        response = client.request(method, "/redoc")
+        assert response.status_code == 405
+
+
+class TestSchemaAndDocsCORSBehaviour:
+    """The CORS allow-list applies uniformly across **every** registered
+    route — including the auto-generated ``/openapi.json`` and ``/docs``
+    URLs that the API route inventory tests treat as boilerplate.
+
+    A regression that moved CORS configuration from the global middleware
+    to a per-router decorator (and forgot the implicit docs / schema
+    routers) would silently drop CORS on these endpoints. The schema URL
+    in particular is a common cross-origin target — frontend dev
+    environments that auto-generate clients fetch it on startup — so a
+    silent CORS regression there would break tooling far from the
+    handler under change.
+    """
+
+    def test_openapi_json_with_allowed_origin_includes_acao(self, client: TestClient) -> None:
+        """``GET /openapi.json`` with an allow-listed Origin echoes the Origin in ACAO."""
+        response = client.get("/openapi.json", headers={"Origin": "http://localhost:3000"})
+        assert response.status_code == 200
+        assert response.headers.get("access-control-allow-origin") == "http://localhost:3000"
+
+    def test_openapi_json_with_disallowed_origin_omits_acao(self, client: TestClient) -> None:
+        """``GET /openapi.json`` with a non-allow-listed Origin does NOT echo ACAO."""
+        response = client.get("/openapi.json", headers={"Origin": "https://evil.example.com"})
+        assert response.status_code == 200
+        assert response.headers.get("access-control-allow-origin") is None
+
+    def test_docs_with_disallowed_origin_omits_acao(self, client: TestClient) -> None:
+        """``GET /docs`` with a non-allow-listed Origin does NOT echo ACAO.
+
+        Distinct from the ``/openapi.json`` case because ``/docs`` is an
+        HTML page served by a different FastAPI internal route — a
+        CORS regression that affected only the JSON schema route (or
+        only the HTML route) would miss one of the two pins.
+        """
+        response = client.get("/docs", headers={"Origin": "https://evil.example.com"})
+        assert response.status_code == 200
+        assert response.headers.get("access-control-allow-origin") is None
+
+
+class TestContentLengthMatchesResponseBody:
+    """The ``Content-Length`` response header equals ``len(response.content)``
+    for every public route.
+
+    No existing test compares the header value to the actual body length;
+    the byte-stability suite asserts the body is byte-identical across
+    calls but not that the announced length matches the body that arrives.
+    A regression that wraps responses in a gzip/middleware that inflates
+    the body without updating the header (or a header-rewriting proxy
+    config drift) would break strict HTTP/1.1 clients that count bytes,
+    and the schema-byte-stability tests would still pass because the
+    body itself remains stable.
+    """
+
+    @pytest.mark.parametrize(
+        "method,path,json_body",
+        [
+            ("GET", "/health", None),
+            ("GET", "/api/version", None),
+            ("GET", "/api/hello", None),
+            ("POST", "/api/hello", {"name": "Alice"}),
+            ("GET", "/openapi.json", None),
+        ],
+        ids=["health", "version", "get_hello", "post_hello", "openapi"],
+    )
+    def test_content_length_header_matches_body_byte_length(
+        self,
+        client: TestClient,
+        method: str,
+        path: str,
+        json_body: dict[str, str] | None,
+    ) -> None:
+        """``Content-Length`` equals ``len(response.content)`` for the given route."""
+        response = client.request(method, path, json=json_body)
+        assert response.status_code == 200
+        declared = response.headers.get("content-length")
+        assert declared is not None, (
+            f"{method} {path} did not emit a Content-Length header — strict "
+            f"HTTP/1.1 clients that count bytes will block waiting for EOF"
+        )
+        assert int(declared) == len(response.content), (
+            f"{method} {path} Content-Length={declared} but body is "
+            f"{len(response.content)} bytes — header/body length mismatch"
+        )
