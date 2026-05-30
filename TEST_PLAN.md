@@ -4,6 +4,60 @@ Documents test coverage, test descriptions, and quality improvements.
 
 ---
 
+## 2026-05-30 — QA Agent: edge-cases session (issue #257)
+
+**Backend coverage 100% / frontend coverage unchanged.** Saturday's focus is
+edge-case behavioural pins — `app/main.py` is already at 100% line + branch,
+so this run adds **37 new tests across 7 orthogonal regression classes** that
+pin behaviours no existing test asserts. All 491 backend tests pass three
+consecutive runs after the change (previous baseline: 454).
+
+### Test classes added to `backend/tests/test_edge_cases.py`
+
+| Class | Tests | What it pins / why it matters |
+|---|---|---|
+| `TestNameValueJSONEscapeSequences` | 4 | Server-side JSON decoding fidelity. The existing suite always passes `name` as a Python string via `json={"name": ...}`, which is encoded on the *client* side. These tests POST raw bytes containing `\uXXXX` escapes and surrogate pairs, pinning that the **server** decodes them before the handler runs. Covers a BMP escape (`A` → `A`), a surrogate-pair emoji (`😀` → `U+1F600`), mixed escape+literal (`AéB` → `AéB`), and the named tab escape (`\t`). Guards against a parser swap that handles raw bytes or only the numeric escape form. |
+| `TestCORSOriginExactMatchRequiresByteIdenticalString` | 5 | The CORS allow-list match is byte-exact. `TestRegressionCORSAllowListBoundary` already pinned three near-miss origins (wrong scheme, drifted port, missing port). These pin the **remaining** realistic variants: uppercase host (`http://LOCALHOST:3000`), uppercase scheme (`HTTP://localhost:3000`), trailing slash (`http://localhost:3000/`), IPv6 loopback (`http://[::1]:3000`), and subdomain (`http://app.localhost:3000`). Each maps to a known deployment-mistake class that a "let's accept these too" regression would silently allow. |
+| `TestMethodOnUndefinedPathReturns404NotMethodNotAllowed` | 4 | The 404-vs-405 distinction on **non-existent** paths. `TestHTTPMethodNotAllowed` pins 405 for unsupported methods on defined routes; this pins the complement — POST/PUT/DELETE/PATCH on `/unknown-path` must return 404, not 405. A router swap that builds a method-allow map per *path prefix* could silently start returning 405 (falsely advertising the path as real). |
+| `TestResponseHeaderHygiene` | 4 | The **absence** of identifying / cookie / framing-policy headers on successful responses. `TestServerHeaderNotEmitted` already pinned the `Server` header; this extends the hygiene contract to `Set-Cookie` (stateless contract), `X-Powered-By` (framework fingerprint), `Strict-Transport-Security` (HSTS belongs at the edge, not the app), and `X-Frame-Options` (framing policy belongs at the edge). Guards against a default-cookie / fingerprint / security-header middleware addition. |
+| `TestDocumentationEndpointMethodRestrictions` | 12 | Only GET is registered on `/docs`, `/redoc`, and `/openapi.json`. The existing tests pin 200 on GET, but no test pins that non-GET methods are rejected. A future `_dispatch` or "schema upload" handler on the schema URL would silently expand the surface and could expose the schema to mutation. Each docs URL is parameterised over POST/PUT/DELETE/PATCH. |
+| `TestSchemaAndDocsCORSBehaviour` | 3 | The CORS allow-list applies uniformly across the auto-generated `/openapi.json` and `/docs` URLs. A regression that moved CORS from the global middleware to a per-router decorator (and missed the implicit docs / schema routers) would silently drop CORS on these endpoints — a common cross-origin target for frontend dev environments that auto-generate API clients on startup. |
+| `TestContentLengthMatchesResponseBody` | 5 | The announced `Content-Length` header equals `len(response.content)` for every public route. No existing test compares the header to the actual body byte length — the byte-stability suite asserts the body itself is stable but not that the announced length matches it. A regression that wraps responses in a gzip/middleware that inflates the body without updating the header would break strict HTTP/1.1 clients that count bytes, and would not be caught by the existing byte-stability tests. Parameterised over `/health`, `/api/version`, GET `/api/hello`, POST `/api/hello`, and `/openapi.json`. |
+
+### Why this matters
+
+Each class is **orthogonal**: a regression in any one area lands on a single
+dedicated test class rather than scattering noise across many. The
+documentation in each class header points at the *category of regression*
+each pin guards against — parser swap, CORS policy drift, framework
+fingerprint leak, schema-URL surface expansion, header/body length
+divergence — so a future maintainer reading a failure immediately knows
+both what changed and why someone thought it mattered.
+
+The previous Saturday runs (2026-05-09, 2026-05-02, 2026-04-25) accreted a
+dense behavioural surface; this run extends along axes that those did not
+touch:
+
+* **Decoder fidelity** rather than encoder strictness — JSON `\u` escapes are
+  the only test path that exercises the server-side `json.loads` decode of
+  escape sequences in `name` values.
+* **CORS exact-match** rather than near-miss policy — case-folding,
+  trailing-slash tolerance, IPv4↔IPv6 equivalence, and subdomain implication
+  are each their own regression class, distinct from the scheme/port
+  near-misses already pinned.
+* **404 vs 405 on undefined paths** — the existing 405 tests cover defined
+  paths; the 404-on-undefined-path contract was unpinned and would let a
+  router swap silently misrepresent the route inventory.
+* **Header-absence hygiene** beyond `Server` — extends an existing one-header
+  pin to a family of four headers a future middleware could plausibly emit.
+* **Schema/docs URL method narrowness and CORS uniformity** — the docs URLs
+  were treated as boilerplate by the route inventory tests; these pins make
+  them first-class assertion targets.
+* **Header/body length consistency** — independent of body byte stability;
+  a new failure mode (length divergence) requiring its own pin.
+
+---
+
 ## 2026-05-29 — QA Agent: test-refactoring session (issue #254)
 
 **Backend coverage 100% / frontend coverage 100% (unchanged).** This Friday
