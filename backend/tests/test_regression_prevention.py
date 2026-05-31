@@ -36,7 +36,7 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
-from .conftest import cors_preflight_headers, get_openapi_schema
+from .conftest import LOCALHOST_ORIGIN, cors_preflight_headers, get_openapi_schema
 
 # The exact set of Pydantic class names that the public OpenAPI surface exposes
 # as component schemas today. SDK generators emit these as TypeScript types /
@@ -778,4 +778,348 @@ class TestHealthTrailingSlashReturnsSameShape:
         assert no_slash["status"] == with_slash["status"], (
             f"/health/ status {with_slash['status']!r} != /health status "
             f"{no_slash['status']!r} — different code paths."
+        )
+
+
+# ---------------------------------------------------------------------------
+# 2026-05-31 Sunday regression-prevention additions: behaviours exercised by
+# the past week's commits (#242–#258) but left unpinned by them.
+# ---------------------------------------------------------------------------
+
+# Forbidden response headers shared between ``TestResponseHeaderHygiene`` (in
+# ``test_edge_cases.py``, /health-only) and the two new hygiene pins below.
+# Centralised so that adding a fifth forbidden header touches one tuple
+# instead of three parametrize blocks.
+FORBIDDEN_RESPONSE_HEADERS: list[tuple[str, str]] = [
+    ("set-cookie", "app is stateless — no server-side session"),
+    ("x-powered-by", "framework fingerprint — should not be advertised"),
+    ("strict-transport-security", "HSTS belongs at the edge, not the app"),
+    ("x-frame-options", "framing policy belongs at the edge, not the app"),
+]
+
+# All non-/health public routes — the surfaces ``TestResponseHeaderHygiene``
+# leaves uncovered. Listed verbatim rather than imported from another file so a
+# future route addition is visible at the test site.
+NON_HEALTH_SUCCESS_REQUESTS: list[tuple[str, str, dict[str, str] | None]] = [
+    ("GET", "/api/version", None),
+    ("GET", "/api/hello", None),
+    ("POST", "/api/hello", {"name": "HygieneCheck"}),
+    ("GET", "/openapi.json", None),
+]
+
+
+class TestHelloResponseKeysAreExactlyDocumentedSet:
+    """GET and POST ``/api/hello`` return JSON bodies whose key set is
+    **exactly** ``{"message", "timestamp"}``.
+
+    ``test_hello_name_extra_fields_ignored`` (test_main.py) asserts that
+    the *request body* extra fields don't break the call, but only checks
+    ``"Alice" in response.json()["message"]`` — never the *response* key
+    set. An ergonomic refactor like
+    ``return {**request.model_dump(), "message": ..., "timestamp": ...}``
+    would leak request keys into the documented response, and FastAPI's
+    ``response_model=HelloResponse`` coercion would filter them at the
+    boundary today, but no test directly pins that filter's outcome.
+    A regression that dropped ``response_model=`` on the route would
+    silently start echoing every request key.
+    """
+
+    def test_get_hello_response_keys_are_exactly_message_and_timestamp(
+        self, client: TestClient
+    ) -> None:
+        """``GET /api/hello`` returns exactly ``{"message", "timestamp"}`` — no more, no less."""
+        response = client.get("/api/hello")
+        assert response.status_code == 200
+        body = response.json()
+        assert set(body.keys()) == {"message", "timestamp"}, (
+            f"GET /api/hello response key set is {set(body.keys())}, expected "
+            f"exactly {{'message', 'timestamp'}}. A new key on the documented "
+            f"response is a public-contract change."
+        )
+
+    def test_post_hello_response_keys_are_exactly_message_and_timestamp(
+        self, client: TestClient
+    ) -> None:
+        """``POST /api/hello`` returns exactly ``{"message", "timestamp"}`` — no more, no less."""
+        response = client.post("/api/hello", json={"name": "Alice"})
+        assert response.status_code == 200
+        body = response.json()
+        assert set(body.keys()) == {"message", "timestamp"}, (
+            f"POST /api/hello response key set is {set(body.keys())}, expected "
+            f"exactly {{'message', 'timestamp'}}. A new key on the documented "
+            f"response is a public-contract change."
+        )
+
+    def test_post_hello_extra_request_field_does_not_leak_into_response(
+        self, client: TestClient
+    ) -> None:
+        """A request-body ``stowaway`` field is not echoed in the response body.
+
+        Pydantic v2's default ``extra='ignore'`` drops it at parse time, and
+        FastAPI's ``response_model=HelloResponse`` filters it at the response
+        boundary. Either layer alone is sufficient today, but pinning the
+        end-to-end outcome catches a refactor that breaks both.
+        """
+        response = client.post(
+            "/api/hello",
+            json={"name": "Alice", "stowaway": "should-not-appear", "another": 42},
+        )
+        assert response.status_code == 200
+        body = response.json()
+        # No key leaks through.
+        assert "stowaway" not in body, (
+            f"'stowaway' request field appeared in response body: {body!r}. "
+            f"The response_model boundary or Pydantic ignore behaviour regressed."
+        )
+        assert "another" not in body
+        # And no value leaks anywhere in the body either (catches a refactor
+        # that wrapped extras into a sub-field like ``{"extras": {...}}``).
+        body_text = response.text
+        assert "stowaway" not in body_text
+        assert "should-not-appear" not in body_text
+
+
+class TestResponseHeaderHygieneAcrossAllRoutes:
+    """The four-header hygiene contract pinned for ``GET /health`` in
+    ``TestResponseHeaderHygiene`` (test_edge_cases.py) holds uniformly on
+    every non-/health route too.
+
+    A regression that wired a "smart" middleware injecting
+    ``X-Powered-By: FastAPI/Starlette`` (or ``Set-Cookie`` for debug
+    tracing) to only the API routes — or only the schema URL — would
+    slip past the /health-only Saturday pin entirely. Extend the same
+    four-header guarantee to ``GET /api/version``, ``GET /api/hello``,
+    ``POST /api/hello`` and ``GET /openapi.json``.
+    """
+
+    @pytest.mark.parametrize(
+        "method,path,json_body",
+        NON_HEALTH_SUCCESS_REQUESTS,
+        ids=["version", "hello_get", "hello_post", "openapi_json"],
+    )
+    @pytest.mark.parametrize(
+        "forbidden_header,why",
+        FORBIDDEN_RESPONSE_HEADERS,
+        ids=[h for h, _ in FORBIDDEN_RESPONSE_HEADERS],
+    )
+    def test_non_health_route_omits_forbidden_header(
+        self,
+        client: TestClient,
+        method: str,
+        path: str,
+        json_body: dict[str, str] | None,
+        forbidden_header: str,
+        why: str,
+    ) -> None:
+        """The named forbidden header is absent on the given non-/health route."""
+        response = client.request(method, path, json=json_body)
+        assert response.status_code == 200
+        lower_headers = {k.lower() for k in response.headers}
+        assert forbidden_header not in lower_headers, (
+            f"{method} {path} unexpectedly emitted {forbidden_header!r} — {why}. "
+            f"Got headers: {dict(response.headers)!r}"
+        )
+
+
+class TestOptionsWithOriginOnlyOmitsExposeHeaders:
+    """The half-CORS 405 fall-through path also omits
+    ``Access-Control-Expose-Headers``.
+
+    ``TestNoExposeHeadersAdvertised`` (test_integration_gaps.py) pins the
+    absence on GET, POST, and the *real* preflight (Origin + ACRM). The
+    fourth response shape produced by the CORS surface — OPTIONS with
+    ``Origin`` only, no ``Access-Control-Request-Method`` — is
+    structurally distinct: CORSMiddleware classifies it as a non-preflight
+    and the router emits a 405, which CORSMiddleware then wraps with
+    allow-origin headers on the way out. That wrap-on-the-way-out path
+    is the most plausible place a future ``expose_headers=`` config
+    would first leak through, because it re-enters CORSMiddleware's
+    response-header logic from a different branch than the preflight
+    case the Wednesday pin covers.
+    """
+
+    def test_options_with_origin_only_omits_expose_headers(self, client: TestClient) -> None:
+        """OPTIONS with only ``Origin`` returns 405 without ``Access-Control-Expose-Headers``."""
+        response = client.options("/api/hello", headers={"Origin": LOCALHOST_ORIGIN})
+        # Confirms the 405 fall-through path is still the one being exercised
+        # (so the assertion below pins the right response shape).
+        assert response.status_code == 405, (
+            f"OPTIONS with Origin only no longer returns 405 (got {response.status_code}); "
+            f"the half-CORS fall-through behaviour has changed and this pin "
+            f"must be reviewed against TestOPTIONSWithOriginButNoACRMFallsThrough."
+        )
+        assert response.headers.get("access-control-expose-headers") is None, (
+            f"Half-CORS 405 response unexpectedly advertised "
+            f"Access-Control-Expose-Headers="
+            f"{response.headers.get('access-control-expose-headers')!r} — "
+            f"the CORS middleware likely gained an expose_headers= config."
+        )
+
+
+# Error-response request specs reused by the two error-path pins below.
+# Each tuple is (method, path, json_body, expected_status) — pinning each
+# request to its expected error status keeps the parametrize ids readable
+# and the failure messages self-describing.
+ERROR_RESPONSE_REQUESTS: list[tuple[str, str, dict[str, str] | None, int]] = [
+    # POST /api/hello with no body — Pydantic raises 422 (body required).
+    ("POST", "/api/hello", None, 422),
+    # Spurious URL — FastAPI emits 404 with detail "Not Found".
+    ("GET", "/spurious-regression-pin-url", None, 404),
+    # Disallowed method on a real route — Starlette emits 405 with
+    # detail "Method Not Allowed".
+    ("DELETE", "/health", None, 405),
+]
+
+
+class TestErrorResponseContentLengthMatchesBody:
+    """``Content-Length`` on 422 / 404 / 405 responses equals
+    ``len(response.content)``.
+
+    ``TestContentLengthMatchesResponseBody`` (test_edge_cases.py) pins
+    the byte-length match on the five 200 response routes today. Error
+    responses (422 from validation, 404 from routing, 405 from method
+    rejection) are emitted by FastAPI / Starlette's *separate* error
+    handlers, not the route handlers — a future custom error response
+    (a per-app JSON-API error envelope, say) could drift on the header
+    without touching the success path. Pin the contract symmetrically
+    on the error side.
+    """
+
+    @pytest.mark.parametrize(
+        "method,path,json_body,expected_status",
+        ERROR_RESPONSE_REQUESTS,
+        ids=["422_post_no_body", "404_spurious", "405_disallowed_method"],
+    )
+    def test_error_response_content_length_matches_body_byte_length(
+        self,
+        client: TestClient,
+        method: str,
+        path: str,
+        json_body: dict[str, str] | None,
+        expected_status: int,
+    ) -> None:
+        """``Content-Length`` equals ``len(response.content)`` on the error response."""
+        response = client.request(method, path, json=json_body)
+        assert response.status_code == expected_status, (
+            f"{method} {path} returned {response.status_code}, expected {expected_status} "
+            f"— the test request no longer hits the documented error path."
+        )
+        declared = response.headers.get("content-length")
+        assert declared is not None, (
+            f"{method} {path} ({expected_status}) did not emit a Content-Length header "
+            f"— strict HTTP/1.1 clients that count bytes will block waiting for EOF."
+        )
+        assert int(declared) == len(response.content), (
+            f"{method} {path} ({expected_status}) Content-Length={declared} but body "
+            f"is {len(response.content)} bytes — header/body length mismatch on "
+            f"the error path."
+        )
+
+
+class TestErrorResponsesAlsoOmitForbiddenHeaders:
+    """The forbidden-header hygiene contract holds on 422 / 404 / 405
+    responses too.
+
+    ``TestResponseHeaderHygiene`` covers 200 ``GET /health`` only;
+    ``TestResponseHeaderHygieneAcrossAllRoutes`` (above) extends it to
+    the other 200 routes. Error responses come from a different
+    Starlette code path (the exception handlers, not the route
+    handlers) and could be wrapped by a future error-formatting
+    middleware that emits ``Set-Cookie: trace_id=...`` "for debugging"
+    — invisible to every 200-only pin.
+    """
+
+    @pytest.mark.parametrize(
+        "method,path,json_body,expected_status",
+        ERROR_RESPONSE_REQUESTS,
+        ids=["422_post_no_body", "404_spurious", "405_disallowed_method"],
+    )
+    @pytest.mark.parametrize(
+        "forbidden_header,why",
+        FORBIDDEN_RESPONSE_HEADERS,
+        ids=[h for h, _ in FORBIDDEN_RESPONSE_HEADERS],
+    )
+    def test_error_response_omits_forbidden_header(
+        self,
+        client: TestClient,
+        method: str,
+        path: str,
+        json_body: dict[str, str] | None,
+        expected_status: int,
+        forbidden_header: str,
+        why: str,
+    ) -> None:
+        """The named forbidden header is absent on the given error response."""
+        response = client.request(method, path, json=json_body)
+        assert response.status_code == expected_status
+        lower_headers = {k.lower() for k in response.headers}
+        assert forbidden_header not in lower_headers, (
+            f"{method} {path} ({expected_status}) unexpectedly emitted "
+            f"{forbidden_header!r} — {why}. Got headers: {dict(response.headers)!r}"
+        )
+
+
+class TestSpuriousURL404IsJSON:
+    """The 404 bodies emitted for the convention-named URLs pinned by
+    ``TestAdditionalSpuriousURLsReturn404`` (last Sunday) are JSON
+    ``{"detail": "Not Found"}``, not HTML.
+
+    The Sunday pin only checks ``status_code == 404``. A regression that
+    added a static-files middleware mounting a ``404.html`` page (or a
+    catch-all that rendered a friendly HTML error) would still return
+    404 — passing the existing pin — while breaking every JSON-only
+    consumer that introspects ``error.detail``.
+    """
+
+    @pytest.mark.parametrize(
+        "spurious_path",
+        ["/robots.txt", "/sitemap.xml", "/", "/api", "/api/"],
+    )
+    def test_spurious_url_404_is_documented_json(
+        self, client: TestClient, spurious_path: str
+    ) -> None:
+        """``GET {spurious_path}`` 404 is JSON ``{"detail": "Not Found"}`` with JSON content-type."""
+        response = client.get(spurious_path)
+        assert response.status_code == 404
+        assert response.headers["content-type"].startswith("application/json"), (
+            f"{spurious_path!r} 404 content-type is "
+            f"{response.headers.get('content-type')!r} — a static-files or "
+            f"catch-all middleware likely started serving HTML 404s."
+        )
+        assert response.json() == {"detail": "Not Found"}, (
+            f"{spurious_path!r} 404 body is {response.json()!r}, expected "
+            f"{{'detail': 'Not Found'}} — the documented FastAPI 404 envelope."
+        )
+
+
+class TestCORSPreflightContentLengthMatchesBody:
+    """The 200 preflight response declares a ``Content-Length`` equal to
+    ``len(response.content)``.
+
+    ``TestContentLengthMatchesResponseBody`` deliberately enumerates
+    five success routes but excludes the OPTIONS preflight (a different
+    response shape — empty body, generated by CORSMiddleware rather
+    than a route handler). A regression that omitted ``Content-Length``
+    on the preflight (or set it to a non-zero value when the body is
+    empty) would break HTTP/1.1 clients that count bytes to detect
+    message end on a kept-alive connection — Chrome ignores this,
+    so the regression would only surface in CI for custom integration
+    test harnesses that read socket bytes directly.
+    """
+
+    def test_preflight_content_length_matches_empty_body(self, client: TestClient) -> None:
+        """``OPTIONS /api/hello`` preflight ``Content-Length`` matches body byte length."""
+        response = client.options(
+            "/api/hello",
+            headers=cors_preflight_headers("POST"),
+        )
+        assert response.status_code == 200
+        declared = response.headers.get("content-length")
+        assert declared is not None, (
+            "CORS preflight did not emit a Content-Length header — HTTP/1.1 "
+            "clients keeping the connection alive will block waiting for EOF."
+        )
+        assert int(declared) == len(response.content), (
+            f"Preflight Content-Length={declared} but body is "
+            f"{len(response.content)} bytes — header/body length mismatch."
         )
