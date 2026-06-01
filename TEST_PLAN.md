@@ -4,6 +4,60 @@ Documents test coverage, test descriptions, and quality improvements.
 
 ---
 
+## 2026-06-01 — QA Agent: coverage-sprint session (issue #264)
+
+**Backend coverage stays at 100% line + 100% branch on `app/main.py`.**
+Monday's coverage-sprint focus has nothing left to chase on Python
+statements, so this run extends the *behavioural* coverage along the one
+auto-derived surface the existing 532-test backend suite had not yet
+pinned: the **per-operation OpenAPI metadata** that FastAPI generates
+from each route's docstring, decorator kwargs, and parameter types. A
+docstring rewrite, a stray `deprecated=True` kwarg, or a copy-paste
+mistake on `response_model=` ships green today; every typed-SDK client
+and the `/docs` UI sees the change. The 35 new tests below close that
+gap.
+
+Full backend suite after the change: **567 backend tests pass three
+consecutive runs** (previous baseline: 532).
+
+### Test classes added to `backend/tests/test_route_operation_metadata.py`
+
+| Class | Tests | What it pins / why it matters |
+|---|---|---|
+| `TestPerOperationDescriptionMatchesHandlerDocstring` | 4 | Each `paths[path][method].description` equals `inspect.cleandoc(handler.__doc__)` — the rendered body text of every `/docs` operation panel and the method docstring of every typed-SDK client. The existing suite already pins `summary` (auto-derived from function name), `operationId`, `tags`, and the **info-level** `description`, but not the per-operation `description`. A "just tightened the wording" docstring rewrite would silently churn every consumer's generated documentation today; pinned per-route here so the rewrite surfaces at test time. |
+| `TestEndpointsDeclareNoQueryOrPathParameters` | 4 | No route declares a `parameters` array today (no query / path / header params on any handler). The first time a handler grows `q: str \| None = None`, a `parameters` entry appears — and every typed SDK gains a new optional method argument. Pinning the absence makes the addition loud rather than backwards-compatible-by-accident. |
+| `TestEndpointsAreNotDeprecated` | 4 | No operation has `deprecated: true` (absent or falsy). The decorator kwarg flips Swagger UI strikethrough rendering and SDK `@deprecated` annotations. Pinning the absence catches an accidental `@app.get("/health", deprecated=True)` that would broadcast a "please migrate" hint to every consumer. |
+| `TestEndpointsHaveNoSecurityRequirement` | 4 | No operation declares a `security` requirement. Adding `Depends(oauth2_scheme)` (or a global security override) introduces an auth contract every client must satisfy — a major public-surface change that no other test pins as absent. |
+| `TestSuccess200DescriptionIsFastAPIDefault` | 4 | Each `responses["200"].description` is the FastAPI default string `"Successful Response"`. A change indicates a per-route `responses={200: {"description": ...}}` override on the decorator — deliberate but consumer-visible (response section copy in `/docs`, SDK response docstrings). |
+| `TestSuccess200ResponseDeclaresOnlyApplicationJSON` | 4 | Each 200 response declares exactly one content type, `application/json`. A regression that flipped a handler to `response_class=HTMLResponse` or that listed an alternative media type via `responses=` would silently expand the content-negotiation surface; nothing else in the suite pinned this. |
+| `TestPostHelloRequestBodyIsRequiredJSON` | 2 | POST /api/hello declares `requestBody.required: true` **and** lists exactly `application/json` as the body content type. `required` controls whether typed SDKs mark the body parameter required (a `HelloRequest \| None = None` regression would silently flip it). The content-type list controls whether `application/x-www-form-urlencoded` or multipart becomes acceptable — pinning catches a future `Form()` / `UploadFile` mix-in. |
+| `TestGetEndpointsDeclareOnly200` | 3 | GET endpoints document **exactly** `{200}`. Adding a documented 4xx via `responses={500: {...}}` on the decorator would expand the SDK error-handling surface (new exception classes). Pinning the singleton catches the addition. |
+| `TestPostHelloDeclaresExactly200And422` | 1 | POST /api/hello documents **exactly** `{200, 422}`. A third documented code (404 from a path param, 500 from a custom `responses=`) changes the SDK exception surface; dropping 422 via `include_in_schema=False` shrinks it. Both regressions land here. |
+| `TestRequestBodyReferencesHelloRequestComponent` | 1 | POST /api/hello's `requestBody.content["application/json"].schema` is exactly `{"$ref": "#/components/schemas/HelloRequest"}`. The existing integration suite resolves the ref and asserts properties of the target component but does not pin **which** component is referenced. A handler change that swapped the parameter type to `dict[str, str]` or a new `HelloInput` model would drop the `$ref` (or point it at a different component) — silently breaking every SDK that imports `HelloRequest`. |
+| `TestSuccess200ResponseReferencesExpectedComponent` | 4 | Each 200 response's body schema is a `$ref` to the documented component (`HealthResponse`, `VersionResponse`, `HelloResponse`, `HelloResponse`). `TestOpenAPIComponentInventoryPinned` pins the **inventory**; nothing pins **which** component each route's 200 response points to. A copy-paste mistake that wired `response_model=HealthResponse` onto `/api/version` would still pass every other test in the suite while breaking SDK clients that decode the body against the wrong type. |
+
+### Why this matters
+
+Every assertion above verifies a behaviour that is **not** asserted
+elsewhere in `tests/`; the gaps were identified by inspecting each
+per-operation metadata slot (`description`, `parameters`, `deprecated`,
+`security`, `responses[...].description`, `responses[...].content`,
+`requestBody.required`, `requestBody.content`, the `responses` key set,
+and the `$ref` targets) against the existing test inventory before
+adding the corresponding pin.
+
+The new file mirrors the existing convention from
+`test_openapi_schema_metadata.py` and `test_regression_prevention.py`:
+each class targets a single auto-derived slot, each test names the
+specific regression that would slip past the existing suite, and the
+parametrize ids match the project-wide `"METHOD /path"` format used by
+the integration and main suites.
+
+This run does **not** modify `app/main.py`. The change is additive in
+`backend/tests/` only.
+
+---
+
 ## 2026-05-30 — QA Agent: edge-cases session (issue #257)
 
 **Backend coverage 100% / frontend coverage unchanged.** Saturday's focus is
