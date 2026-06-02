@@ -4,6 +4,71 @@ Documents test coverage, test descriptions, and quality improvements.
 
 ---
 
+## 2026-06-02 — QA Agent: flaky-hunt session (issue #268)
+
+**Suite is fully stable.** Five back-to-back full backend runs (567 tests
+each) and three frontend runs (91 tests each) produced zero flakes.
+Backend coverage stays at 100% line + 100% branch on `app/main.py`.
+
+With no observed flake to chase, Tuesday's flaky-hunt focus instead
+extends the **regression-prevention surface** in `tests/test_flakiness_guards.py`
+along five flakiness *sources* that no existing guard pins. Each new
+class targets a distinct way a future change could introduce
+intermittent CI noise, so that the regression fails *deterministically*
+in this guard suite rather than surfacing as a 1-in-N flake weeks
+later.
+
+Full backend suite after the change: **588 backend tests pass three
+consecutive runs** (previous baseline: 567).
+
+### Test classes added to `backend/tests/test_flakiness_guards.py`
+
+| Class | Tests | What it pins / why it matters |
+|---|---|---|
+| `TestTZEnvironmentVariableIndependence` | 3 (+8 parametrized = 9) | Toggles the `TZ` environment variable to `America/New_York`, `Asia/Tokyo`, `Europe/Berlin`, `Pacific/Auckland` via `os.environ` + `time.tzset()` and asserts handler timestamps still carry a `+00:00` UTC offset. This is the canonical real-world flake source: a regression that swapped `datetime.now(UTC)` → `datetime.now()` (naive, local-tz) passes on a developer's UTC machine and most CI runners, but silently fails — and *only sometimes* — on runners whose `TZ` is set to a non-UTC zone. The rapid-flip variant additionally interleaves `TZ` changes between calls to catch an import-time-cached timezone. Original `TZ` is restored in a `finally` block so the test cannot leak. |
+| `TestTimestampIsoFormatRoundTrip` | 3 | Asserts every emitted timestamp survives `isoformat → fromisoformat → isoformat` byte-for-byte across 50 sequential calls per endpoint, and that every `/health` timestamp ends with the canonical `+00:00` UTC marker (rather than the alternative `Z` form, both of which parse identically). A regression that emits a non-canonical form (truncated sub-second precision when microseconds happen to be zero, `Z` suffix in some calls but not others) would still *parse* — every existing `fromisoformat`-based test would pass — but would break downstream consumers that compare timestamps byte-for-byte (log aggregators, cache keys, signed payloads). |
+| `TestOpenAPIParityHTTPVsDirectCall` | 3 | Asserts the OpenAPI schema reached via `client.get("/openapi.json").json()` deep-equals the dict returned by `app.openapi()`, and that the path set and component-schema name set agree between the two transports. A future middleware that mutates the response body (injecting a per-request trace ID into the schema bytes, normalising key order differently per transport) would diverge silently — every test that uses *only* the HTTP path would still see a deterministic response, and every test that uses *only* the direct path would too, but the two would no longer agree. Clients that fetch via HTTP would then see a different schema than tools that import `app` directly. |
+| `TestRepeatedSequentialColdCache` | 2 | Sequentially clears `app.openapi_schema = None` and refetches `/openapi.json` 30 times, asserting all 30 cycles produce byte-identical bodies; a second test asserts the component count is identical across 20 cold rebuilds. `TestOpenAPISchemaUnderConcurrency` clears the cache *once* and fires parallel rebuilds. This class catches a different regression class: a generator with a *cumulative* per-rebuild side effect (e.g. appending operations to a module-level list on every rebuild). A single cold-reset would not surface that — 30 sequential resets would visibly grow the output. Original cache value restored in `finally`. |
+| `TestErrorResponseBodyDeterminism` | 4 | Pins that 50 consecutive `GET /no-such-path` (404), `DELETE /api/hello` (405), and `POST /api/hello` with empty JSON (422) responses each share exactly one body hash. A fourth test asserts the 404 body is identical regardless of `Origin` header (allow-listed, disallowed, absent). These responses come from Starlette's default exception handlers, not application code — but clients that compare error bodies byte-for-byte (log aggregators, fuzz-test oracles, cache keys) would still see intermittent diffs if a future change wired the error handler to include a per-request trace ID, or varied the body by origin. |
+
+### Why this matters
+
+The factory's CI run-time is set by the *slowest* test, but the
+factory's perceived reliability is set by the *flakiest* test. A 1%
+flake on a 588-test suite produces a red CI ~99.7% of the time over a
+week's runs — even though every individual run has a 99% chance of
+passing. The expected cost of a missed flake source is therefore not
+"weeks until it surfaces" but "weeks until a human stops trusting the
+red lights".
+
+Existing classes in this file pin many *symptoms* (response bodies that
+already vary, schemas that already mutate, timestamps that already
+regress). The five new classes pin distinct *sources* of flake before
+any symptom has appeared:
+
+1. Environment-variable dependence (`TZ`) is the single most common
+   real-world cause of "passes on my machine, fails on the runner"
+   non-determinism in date-handling code.
+2. Round-trip lossiness is the canonical way an upgrade to a JSON
+   serializer or a `pydantic` version bump introduces a hard-to-debug
+   format diff.
+3. HTTP-vs-direct parity is the only test in the suite that proves the
+   *two code paths* to the schema dict agree — without it, the existing
+   30+ schema tests collectively pin only one path.
+4. Sequential cold-cache resilience extends the single-shot guard from
+   `TestOpenAPISchemaUnderConcurrency` to the cumulative-state case
+   that single-shot tests structurally cannot catch.
+5. Error-response determinism extends the suite's "every 200 response is
+   stable" coverage to the 4xx error path that no current test pins.
+
+Together the 15 new test functions (21 with parametrization) add **+21
+tests** to the suite at a wall-clock cost of <0.7 s per run. The
+suite-wide stability sample (3 consecutive full-suite runs after the
+addition, plus 3 consecutive runs of just the new tests) confirms zero
+flake introduced by the new guards.
+
+---
+
 ## 2026-06-01 — QA Agent: coverage-sprint session (issue #264)
 
 **Backend coverage stays at 100% line + 100% branch on `app/main.py`.**

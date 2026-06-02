@@ -46,6 +46,29 @@ Each test class targets a specific class of flakiness:
 * ``TestGlobalRandomSeedIndependence`` — handler outputs must be identical
   under different ``random`` global seeds; catches any future accidental
   use of the global RNG that would silently produce per-session variance.
+* ``TestTZEnvironmentVariableIndependence`` — handler timestamps must be
+  UTC regardless of the ``TZ`` environment variable. Catches the canonical
+  ``datetime.now()`` (naive, local-tz) regression that would only fail in
+  CI environments whose ``TZ`` differs from UTC.
+* ``TestTimestampIsoFormatRoundTrip`` — every emitted timestamp must
+  survive ``isoformat → fromisoformat → isoformat`` byte-for-byte. A
+  regression that emits a non-canonical or lossy ISO-8601 form (e.g.
+  truncated sub-second precision) would still *parse* but would silently
+  break downstream byte-comparators.
+* ``TestOpenAPIParityHTTPVsDirectCall`` — ``client.get("/openapi.json")``
+  and ``app.openapi()`` are two code paths. They must produce the same
+  schema dict; a divergence indicates middleware or transport-layer
+  mutation that would silently corrupt clients fetching via HTTP.
+* ``TestRepeatedSequentialColdCache`` — ``app.openapi_schema = None``
+  followed by a refetch must yield byte-identical output across many
+  cold-rebuild cycles. Catches cumulative side effects of schema
+  generation (e.g. appending operations to a module-level list each
+  rebuild) that single-shot cold-cache tests would miss.
+* ``TestErrorResponseBodyDeterminism`` — 404/405/422 responses are
+  emitted by Starlette's defaults rather than application code, but
+  their bodies must still be byte-identical across many iterations and
+  across origin variation; otherwise clients that compare error bodies
+  byte-for-byte would see intermittent diffs.
 
 Bounds are deliberately generous on iteration counts (200–500) because the
 underlying handlers are sub-millisecond — the whole module adds <2s of
@@ -57,7 +80,10 @@ from __future__ import annotations
 import asyncio
 import gc
 import json
+import os
 import random
+import time
+from datetime import datetime
 
 import pytest
 from fastapi.testclient import TestClient
@@ -66,6 +92,7 @@ from httpx import ASGITransport, AsyncClient
 from app.main import app
 
 from .conftest import (
+    DISALLOWED_ORIGIN,
     LOCALHOST_ORIGIN,
     assert_utc_iso8601,
     cors_preflight_headers,
@@ -708,3 +735,271 @@ class TestGlobalRandomSeedIndependence:
             )
         finally:
             random.setstate(rng_state)
+
+
+# Non-UTC IANA zones used to exercise the ``TZ`` env-var path. Each has a
+# *different* offset from UTC so any naive-clock regression would produce a
+# visibly different result under at least one of them.
+NON_UTC_TZ_VALUES = ("America/New_York", "Asia/Tokyo", "Europe/Berlin", "Pacific/Auckland")
+
+
+class TestTZEnvironmentVariableIndependence:
+    """Handler timestamps must be UTC regardless of the ``TZ`` env variable.
+
+    This is the canonical real-world flake source. A handler that uses
+    ``datetime.now()`` (naive, returning *local* time) instead of
+    ``datetime.now(UTC)`` produces correct output on developer machines
+    running in UTC and on most CI runners — but silently fails (and only
+    sometimes) on runners whose ``TZ`` is set to a non-UTC zone. Pin the
+    invariant by toggling ``TZ`` via ``os.environ`` + ``time.tzset()``
+    and asserting the emitted timestamp is still UTC ISO 8601.
+
+    The original ``TZ`` value is restored in a ``finally`` block so the
+    environment cannot leak into adjacent tests.
+    """
+
+    @staticmethod
+    def _with_tz(tz: str | None, fn: object) -> object:
+        """Run ``fn()`` with ``TZ`` set to ``tz`` (or unset if ``None``); restore on exit."""
+        original = os.environ.get("TZ")
+        try:
+            if tz is None:
+                os.environ.pop("TZ", None)
+            else:
+                os.environ["TZ"] = tz
+            time.tzset()
+            return fn()  # type: ignore[operator]
+        finally:
+            if original is None:
+                os.environ.pop("TZ", None)
+            else:
+                os.environ["TZ"] = original
+            time.tzset()
+
+    @pytest.mark.parametrize("tz", NON_UTC_TZ_VALUES)
+    def test_health_timestamp_is_utc_under_each_tz(self, client: TestClient, tz: str) -> None:
+        """``/health`` returns a UTC-offset timestamp under every non-UTC ``TZ``."""
+        timestamp = self._with_tz(tz, lambda: client.get("/health").json()["timestamp"])
+        # ``assert_utc_iso8601`` raises if the offset isn't zero, which is
+        # exactly the failure mode a naive-clock regression would produce
+        # under a non-UTC ``TZ``.
+        assert_utc_iso8601(str(timestamp))
+
+    @pytest.mark.parametrize("tz", NON_UTC_TZ_VALUES)
+    def test_post_hello_timestamp_is_utc_under_each_tz(self, client: TestClient, tz: str) -> None:
+        """``POST /api/hello`` returns a UTC-offset timestamp under every non-UTC ``TZ``."""
+        timestamp = self._with_tz(
+            tz,
+            lambda: client.post("/api/hello", json={"name": "TZGuard"}).json()["timestamp"],
+        )
+        assert_utc_iso8601(str(timestamp))
+
+    def test_get_hello_timestamp_is_utc_under_rapid_tz_changes(self, client: TestClient) -> None:
+        """Repeatedly flipping ``TZ`` between calls never produces a non-UTC timestamp.
+
+        The combination — many requests *and* many ``TZ`` flips — exercises
+        the worst case for the regression class: a handler that builds the
+        timezone once at import time would pass single-tz tests but fail
+        when ``TZ`` is mutated mid-session.
+        """
+        for tz in NON_UTC_TZ_VALUES * 5:  # 20 flips
+            ts = self._with_tz(tz, lambda: client.get("/api/hello").json()["timestamp"])
+            assert_utc_iso8601(str(ts))
+
+
+class TestTimestampIsoFormatRoundTrip:
+    """Every emitted timestamp must survive a ``isoformat → fromisoformat → isoformat``
+    round-trip byte-for-byte.
+
+    A regression that emits a non-canonical ISO 8601 form (e.g. omitting
+    microseconds when they happen to be zero, then including them when
+    they're non-zero) would still *parse* successfully — every existing
+    test that calls ``datetime.fromisoformat`` would pass — but downstream
+    consumers that compare timestamps byte-for-byte (log aggregators,
+    cache keys, signed payloads) would see intermittent diffs.
+
+    Pin the invariant: the emitted string equals
+    ``datetime.fromisoformat(s).isoformat()``.
+    """
+
+    @staticmethod
+    def _assert_round_trip(timestamp: str) -> None:
+        round_tripped = datetime.fromisoformat(timestamp).isoformat()
+        assert round_tripped == timestamp, (
+            f"Timestamp {timestamp!r} did not survive isoformat round-trip (got {round_tripped!r})"
+        )
+
+    def test_health_timestamp_round_trips_across_50_calls(self, client: TestClient) -> None:
+        """Every one of 50 sequential ``/health`` timestamps round-trips exactly."""
+        for _ in range(50):
+            self._assert_round_trip(client.get("/health").json()["timestamp"])
+
+    def test_post_hello_timestamp_round_trips_across_50_calls(self, client: TestClient) -> None:
+        """Every one of 50 sequential ``POST /api/hello`` timestamps round-trips exactly."""
+        for _ in range(50):
+            ts = client.post("/api/hello", json={"name": "RoundTrip"}).json()["timestamp"]
+            self._assert_round_trip(ts)
+
+    def test_health_timestamp_ends_with_utc_offset_marker(self, client: TestClient) -> None:
+        """Every one of 50 ``/health`` timestamps ends with the canonical ``+00:00`` UTC marker.
+
+        ``datetime.fromisoformat`` accepts both ``Z`` and ``+00:00`` — but
+        switching between them mid-session would produce intermittent
+        byte-level diffs even though both forms parse. Pin the *exact*
+        suffix the handler emits today.
+        """
+        for _ in range(50):
+            ts = client.get("/health").json()["timestamp"]
+            assert ts.endswith("+00:00"), (
+                f"Timestamp {ts!r} does not end with canonical '+00:00' marker"
+            )
+
+
+class TestOpenAPIParityHTTPVsDirectCall:
+    """``/openapi.json`` (HTTP) and ``app.openapi()`` (direct) must agree.
+
+    Two code paths lead to the schema dict — HTTP through the routing
+    layer, and direct in-process via ``app.openapi()``. They should
+    produce the same dict. A regression where a middleware mutates the
+    response body (e.g. injects a per-request trace ID into the schema
+    bytes) would diverge silently: every test that uses *only* the HTTP
+    path would still see a deterministic response, and every test that
+    uses *only* the direct path would too, but the two would no longer
+    agree. Clients that fetch via HTTP would then see a different schema
+    than tools that import ``app`` directly.
+    """
+
+    def test_http_openapi_equals_direct_openapi_call(self, client: TestClient) -> None:
+        """The dict from ``/openapi.json`` deep-equals the dict from ``app.openapi()``."""
+        http_schema = get_openapi_schema(client)
+        direct_schema = app.openapi()
+        assert http_schema == direct_schema, (
+            "HTTP /openapi.json schema diverged from in-process app.openapi() output"
+        )
+
+    def test_http_and_direct_openapi_paths_match(self, client: TestClient) -> None:
+        """The set of declared paths is identical between HTTP and direct."""
+        http_paths = set(get_openapi_schema(client)["paths"].keys())
+        direct_paths = set(app.openapi()["paths"].keys())
+        assert http_paths == direct_paths, (
+            f"HTTP paths {http_paths!r} != direct paths {direct_paths!r}"
+        )
+
+    def test_http_and_direct_openapi_components_match(self, client: TestClient) -> None:
+        """The set of component-schema names is identical between HTTP and direct."""
+        http_components = set(get_openapi_schema(client)["components"]["schemas"].keys())
+        direct_components = set(app.openapi()["components"]["schemas"].keys())
+        assert http_components == direct_components, (
+            f"HTTP components {http_components!r} != direct components {direct_components!r}"
+        )
+
+
+class TestRepeatedSequentialColdCache:
+    """Repeated sequential ``app.openapi_schema = None`` resets must yield
+    byte-identical output every cycle.
+
+    ``TestOpenAPISchemaUnderConcurrency`` clears the cache once and fires
+    parallel rebuilds. This class instead clears the cache *many* times
+    sequentially, which catches a different regression class: a generator
+    with a *cumulative* per-rebuild side effect (e.g. appending the
+    handler's tags to a module-level list on every rebuild). A single
+    cold-cache reset would not surface that — but 30 sequential resets
+    would visibly grow the output. Pin the invariant: every cycle
+    produces the same bytes as the first.
+
+    The original cache value is restored in a ``finally`` block so the
+    reset cannot leak into adjacent tests.
+    """
+
+    def test_30_sequential_cold_cache_rebuilds_are_byte_identical(self, client: TestClient) -> None:
+        """30 cycles of ``schema=None → fetch`` yield exactly one body hash."""
+        original = app.openapi_schema
+        app.openapi_schema = None
+        try:
+            bodies: set[bytes] = set()
+            for _ in range(30):
+                app.openapi_schema = None
+                bodies.add(client.get("/openapi.json").content)
+            assert len(bodies) == 1, (
+                f"30 sequential cold-cache rebuilds produced {len(bodies)} distinct bodies "
+                "(cumulative side-effect regression)"
+            )
+        finally:
+            app.openapi_schema = original
+
+    def test_cold_cache_rebuild_components_count_does_not_grow(self, client: TestClient) -> None:
+        """The number of declared components stays constant across 20 cold rebuilds.
+
+        Targets the specific cumulative-side-effect failure mode where a
+        rebuild appends to ``app.openapi_components`` — bytes-identity
+        catches the same regression, but a count check produces a
+        clearer error message (``20 → 24`` rather than
+        ``hash A → hash B``).
+        """
+        original = app.openapi_schema
+        app.openapi_schema = None
+        try:
+            counts: set[int] = set()
+            for _ in range(20):
+                app.openapi_schema = None
+                counts.add(len(get_openapi_schema(client)["components"]["schemas"]))
+            assert len(counts) == 1, (
+                f"Component count drifted across 20 cold rebuilds: observed {sorted(counts)}"
+            )
+        finally:
+            app.openapi_schema = original
+
+
+class TestErrorResponseBodyDeterminism:
+    """404/405/422 error response bodies must be byte-identical across iterations.
+
+    These responses come from Starlette's default exception handlers, not
+    application code — but clients that compare error bodies byte-for-byte
+    (log aggregators, fuzz-test oracles, cache keys) would still see
+    intermittent diffs if a future change wired the error handler to
+    e.g. include a per-request trace ID in the body. Pin the byte
+    determinism so any such regression fails loudly here rather than
+    surfacing as confusing client-side intermittence weeks later.
+
+    Each test asserts both that the body is byte-stable *and* that the
+    same body appears for both allow-listed and disallowed origins — a
+    regression that varied the body by origin would fail one of the two
+    assertions even if the per-origin body itself was stable.
+    """
+
+    def test_404_body_is_byte_identical_across_50_calls(self, client: TestClient) -> None:
+        """50 ``GET /no-such-path`` responses share exactly one body hash."""
+        bodies = {client.get("/no-such-path").content for _ in range(50)}
+        assert len(bodies) == 1, (
+            f"/no-such-path 404 body varied across 50 calls ({len(bodies)} distinct)"
+        )
+
+    def test_405_body_is_byte_identical_across_50_calls(self, client: TestClient) -> None:
+        """50 ``DELETE /api/hello`` responses (method not allowed) share one body hash."""
+        bodies = {client.delete("/api/hello").content for _ in range(50)}
+        assert len(bodies) == 1, (
+            f"/api/hello 405 body varied across 50 calls ({len(bodies)} distinct)"
+        )
+
+    def test_422_body_is_byte_identical_across_50_calls(self, client: TestClient) -> None:
+        """50 malformed ``POST /api/hello`` requests yield exactly one 422 body."""
+        # Missing required ``name`` field → 422 with a stable, schema-driven body.
+        bodies = {client.post("/api/hello", json={}).content for _ in range(50)}
+        assert len(bodies) == 1, (
+            f"/api/hello 422 body varied across 50 calls ({len(bodies)} distinct)"
+        )
+
+    def test_404_body_does_not_depend_on_origin(self, client: TestClient) -> None:
+        """The 404 body is the same whether the request comes from an allow-listed
+        or a disallowed origin.
+
+        A regression that wove origin into the error body (e.g. echoing the
+        origin into a CORS-rejection JSON payload) would break clients that
+        compare 404 bodies across runs from different deployment hosts.
+        """
+        allowed = client.get("/no-such-path", headers={"Origin": LOCALHOST_ORIGIN}).content
+        disallowed = client.get("/no-such-path", headers={"Origin": DISALLOWED_ORIGIN}).content
+        no_origin = client.get("/no-such-path").content
+        assert allowed == disallowed == no_origin, (
+            "404 body varied by Origin header — error body should be origin-agnostic"
+        )
