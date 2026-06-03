@@ -4,6 +4,56 @@ Documents test coverage, test descriptions, and quality improvements.
 
 ---
 
+## 2026-06-03 — QA Agent: integration-gaps session (issue #271)
+
+**Backend coverage is already 100% line + 100% branch on `app/main.py`** (588
+tests before this session). Wednesday's integration-gaps focus therefore targets
+**router/ASGI integration behaviours** that are exercised in production but pinned
+nowhere in the suite. A `grep` sweep confirmed zero existing coverage of either
+behaviour added here. Both were verified empirically over the in-process
+`TestClient` **and** the real-ASGI `AsyncClient` transport before tests were
+written.
+
+Full backend suite after the change: **607 backend tests pass three consecutive
+runs** (previous baseline: 588).
+
+### Test classes added to `backend/tests/test_routing_integration_gaps.py` (new file)
+
+| Class | Tests | What it pins / why it matters |
+|---|---|---|
+| `TestTrailingSlashRedirectIntegration` | 5 (+3 parametrized = 8) | The router runs with `redirect_slashes=True`, so `GET /health/`, `/api/version/`, `/api/hello/` each return a `307` whose `Location` is the canonical slash-free path. Every existing test only ever hits the canonical paths, so a one-line regression flipping `redirect_slashes=False` (turning every trailing-slash request into a `404`) would be completely silent. The class pins: the `307` status and canonical `Location` for all three GET paths; that `POST /api/hello/` uses `307` (method-preserving) **not** `302`/`308`, and that *following* it replays the JSON body to reach the handler and return the real greeting; that the redirect itself carries `Access-Control-Allow-Origin` + `Vary: Origin` for an allow-listed origin (a browser sees the redirect before following it) and omits ACAO for a disallowed origin; that the redirect body is empty; that `/api/missing/` is a `404` (the redirect logic must not fabricate targets for unknown paths); and a direct `app.router.redirect_slashes is True` instance assertion documenting the mechanism. |
+| `TestHeadMethodReturns405` | 4 (+3 parametrized = 5) | `@app.get(...)` registers a FastAPI `APIRoute` whose method set is exactly `{"GET"}` — FastAPI, unlike bare Starlette `Route`, does **not** auto-append `HEAD`. So `HEAD /health`, `/api/version`, `/api/hello` all return `405` (not `200`, and not a body). This is surprising (many assume HEAD piggybacks on GET) and pinned nowhere. The class pins: `405` for all three GET paths; that the `405` advertises `Allow: GET`; that the response body is empty (HEAD must never carry a body, even on the error path); that the `405` still carries CORS headers for an allow-listed origin so a `fetch(..., {method:'HEAD'})` can read the status; and that `HEAD /api/missing` is a `404` (no route), distinct from the `405` (route exists, method disallowed) case. |
+| `TestRoutingGapsAsyncTransportParity` | 2 | Repeats the two headline pins (trailing-slash `307`, `HEAD` `405`) over the `httpx.AsyncClient` + `ASGITransport` pair. The in-process `TestClient` and the real-ASGI transport drive different request/response framing code; this guards against a regression that only manifests under uvicorn (the production transport) where the in-process client would stay green. |
+
+### Why this matters
+
+The two behaviours sit at the **router boundary**, below the application handlers
+that the existing 588 tests exhaustively cover. They are exactly the kind of
+"framework default I never thought about" contracts that break silently:
+
+1. **Trailing-slash redirects** are load-bearing for real clients — link
+   shorteners, hand-typed URLs, and SDKs that naively join a base URL with a
+   `/`-prefixed path all rely on the `307`. The `307`-not-`302` distinction is
+   subtle but critical: a `302` would silently downgrade a redirected `POST` to a
+   `GET`, dropping the body and turning a working request into a `405`. No
+   existing test would catch a regression here because none uses a trailing slash.
+2. **HEAD → 405** is a surprising FastAPI default worth pinning in *both*
+   directions: a future change that "helpfully" added HEAD support (changing the
+   `405` to a `200`) and a change that broke the `405` framing would each be
+   caught. Monitoring tools and proxies routinely send `HEAD` probes, so the
+   contract matters operationally.
+
+Pinning CORS-on-redirect and CORS-on-405 also extends the suite's strong CORS
+coverage (previously focused on `2xx`, `404`, `405`-from-DELETE, and preflight
+responses) to the redirect and HEAD-405 paths, where a browser likewise needs the
+`Access-Control-Allow-Origin` header to read the response.
+
+The 11 new test functions (19 with parametrization) add **+19 tests** at a
+wall-clock cost of <0.1 s per run. Three consecutive runs of the new file and
+three consecutive full-suite runs confirm zero flake introduced.
+
+---
+
 ## 2026-06-02 — QA Agent: flaky-hunt session (issue #268)
 
 **Suite is fully stable.** Five back-to-back full backend runs (567 tests
