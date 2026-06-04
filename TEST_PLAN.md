@@ -4,6 +4,47 @@ Documents test coverage, test descriptions, and quality improvements.
 
 ---
 
+## 2026-06-04 — QA Agent: e2e-performance session (issue #274)
+
+**Backend coverage is already 100% line + 100% branch on `app/main.py`** (607
+tests before this session), and there is no Playwright E2E suite in this template
+(`frontend` `test:e2e` is a stub). The backend `tests/test_performance.py` serves
+as the perf/E2E suite — it exercises the same request sequences the frontend
+issues and pins latency/throughput contracts. Thursday's e2e-performance focus
+therefore targets the **parallelism and scaling** properties that only surface
+when many requests are genuinely in flight at once or the suite is hammered
+repeatedly — a slice deliberately orthogonal to the ~30 existing perf classes
+(which measure single-call latency, sequential/concurrent throughput,
+*sequential* p95/p99, cold start, jitter, and throughput floors).
+
+Full backend suite after the change: **618 backend tests pass three consecutive
+runs** (previous baseline: 607).
+
+### Test classes added to `backend/tests/test_e2e_performance_scaling.py` (new file)
+
+| Class | Tests | What it pins / why it matters |
+|---|---|---|
+| `TestConcurrencyScaling` | 2 (+3 parametrized = 4) | Amortized wall-time **per request** inside a concurrent `asyncio.gather` batch must stay under a flat ceiling at N = 20, 40, 80 (`test_amortized_per_request_cost_bounded`), and the per-request cost at 80-wide must not exceed ~4× the cost at 20-wide (`test_per_request_cost_does_not_grow_with_concurrency`). Existing tests bound *total* concurrent time at a single fixed N; neither pins the **trend**. A super-linear (O(N²)) coordination regression — a global lock, a scan keyed on the in-flight count — inflates amortized cost as N rises and is invisible to a fixed-N total-time bound. |
+| `TestConcurrentTailLatency` | 2 | Each request's **individual** latency is timed from *inside* a 50-wide fan-out; the p95 (`test_p95_individual_latency_within_fanout_bounded`) and the max (`test_max_individual_latency_within_fanout_bounded`) of that distribution must stay bounded. The existing p95/p99 tests measure *sequential* calls, so a straggler that only appears under genuine contention slips through them entirely. |
+| `TestHeadOfLineBlocking` | 1 | One 10KB POST is issued *together with* 40 small GETs; the whole batch — and the small GETs' individual latencies in particular — must finish fast (`test_large_post_does_not_block_concurrent_small_gets`). Existing large-payload tests measure the big request *in isolation*; this catches a handler that blocks the event loop while processing a large body, making the small requests wait behind it (head-of-line blocking). |
+| `TestRepeatedConcurrentRoundStability` | 2 | Five/six repeated rounds of 25–30 concurrent calls must show no round-over-round degradation: every round under a flat ceiling and the slowest round within ~4× the fastest (`test_five_concurrent_rounds_no_degradation`), and the round totals must not increase *every* round (`test_round_totals_not_monotonically_increasing`). A per-request resource leak (unclosed object, unbounded per-request cache) manifests as later rounds getting steadily slower — a signature no single-round test can see. |
+| `TestMixedValidityConcurrency` | 2 | 20 valid (200) POSTs interleaved with 20 invalid (422, missing `name`) POSTs issued together must all resolve with the correct status, in order, under ceiling, with valid responses still echoing their own name (`test_interleaved_200_and_422_under_ceiling`); and individual 422 latencies inside a 40-wide invalid fan-out must have a bounded p95 (`test_error_path_latency_bounded_under_concurrency`). Validation failures take a different code path than 200s; this guards that the error path does not serialize or stall the loop under concurrent load.|
+
+### Why these are robust (not flaky)
+
+The handlers are trivial and purely CPU-bound (no real I/O `await`), so on a
+single-threaded event loop a concurrent fan-out is legitimately **not** faster
+than sequential. The tests therefore deliberately **avoid** any "concurrent must
+be faster than sequential" assertion (which would be flaky and wrong) and instead
+bound *aggregate* per-request cost and *tail* latency — properties that hold
+regardless of whether parallelism yields wall-clock speedup. All ceilings are
+10–100× typical observed latency (~1–5 ms) on shared CI runners, and every ratio
+comparison carries an additive slack term so sub-millisecond measurement jitter on
+the fast end cannot trip it. The new file passed three consecutive isolated runs
+(11 tests, ~0.33 s each) and three consecutive full-suite runs.
+
+---
+
 ## 2026-06-03 — QA Agent: integration-gaps session (issue #271)
 
 **Backend coverage is already 100% line + 100% branch on `app/main.py`** (588
