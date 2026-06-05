@@ -16,6 +16,11 @@ from app.main import app
 # middleware. Centralised here so a port/host change touches one location.
 LOCALHOST_ORIGIN = "http://localhost:3000"
 
+# The loopback-IP form of the dev frontend origin — the *second* entry on the
+# backend's CORS allow-list. Centralised alongside LOCALHOST_ORIGIN so positive
+# CORS tests can exercise both allow-listed origins from one source of truth.
+LOOPBACK_ORIGIN = "http://127.0.0.1:3000"
+
 # Origin that is *not* allow-listed by the CORS middleware. Used by negative
 # CORS tests to assert that disallowed origins receive no allow-origin header.
 DISALLOWED_ORIGIN = "https://evil.example.com"

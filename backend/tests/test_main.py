@@ -13,6 +13,7 @@ from app import __version__
 from .conftest import (
     DISALLOWED_ORIGIN,
     LOCALHOST_ORIGIN,
+    LOOPBACK_ORIGIN,
     assert_utc_iso8601,
     cors_preflight_headers,
     expected_greeting,
@@ -365,9 +366,9 @@ class TestCORSMiddleware:
         self, client: TestClient
     ) -> None:
         """GET /health with 127.0.0.1:3000 origin also receives the CORS header."""
-        response = client.get("/health", headers={"Origin": "http://127.0.0.1:3000"})
+        response = client.get("/health", headers={"Origin": LOOPBACK_ORIGIN})
         assert response.status_code == 200
-        assert response.headers.get("access-control-allow-origin") == "http://127.0.0.1:3000"
+        assert response.headers.get("access-control-allow-origin") == LOOPBACK_ORIGIN
 
     def test_cors_preflight_allows_post_method(self, client: TestClient) -> None:
         """OPTIONS preflight for POST method on allowed origin returns CORS headers."""
