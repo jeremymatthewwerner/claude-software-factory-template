@@ -72,14 +72,13 @@ from httpx import ASGITransport, AsyncClient
 
 from app.main import app
 from tests.conftest import (
+    DISALLOWED_ORIGIN,
     LOCALHOST_ORIGIN,
+    LOOPBACK_ORIGIN,
     cors_preflight_headers,
     get_openapi_schema,
     openapi_component_for_response,
 )
-
-LOOPBACK_ORIGIN = "http://127.0.0.1:3000"
-DISALLOWED_ORIGIN = "http://evil.example"
 
 
 class TestCORSOnErrorResponses:

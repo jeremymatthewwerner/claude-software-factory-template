@@ -2218,3 +2218,39 @@ unrelated tests "going weird" simultaneously.
   touched).
 - 91 frontend tests still pass (no frontend changes this run).
 - `ruff format`, `ruff check --fix`, and `mypy` all pass clean.
+
+## QA Run: Friday 2026-06-05 — test-refactoring (issue #277)
+
+**Focus:** test-refactoring — establish a single source of truth for the
+backend's CORS *origin* constants. The suite has grown to 618 tests across 13
+files; the allow-listed loopback origin and several disallowed-origin literals
+were still inlined or redefined per-file, so an origin change would be a
+multi-file edit and the constants could silently drift apart.
+
+**No new tests added.** All 618 backend tests pass unchanged at 100% line and
+branch coverage, 3× in a row (9.95s / 9.96s / 10.57s).
+
+### Constant centralised in `backend/tests/conftest.py`
+
+| Name | Replaces |
+|------|----------|
+| `LOOPBACK_ORIGIN = "http://127.0.0.1:3000"` | The second allow-listed CORS origin, previously defined as a file-local constant in `test_integration_gaps.py` and inlined as a string literal twice in `test_main.py`. Now imported from conftest so both allow-listed origins live beside `LOCALHOST_ORIGIN`. |
+
+### Duplication / drift removed
+
+| Pattern | Before | After |
+|---------|--------|-------|
+| `LOOPBACK_ORIGIN` definition | 1 file-local def (`test_integration_gaps.py`) + 2 inline `"http://127.0.0.1:3000"` literals (`test_main.py`) | 1 canonical def in `conftest.py`, imported everywhere |
+| File-local `DISALLOWED_ORIGIN = "http://evil.example"` shadowing conftest's `"https://evil.example.com"` | 1 (`test_integration_gaps.py`) | 0 — now imports the conftest constant. Both values are disallowed, so the negative-CORS assertions (no `access-control-allow-origin` header) are unchanged; verified green 3×. This completes the unification the 2026-05-22 refactor deliberately deferred. |
+| Inline `"http://localhost:3000"` / `"https://evil.example.com"` literals in `test_edge_cases.py` CORS-on-`/openapi.json`-and-`/docs` tests | 3 | 0 — use `LOCALHOST_ORIGIN` / `DISALLOWED_ORIGIN` |
+
+**Intentionally left literal:** `test_app_instance_invariants.py::EXPECTED_CORS_KWARGS`
+keeps its hard-coded `["http://localhost:3000", "http://127.0.0.1:3000"]` allow-list.
+That test is an independent invariant pin on the app's middleware configuration; deriving
+it from the same shared constant it guards would defeat the pin's purpose.
+
+### Verification
+
+- 618 backend tests pass 3× in sequence (9.95s / 9.96s / 10.57s) — no flakiness.
+- Backend line + branch coverage stays at 100% (36/36; no production code touched).
+- `ruff format`, `ruff check --fix`, and `mypy` all pass clean.

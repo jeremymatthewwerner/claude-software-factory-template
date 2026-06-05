@@ -41,7 +41,12 @@ file existed; collectively they cover:
 import pytest
 from fastapi.testclient import TestClient
 
-from .conftest import cors_preflight_headers, expected_greeting
+from .conftest import (
+    DISALLOWED_ORIGIN,
+    LOCALHOST_ORIGIN,
+    cors_preflight_headers,
+    expected_greeting,
+)
 
 
 class TestTopLevelNonObjectBodyReturns422:
@@ -876,13 +881,13 @@ class TestSchemaAndDocsCORSBehaviour:
 
     def test_openapi_json_with_allowed_origin_includes_acao(self, client: TestClient) -> None:
         """``GET /openapi.json`` with an allow-listed Origin echoes the Origin in ACAO."""
-        response = client.get("/openapi.json", headers={"Origin": "http://localhost:3000"})
+        response = client.get("/openapi.json", headers={"Origin": LOCALHOST_ORIGIN})
         assert response.status_code == 200
-        assert response.headers.get("access-control-allow-origin") == "http://localhost:3000"
+        assert response.headers.get("access-control-allow-origin") == LOCALHOST_ORIGIN
 
     def test_openapi_json_with_disallowed_origin_omits_acao(self, client: TestClient) -> None:
         """``GET /openapi.json`` with a non-allow-listed Origin does NOT echo ACAO."""
-        response = client.get("/openapi.json", headers={"Origin": "https://evil.example.com"})
+        response = client.get("/openapi.json", headers={"Origin": DISALLOWED_ORIGIN})
         assert response.status_code == 200
         assert response.headers.get("access-control-allow-origin") is None
 
@@ -894,7 +899,7 @@ class TestSchemaAndDocsCORSBehaviour:
         CORS regression that affected only the JSON schema route (or
         only the HTML route) would miss one of the two pins.
         """
-        response = client.get("/docs", headers={"Origin": "https://evil.example.com"})
+        response = client.get("/docs", headers={"Origin": DISALLOWED_ORIGIN})
         assert response.status_code == 200
         assert response.headers.get("access-control-allow-origin") is None
 
