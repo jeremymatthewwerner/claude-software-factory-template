@@ -2254,3 +2254,45 @@ it from the same shared constant it guards would defeat the pin's purpose.
 - 618 backend tests pass 3× in sequence (9.95s / 9.96s / 10.57s) — no flakiness.
 - Backend line + branch coverage stays at 100% (36/36; no production code touched).
 - `ruff format`, `ruff check --fix`, and `mypy` all pass clean.
+
+---
+
+## QA Run: Saturday 2026-06-06 — edge-cases (issue #280)
+
+`app/main.py` is already at 100% line + branch coverage, so this run targets a
+*behavioural* error-path gap: the precise **Pydantic-v2 validation-error
+discriminators** returned in 422 `detail` items. Existing tests pin the 422
+status, the `detail` list shape, and the *presence* of `loc`/`msg`/`type` keys —
+but nothing pinned their **values**, which are the machine-readable contract that
+generated clients branch on to distinguish "required field" from "wrong type"
+from "malformed JSON" and to map an error back to the offending input.
+
+### Backend — `backend/tests/test_edge_cases.py` (1 new class, 12 new tests)
+
+#### `TestValidationErrorDiscriminators`
+
+| Test | Pins |
+|------|------|
+| `test_missing_name_discriminator_is_missing` | Absent `name` → `type=="missing"`, `loc==["body","name"]`, exactly one error |
+| `test_wrong_type_name_discriminator_is_string_type` (7 params: null, int, float, bool×2, array, object) | Every non-string `name` → `type=="string_type"`, `loc==["body","name"]` |
+| `test_top_level_array_body_discriminator_is_model_attributes_type` | JSON-array body → `type=="model_attributes_type"`, `loc==["body"]` (bare, no field suffix) |
+| `test_top_level_null_body_discriminator_is_missing` | Literal `null` body → `type=="missing"`, `loc==["body"]` (whole body absent, distinct from empty-object) |
+| `test_malformed_json_discriminator_is_json_invalid` | Non-JSON bytes → `type=="json_invalid"`, `loc` rooted at `"body"` |
+| `test_every_detail_item_carries_a_nonempty_msg_string` | Across categories, every `detail` item has a non-empty `str` `msg` |
+
+### Why these specific edges?
+
+The `type` discriminator and `loc` path are the only stable, machine-readable
+parts of a 422 body — a client cannot reliably switch on `msg` (prose Pydantic
+revises between minor versions, so `msg` is asserted non-empty but not pinned).
+A Pydantic major upgrade, a swap of the request model, or an accidental
+`str | int` widening of `name` would flip a discriminator while keeping the
+status at 422 and the key-presence tests green, silently breaking every client
+that branches on `error["type"]`. These tests fail first.
+
+### Verification
+
+- 12 new tests pass 3× in sequence — no flakiness.
+- Full backend suite: 630 tests pass 3× (≈14s each).
+- Backend line + branch coverage stays at 100% (36/36; no production code touched).
+- `ruff format`, `ruff check`, and `mypy` all pass clean.
