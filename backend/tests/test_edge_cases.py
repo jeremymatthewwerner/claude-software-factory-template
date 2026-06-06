@@ -36,6 +36,9 @@ file existed; collectively they cover:
 * Method restrictions on the documentation and schema endpoints.
 * CORS allow-list semantics applied to ``/openapi.json`` and ``/docs``.
 * ``Content-Length`` consistency with response body byte length.
+* The precise Pydantic-v2 ``type`` discriminator and ``loc`` path inside
+  422 ``detail`` items — the machine-readable contract clients branch on
+  to tell "required" from "wrong type" from "malformed JSON".
 """
 
 import pytest
@@ -948,3 +951,154 @@ class TestContentLengthMatchesResponseBody:
             f"{method} {path} Content-Length={declared} but body is "
             f"{len(response.content)} bytes — header/body length mismatch"
         )
+
+
+class TestValidationErrorDiscriminators:
+    """The ``type`` and ``loc`` fields inside a 422 ``detail`` item are a
+    machine-readable contract — clients branch on them.
+
+    Existing tests pin the *presence* of ``loc``/``msg``/``type`` keys and the
+    overall ``detail`` list shape, but none pin the *values*. Yet the ``type``
+    discriminator is exactly how a generated client distinguishes "field is
+    required" (``missing``) from "field is the wrong type" (``string_type``)
+    from "the body wasn't even JSON" (``json_invalid``), and ``loc`` is how it
+    maps an error back to the offending field for inline UI display.
+
+    A Pydantic-v2 major upgrade, a swap of the request model, or an accidental
+    ``str | int`` widening of ``name`` would silently flip these discriminators
+    while keeping the status code at 422 and the key-presence tests green —
+    breaking every client that switches on ``error["type"]``. These tests fail
+    first. ``msg`` wording is *not* pinned (it is human-facing prose that
+    Pydantic revises between minor versions); only its presence and non-empty
+    string-ness is asserted.
+    """
+
+    def _detail(self, client: TestClient, **post_kwargs: object) -> list[dict[str, object]]:
+        """POST to ``/api/hello``, assert 422, and return the ``detail`` list."""
+        response = client.post("/api/hello", **post_kwargs)  # type: ignore[arg-type]
+        assert response.status_code == 422, (
+            f"expected 422, got {response.status_code}: {response.text}"
+        )
+        detail = response.json()["detail"]
+        assert isinstance(detail, list) and detail, f"empty/invalid detail: {detail!r}"
+        return detail
+
+    def test_missing_name_discriminator_is_missing(self, client: TestClient) -> None:
+        """An absent ``name`` yields ``type=='missing'`` at ``loc==['body','name']``.
+
+        This is the discriminator a client uses to render a "required field"
+        message rather than a "wrong type" message. Both produce 422, so the
+        status code alone cannot tell them apart — only ``type`` can.
+        """
+        detail = self._detail(client, json={})
+        assert len(detail) == 1, f"single missing field should give one error: {detail!r}"
+        assert detail[0]["type"] == "missing", (
+            f"missing-field discriminator drifted to {detail[0]['type']!r} — "
+            "clients that branch on 'missing' to show a 'required' hint break"
+        )
+        assert detail[0]["loc"] == ["body", "name"], (
+            f"missing-field loc drifted to {detail[0]['loc']!r} — clients can no "
+            "longer map the error to the 'name' input"
+        )
+
+    @pytest.mark.parametrize(
+        "wrong_value",
+        [None, 42, 1.5, True, False, [1, 2], {"first": "Alice"}],
+        ids=["null", "int", "float", "bool_true", "bool_false", "array", "object"],
+    )
+    def test_wrong_type_name_discriminator_is_string_type(
+        self, client: TestClient, wrong_value: object
+    ) -> None:
+        """Every non-string ``name`` yields ``type=='string_type'`` at the name loc.
+
+        FastAPI/Pydantic must *reject* (not coerce) wrong types and tag them
+        uniformly so a client renders the same "must be text" message
+        regardless of which wrong JSON type was sent.
+        """
+        detail = self._detail(client, json={"name": wrong_value})
+        assert len(detail) == 1, f"one bad field should give one error: {detail!r}"
+        assert detail[0]["type"] == "string_type", (
+            f"wrong-type discriminator for {wrong_value!r} drifted to "
+            f"{detail[0]['type']!r} — a 'str | int' widening would surface here"
+        )
+        assert detail[0]["loc"] == ["body", "name"], (
+            f"wrong-type loc for {wrong_value!r} drifted to {detail[0]['loc']!r}"
+        )
+
+    def test_top_level_array_body_discriminator_is_model_attributes_type(
+        self, client: TestClient
+    ) -> None:
+        """A JSON-array body yields ``type=='model_attributes_type'`` at ``loc==['body']``.
+
+        The error is about the *shape of the whole body* (not a single field),
+        so ``loc`` is the bare ``['body']`` with no field suffix — distinct from
+        the per-field ``['body','name']`` of the wrong-type cases above.
+        """
+        detail = self._detail(client, json=["Alice"])
+        assert detail[0]["type"] == "model_attributes_type", (
+            f"top-level-array discriminator drifted to {detail[0]['type']!r}"
+        )
+        assert detail[0]["loc"] == ["body"], (
+            f"top-level body-shape error loc drifted to {detail[0]['loc']!r} — "
+            "it must stay the bare ['body'] with no field suffix"
+        )
+
+    def test_top_level_null_body_discriminator_is_missing(self, client: TestClient) -> None:
+        """A literal ``null`` body yields ``type=='missing'`` at ``loc==['body']``.
+
+        Distinct from the empty-object case (which reports the *field* as
+        missing at ``['body','name']``): a ``null`` body means the body itself
+        is absent, so the whole body is reported missing.
+        """
+        detail = self._detail(
+            client,
+            content=b"null",
+            headers={"Content-Type": "application/json"},
+        )
+        assert detail[0]["type"] == "missing", (
+            f"null-body discriminator drifted to {detail[0]['type']!r}"
+        )
+        assert detail[0]["loc"] == ["body"], f"null-body loc drifted to {detail[0]['loc']!r}"
+
+    def test_malformed_json_discriminator_is_json_invalid(self, client: TestClient) -> None:
+        """A non-JSON body yields ``type=='json_invalid'`` rooted at ``loc[0]=='body'``.
+
+        This is the discriminator that lets a client distinguish "you sent
+        garbage bytes" from "your JSON was valid but a field was wrong" — a
+        meaningfully different message for the caller. ``loc`` carries a byte
+        offset after the ``'body'`` root, so only the root element is pinned.
+        """
+        detail = self._detail(
+            client,
+            content=b"not valid json",
+            headers={"Content-Type": "application/json"},
+        )
+        assert detail[0]["type"] == "json_invalid", (
+            f"malformed-JSON discriminator drifted to {detail[0]['type']!r} — "
+            "clients can no longer tell a parse error from a field error"
+        )
+        loc = detail[0]["loc"]
+        assert isinstance(loc, list) and loc[0] == "body", (
+            f"malformed-JSON loc must be rooted at 'body', got {loc!r}"
+        )
+
+    def test_every_detail_item_carries_a_nonempty_msg_string(self, client: TestClient) -> None:
+        """Across failure categories, every ``detail`` item has a non-empty ``msg`` string.
+
+        The exact wording is intentionally not pinned (Pydantic revises it
+        between minor versions), but a client that surfaces ``error['msg']`` to
+        the user must never get a missing, blank, or non-string value.
+        """
+        bodies: list[dict[str, object]] = []
+        for resp in (
+            client.post("/api/hello", json={}),
+            client.post("/api/hello", json={"name": 42}),
+            client.post("/api/hello", json=["Alice"]),
+        ):
+            assert resp.status_code == 422
+            bodies.extend(resp.json()["detail"])
+        for item in bodies:
+            msg = item.get("msg")
+            assert isinstance(msg, str) and msg.strip(), (
+                f"detail item has empty/non-string msg: {item!r}"
+            )
