@@ -2171,6 +2171,42 @@ Each new class targets a regression vector that existing flakiness guards do
 
 ---
 
+## 2026-06-07 — QA Agent: regression-prevention session (issue #283)
+
+**Backend at 100% line + branch coverage (36/36).** Sunday's focus is
+behavioural pinning of a contract this week's commits (#265–#281) exercise but
+leave unasserted. A grep audit of the 630-test suite found the `405`
+`Allow`-header surface under-pinned: Wednesday's HEAD→405 pin
+(`test_routing_integration_gaps.py`) only does a substring check —
+`"GET" in allow` — on `/health`. Adds **1 new test class (32 parametrised
+tests) to `backend/tests/test_regression_prevention.py`** pinning the exact
+`Allow`-header value across the whole route surface. Backend tests 630 → 662,
+green on 3 consecutive runs (~6.3s each); coverage stays 100%.
+
+### Test class added
+
+| Class | Tests | What it pins / why it matters |
+|---|---|---|
+| `TestMethodNotAllowedAllowHeaderExactSurface` | 32 | The 405 `Allow` header equals **exactly** `GET` for every disallowed method (DELETE/PUT/PATCH) on every route — and, crucially, `/api/hello` advertises only `GET` even though its `POST` is a valid 200. `@app.get`/`@app.post` register `/api/hello` as two separate `APIRoute` objects, so Starlette builds `Allow` from the first path-matching route and silently drops `POST`. Wednesday's substring `"GET" in allow` pin on `/health` would survive a stray extra method, a per-route value change, or this surprising `POST` omission flipping to the union `GET, POST` under a Starlette upgrade. Also pins: `Allow` is always present on a 405 (RFC 7231 §7.4.1 MUST), never leaks onto a 2xx response, is absent on a 404 (keeping "wrong method" vs "no resource" machine-distinguishable), is request-method-independent (describes the route, not the request), and holds the exact `Allow: GET` value over the real ASGI transport. |
+
+### Why this gap?
+
+The `Allow` header is the wire-level, machine-readable advertisement of a
+route's method surface — read by HTTP clients deciding a fallback request, by
+API-diff tooling, and by OpenAPI-vs-runtime auditors. The existing suite pins
+its presence (substring, one route) but never its **exact value route-wide**
+nor the **`POST` omission on `/api/hello`** that makes it a genuine framework
+gotcha. Pinning both directions means a Starlette upgrade that aggregates
+partial matches into `GET, POST`, or a refactor merging the two handlers into
+one multi-method route, fails the most distinctive test rather than silently
+changing the advertised surface.
+
+### Verification
+
+- 662 backend tests (630 → 662) pass 3× in sequence (~6.3s each).
+- `app/main.py` line + branch coverage stays at 100% (36/36) — no source change.
+- `ruff format` / `ruff check --fix` / `mypy` all clean.
+
 ## 2026-05-31 — QA Agent: regression-prevention session (issue #260)
 
 **Backend and frontend already at 100% line + branch coverage.** Sunday's focus
