@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import pytest
 from fastapi.testclient import TestClient
+from httpx import AsyncClient
 
 from .conftest import LOCALHOST_ORIGIN, cors_preflight_headers, get_openapi_schema
 
@@ -1122,4 +1123,198 @@ class TestCORSPreflightContentLengthMatchesBody:
         assert int(declared) == len(response.content), (
             f"Preflight Content-Length={declared} but body is "
             f"{len(response.content)} bytes — header/body length mismatch."
+        )
+
+
+# Every registered path, paired with HTTP methods that are *not* registered on
+# it and therefore must yield a 405. DELETE/PUT/PATCH are registered nowhere in
+# the app, so they exercise the method-not-allowed path on every route without
+# overlapping the HEAD-405 surface already pinned in
+# ``test_routing_integration_gaps.py``.
+ALL_ROUTE_PATHS: list[str] = ["/health", "/api/version", "/api/hello"]
+DISALLOWED_METHODS: list[str] = ["DELETE", "PUT", "PATCH"]
+
+# Routes that serve a body on a 2xx happy path, paired with a method/payload
+# that reaches the handler. Used to pin that ``Allow`` is a 405-only header and
+# never leaks onto a successful response.
+SUCCESSFUL_REQUESTS: list[tuple[str, str, dict[str, str] | None]] = [
+    ("GET", "/health", None),
+    ("GET", "/api/version", None),
+    ("GET", "/api/hello", None),
+    ("POST", "/api/hello", {"name": "AllowCheck"}),
+]
+
+
+class TestMethodNotAllowedAllowHeaderExactSurface:
+    """The 405 ``Allow`` header advertises *exactly* ``GET`` on every route —
+    including ``/api/hello``, whose ``POST`` is a valid method that the header
+    nonetheless omits.
+
+    ``test_routing_integration_gaps.py`` (Wednesday) pins HEAD→405 with a
+    substring check — ``"GET" in allow`` — on ``/health`` only. That leaves the
+    machine-readable method advertisement under-pinned in two orthogonal ways
+    that downstream tooling (HTTP clients that retry against advertised methods,
+    API-surface diff tools, OpenAPI-vs-runtime auditors) actually reads:
+
+    1. **The exact value, route-wide.** A substring match on one route would
+       still pass if a regression appended a bogus method (``"GET, TRACE"``) or
+       changed the value on ``/api/version``. These tests pin string-equality
+       (``== "GET"``) across *every* route and *every* disallowed method.
+
+    2. **The surprising ``POST`` omission on ``/api/hello``.** ``@app.get`` and
+       ``@app.post`` register ``/api/hello`` as **two separate ``APIRoute``
+       objects**, not one route with ``methods={"GET", "POST"}``. Starlette's
+       router builds the ``Allow`` header from the *first* path-matching route
+       it encounters, so a ``DELETE /api/hello`` reports ``Allow: GET`` and
+       silently drops the equally-valid ``POST``. Nothing pins this; a Starlette
+       upgrade that aggregated partial matches into the union ``GET, POST`` —
+       or a refactor merging the two handlers into one multi-method route —
+       would change the advertised surface in a way no current test would catch.
+       The contract is pinned *in both directions*: the value is ``GET`` today,
+       and ``POST`` (proven valid by a paired 200) is absent.
+    """
+
+    @pytest.mark.parametrize("path", ALL_ROUTE_PATHS)
+    @pytest.mark.parametrize("method", DISALLOWED_METHODS)
+    def test_405_allow_header_is_exactly_get(
+        self, client: TestClient, method: str, path: str
+    ) -> None:
+        """``{method} {path}`` → 405 whose ``Allow`` header equals exactly ``GET``."""
+        response = client.request(method, path)
+        assert response.status_code == 405, (
+            f"{method} {path} should be 405 (method not registered); got {response.status_code}"
+        )
+        allow = response.headers.get("allow")
+        assert allow is not None, (
+            f"{method} {path} 405 is missing the Allow header (RFC 7231 §6.5.5 requires it)."
+        )
+        assert allow.strip() == "GET", (
+            f"{method} {path} 405 advertises Allow: {allow!r}, expected exactly 'GET' — "
+            f"a stray/extra method in the Allow header is a router-surface regression."
+        )
+
+    def test_hello_405_allow_omits_post_despite_post_being_valid(self, client: TestClient) -> None:
+        """``DELETE /api/hello`` advertises ``Allow: GET`` even though POST is valid.
+
+        This is the headline surprise: ``/api/hello`` accepts POST (proven by the
+        paired 200 below), yet its 405 ``Allow`` header lists only ``GET`` because
+        Starlette reports the first path-matching route's methods, not the union.
+        Pinning both halves means a change in *either* direction — the framework
+        starting to advertise ``GET, POST``, or POST silently ceasing to be a
+        valid method — fails this test and gets a human's eyes.
+        """
+        # POST is genuinely a valid, registered method on this path...
+        ok = client.post("/api/hello", json={"name": "AllowProof"})
+        assert ok.status_code == 200, (
+            "Precondition failed: POST /api/hello must be a valid 200 for this "
+            f"omission pin to be meaningful; got {ok.status_code}."
+        )
+        # ...yet the 405 Allow header for a disallowed method omits it entirely.
+        not_allowed = client.delete("/api/hello")
+        assert not_allowed.status_code == 405
+        allow = not_allowed.headers.get("allow", "")
+        assert allow.strip() == "GET", (
+            f"DELETE /api/hello 405 Allow is {allow!r}; expected 'GET'. If this now "
+            f"reads 'GET, POST', Starlette's partial-match aggregation changed — "
+            f"review whether the new advertised surface is intended."
+        )
+        assert "POST" not in allow, (
+            f"DELETE /api/hello 405 Allow unexpectedly contains POST ({allow!r}). "
+            f"This documents Starlette's first-route-wins behaviour; a change here "
+            f"is a framework-surface regression to review, not silently accept."
+        )
+
+    @pytest.mark.parametrize("path", ALL_ROUTE_PATHS)
+    @pytest.mark.parametrize("method", DISALLOWED_METHODS)
+    def test_405_allow_header_is_always_present(
+        self, client: TestClient, method: str, path: str
+    ) -> None:
+        """Every 405 carries a non-empty ``Allow`` header (RFC 7231 §7.4.1 MUST)."""
+        response = client.request(method, path)
+        assert response.status_code == 405
+        allow = response.headers.get("allow")
+        assert allow is not None and allow.strip() != "", (
+            f"{method} {path} 405 has an absent/empty Allow header ({allow!r}); a "
+            f"405 without Allow violates RFC 7231 and breaks clients that branch "
+            f"on the advertised method list to decide a fallback request."
+        )
+
+    @pytest.mark.parametrize("method,path,payload", SUCCESSFUL_REQUESTS)
+    def test_2xx_responses_omit_allow_header(
+        self,
+        client: TestClient,
+        method: str,
+        path: str,
+        payload: dict[str, str] | None,
+    ) -> None:
+        """``Allow`` is a 405-only advertisement and never leaks onto a 2xx body.
+
+        ``Allow`` describes the rejection of a disallowed method; a successful
+        response has no business carrying it. A middleware that began emitting
+        ``Allow`` unconditionally would confuse caches and method-discovery
+        tooling, so the absence on the happy path is itself a contract.
+        """
+        response = client.request(method, path, json=payload)
+        assert response.status_code == 200
+        assert "allow" not in {k.lower() for k in response.headers}, (
+            f"{method} {path} 200 unexpectedly carries an Allow header "
+            f"({response.headers.get('allow')!r}); Allow belongs on 405s only."
+        )
+
+    @pytest.mark.parametrize("method", DISALLOWED_METHODS + ["HEAD", "POST"])
+    def test_404_unknown_path_has_no_allow_header(self, client: TestClient, method: str) -> None:
+        """A 404 (no matching route) carries no ``Allow`` header, unlike a 405.
+
+        The Allow header is the wire-level signal that distinguishes *"the
+        resource exists but not for this method"* (405 + Allow) from *"no such
+        resource"* (404, no Allow). A catch-all route or middleware that started
+        answering unknown paths with a 405-style envelope would blur that
+        distinction; pinning the 404's absence of Allow keeps the two failure
+        modes machine-distinguishable.
+        """
+        response = client.request(method, "/api/does-not-exist")
+        assert response.status_code == 404
+        assert "allow" not in {k.lower() for k in response.headers}, (
+            f"{method} /api/does-not-exist 404 carries an Allow header "
+            f"({response.headers.get('allow')!r}); a 404 must not advertise methods."
+        )
+
+    @pytest.mark.parametrize("path", ALL_ROUTE_PATHS)
+    def test_405_allow_header_is_request_method_independent(
+        self, client: TestClient, path: str
+    ) -> None:
+        """The ``Allow`` value describes the *route*, so it is identical no matter
+        which disallowed method triggered the 405.
+
+        ``Allow`` must enumerate the route's registered methods, never echo the
+        offending request method. Driving the same path with DELETE, PUT, and
+        PATCH must therefore yield byte-identical Allow headers — a regression
+        that accidentally reflected the request method would diverge here.
+        """
+        allows = {
+            method: client.request(method, path).headers.get("allow")
+            for method in DISALLOWED_METHODS
+        }
+        distinct = set(allows.values())
+        assert len(distinct) == 1, (
+            f"{path} 405 Allow header varies by request method: {allows!r}. The "
+            f"Allow header must describe the route's methods, not the request."
+        )
+
+    @pytest.mark.asyncio
+    async def test_405_allow_header_exact_over_async_transport(
+        self, async_client: AsyncClient
+    ) -> None:
+        """The exact ``Allow: GET`` 405 contract holds over the real ASGI transport.
+
+        The in-process ``TestClient`` and ``httpx.AsyncClient`` + ``ASGITransport``
+        drive different response-framing code paths; repeating the headline pin
+        over async guards a regression that only manifests under uvicorn (the
+        production transport) while the sync client stays green.
+        """
+        response = await async_client.request("DELETE", "/api/hello")
+        assert response.status_code == 405
+        assert response.headers.get("allow", "").strip() == "GET", (
+            "DELETE /api/hello 405 Allow header diverges from 'GET' over the real "
+            f"ASGI transport: {response.headers.get('allow')!r}"
         )
