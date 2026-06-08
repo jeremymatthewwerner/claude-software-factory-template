@@ -2332,3 +2332,38 @@ that branches on `error["type"]`. These tests fail first.
 - Full backend suite: 630 tests pass 3× (≈14s each).
 - Backend line + branch coverage stays at 100% (36/36; no production code touched).
 - `ruff format`, `ruff check`, and `mypy` all pass clean.
+
+---
+
+## QA Session — 2026-06-08 (Monday: coverage-sprint)
+
+### Frontend — `frontend/__tests__/page.test.tsx` (1 new test)
+
+#### `edge cases: submit input boundaries`
+
+| Test | Pins |
+|------|------|
+| `POSTs the surrounding whitespace verbatim for a padded name (no client-side trim)` | Submitting `"  Bob  "` sends `{ name: "  Bob  " }` in the POST body — leading/trailing spaces intact, NOT `name.trim()` |
+
+### Why this specific edge?
+
+Both frontends modules are already at **100% line/branch/function coverage**, so a
+pure coverage-by-count sprint had nothing to add. The real gap was a **behavioral
+path that line coverage marked covered but no assertion pinned**.
+
+`handleSubmit` in `page.tsx` uses `name.trim()` *only* for the empty-guard
+(`if (!name.trim()) return;`) but transmits the **raw, untrimmed** state in the
+request body (`JSON.stringify({ name })`). Every pre-existing POST-body test used an
+already-trimmed name (`'Alice'`, `'TestUser'`, `'A'.repeat(5000)`), so a "cleanup"
+regression to `{ name: name.trim() }` would silently change the wire contract and
+**all of them would still pass**. The backend is the single source of truth for name
+normalization (see `test_whitespace_name_message_format`); the client must send
+exactly what the user typed. This test fails first.
+
+### Verification
+
+- New test passes 3× in sequence — no flakiness.
+- Mutation check: flipping the body to `{ name: name.trim() }` makes this test (and only this test) fail — confirming it has teeth.
+- Full frontend suite: 92 tests pass (was 91).
+- `prettier`, `eslint`, and `tsc --noEmit` all pass clean.
+- No production code touched; coverage stays at 100%.
