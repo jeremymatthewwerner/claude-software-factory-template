@@ -1871,6 +1871,49 @@ describe('Home Page', () => {
       expect(body.name).toBe(longName);
       expect(body.name.length).toBe(5000);
     });
+
+    it('POSTs the surrounding whitespace verbatim for a padded name (no client-side trim)', async () => {
+      // `handleSubmit` uses `name.trim()` ONLY for the empty-guard
+      // (`if (!name.trim()) return;`) but sends the raw, untrimmed state in
+      // the POST body (`JSON.stringify({ name })`). Every other POST-body
+      // test uses an already-trimmed name ('Alice', 'TestUser', 'A'.repeat
+      // (5000)), so a "cleanup" regression to `{ name: name.trim() }` would
+      // silently change the wire contract and ALL of them would still pass.
+      // The backend is the single source of truth for normalization; the
+      // client must transmit exactly what the user typed. Pin the padding.
+      const paddedName = '  Bob  ';
+      mockFetch({ ...HEALTHY_RESPONSES, '/api/hello': { message: 'Hello, World!' } });
+
+      render(<Home />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Connected')).toBeInTheDocument();
+      });
+
+      fireEvent.change(screen.getByPlaceholderText('Enter your name'), {
+        target: { value: paddedName },
+      });
+      fireEvent.click(screen.getByRole('button', { name: /say hello/i }));
+
+      // Wait for the submit handler's POST to fire (asserting on the request,
+      // not the greeting render — testing-library's whitespace normalization
+      // would collapse the padding in the rendered text and mask the point).
+      await waitFor(() => {
+        const found = (global.fetch as jest.Mock).mock.calls.some(
+          ([, opts]: [string, RequestInit | undefined]) => opts?.method === 'POST'
+        );
+        expect(found).toBe(true);
+      });
+
+      const postCall = (global.fetch as jest.Mock).mock.calls.find(
+        ([, opts]: [string, RequestInit | undefined]) => opts?.method === 'POST'
+      );
+      expect(postCall).toBeDefined();
+      const body = JSON.parse((postCall![1] as RequestInit).body as string);
+      // The exact string the user typed — leading/trailing spaces intact.
+      expect(body.name).toBe(paddedName);
+      expect(body.name).not.toBe(paddedName.trim());
+    });
   });
 
   describe('regression-prevention: form submit preventDefault', () => {
