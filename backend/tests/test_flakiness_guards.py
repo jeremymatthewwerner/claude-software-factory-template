@@ -83,6 +83,7 @@ import json
 import os
 import random
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
 import pytest
@@ -1003,3 +1004,122 @@ class TestErrorResponseBodyDeterminism:
         assert allowed == disallowed == no_origin, (
             "404 body varied by Origin header — error body should be origin-agnostic"
         )
+
+
+# Number of OS threads / requests for the threaded-concurrency guards. 32 is
+# enough to genuinely overlap on a multi-core runner without producing test-
+# runner noise; each request is sub-millisecond so the whole class adds <1s.
+THREADED_FANOUT = 32
+
+
+class TestThreadedConcurrencyDeterminism:
+    """Handlers must stay correct under *true OS-thread* parallelism.
+
+    Every other concurrency guard in this module fans out with
+    ``asyncio.gather`` on a single-threaded event loop — coroutines interleave
+    but never run on two CPUs at the same instant. Starlette's synchronous
+    ``TestClient`` instead drives the ASGI app through an internal worker
+    thread, so a pool of threads issuing requests exercises a genuinely
+    different execution model: handlers can run *simultaneously* on multiple
+    cores. A regression that is invisible to cooperative interleaving — a
+    module-level mutable default, a non-atomic read-modify-write on shared
+    state, a handler that stashes the request name on a shared object — would
+    surface here as cross-contaminated responses, and only intermittently,
+    because the race window depends on OS thread scheduling.
+
+    These tests pin the invariant that the pure-function handlers return the
+    same answers under thread-pool parallelism as they do sequentially.
+    """
+
+    def test_threaded_posts_each_receive_their_own_name(self) -> None:
+        """32 distinct POSTs fired across a thread pool each echo their own name.
+
+        Cross-contamination (request A receiving request B's name) is the
+        canonical symptom of shared mutable per-request state and is exactly
+        the failure mode that only a true-parallel runner can surface.
+        """
+        names = [f"Thread{i:03d}" for i in range(THREADED_FANOUT)]
+
+        def post_name(name: str) -> tuple[str, str]:
+            # A fresh client per thread mirrors the multi-worker production
+            # model and avoids serialising on a single client's internals.
+            with TestClient(app) as c:
+                message = c.post("/api/hello", json={"name": name}).json()["message"]
+            return name, name_from_greeting(message)
+
+        with ThreadPoolExecutor(max_workers=THREADED_FANOUT) as pool:
+            results = list(pool.map(post_name, names))
+
+        mismatches = [(sent, got) for sent, got in results if sent != got]
+        assert not mismatches, (
+            f"{len(mismatches)} threaded POSTs received another request's name "
+            f"(cross-contamination under true parallelism): {mismatches[:5]!r}"
+        )
+
+    def test_threaded_identical_posts_return_one_message(self) -> None:
+        """32 identical POSTs across a thread pool yield exactly one ``message``.
+
+        The complement of the distinct-name test: with identical input, true
+        parallel execution must still collapse to a single deterministic
+        answer. A divergence means a handler consulted some non-deterministic
+        shared state (a clock baked into ``message``, a counter, the RNG).
+        """
+
+        def post_stable(_: int) -> str:
+            with TestClient(app) as c:
+                return str(c.post("/api/hello", json={"name": "ThreadStable"}).json()["message"])
+
+        with ThreadPoolExecutor(max_workers=THREADED_FANOUT) as pool:
+            messages = set(pool.map(post_stable, range(THREADED_FANOUT)))
+        assert len(messages) == 1, (
+            f"{THREADED_FANOUT} identical threaded POSTs produced "
+            f"{len(messages)} distinct messages: {messages!r}"
+        )
+
+    def test_threaded_health_all_healthy(self) -> None:
+        """32 concurrent ``/health`` calls across a thread pool all report healthy.
+
+        A shared-state regression in an unrelated handler could corrupt the
+        ``/health`` response if state leaked across handlers running on
+        different threads. Pin the constant.
+        """
+
+        def get_status(_: int) -> str:
+            with TestClient(app) as c:
+                return str(c.get("/health").json()["status"])
+
+        with ThreadPoolExecutor(max_workers=THREADED_FANOUT) as pool:
+            statuses = set(pool.map(get_status, range(THREADED_FANOUT)))
+        assert statuses == {"healthy"}, (
+            f"Threaded /health calls returned non-uniform statuses: {statuses!r}"
+        )
+
+    def test_threaded_mixed_get_post_each_correct_shape(self) -> None:
+        """Interleaved GET and POST across a thread pool each return their own shape.
+
+        Mixing read and write handlers on genuinely parallel threads is the
+        worst case for a shared-state leak between *different* handlers (as
+        opposed to two instances of the same handler). Each response must
+        carry the body its own route declares.
+        """
+
+        def call(i: int) -> tuple[str, str]:
+            with TestClient(app) as c:
+                if i % 2 == 0:
+                    return "GET", str(c.get("/api/hello").json()["message"])
+                return "POST", str(
+                    c.post("/api/hello", json={"name": f"Mix{i:03d}"}).json()["message"]
+                )
+
+        with ThreadPoolExecutor(max_workers=THREADED_FANOUT) as pool:
+            results = list(pool.map(call, range(THREADED_FANOUT)))
+
+        for idx, (kind, message) in enumerate(results):
+            if kind == "GET":
+                assert "World" in message, (
+                    f"threaded GET /api/hello returned non-default message: {message!r}"
+                )
+            else:
+                assert name_from_greeting(message) == f"Mix{idx:03d}", (
+                    f"threaded POST at idx {idx} did not echo its own name: {message!r}"
+                )
