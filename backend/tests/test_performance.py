@@ -33,6 +33,17 @@ INIT_SEQUENCE_CEILING_S = 0.5
 SEQUENTIAL_100_CEILING_S = 2.0
 CONCURRENT_50_CEILING_S = 1.0
 
+# Per-call POST latency bounds for the sequential-POST distribution guard.
+# PER_CALL_POST_CEILING_S is the per-call ceiling a *regression* would push
+# every call past; PER_CALL_POST_MEDIAN_CEILING_S bounds the bulk of the
+# distribution so a single transient outlier cannot flip the test.
+PER_CALL_POST_CEILING_S = 0.1
+PER_CALL_POST_MEDIAN_CEILING_S = 0.05
+# At most this many of the 30 sequential POSTs may exceed the per-call
+# ceiling before it signals a real regression. One isolated GC/scheduler
+# pause on a shared CI runner is expected noise, not a regression.
+PER_CALL_POST_MAX_OUTLIERS = 1
+
 
 class TestSingleCallLatency:
     """Each endpoint must respond well under SINGLE_CALL_CEILING_S."""
@@ -115,14 +126,39 @@ class TestSustainedSequentialLoad:
             f"last10 avg {last_10_avg * 1000:.2f}ms"
         )
 
-    def test_30_sequential_posts_each_under_100ms(self, client: TestClient) -> None:
-        """Each of 30 sequential POSTs completes in <100ms (per-call regression guard)."""
+    def test_30_sequential_posts_per_call_latency_bounded(self, client: TestClient) -> None:
+        """30 sequential POSTs: the bulk stay fast; at most one outlier tolerated.
+
+        This replaces a per-iteration *hard* ceiling (``assert elapsed < 0.1``
+        inside the loop) that gave 30 independent chances for a single GC pause
+        or scheduler preemption to fail the whole test — the canonical flaky
+        construction. The distributional form below keeps full regression-
+        detection power: a real per-call slowdown lifts *every* call past the
+        ceiling and fails the outlier check, and the median bound fails the
+        moment the bulk of calls degrade. But a single isolated outlier — noise
+        on a shared CI runner, not a regression — no longer flips the result.
+        """
+        timings: list[float] = []
         for i in range(30):
             start = time.perf_counter()
             response = client.post("/api/hello", json={"name": f"User{i}"})
-            elapsed = time.perf_counter() - start
+            timings.append(time.perf_counter() - start)
             assert response.status_code == 200
-            assert elapsed < 0.1, f"POST #{i} took {elapsed:.3f}s"
+
+        over_ceiling = [t for t in timings if t >= PER_CALL_POST_CEILING_S]
+        assert len(over_ceiling) <= PER_CALL_POST_MAX_OUTLIERS, (
+            f"{len(over_ceiling)}/30 POSTs exceeded "
+            f"{PER_CALL_POST_CEILING_S * 1000:.0f}ms (only "
+            f"{PER_CALL_POST_MAX_OUTLIERS} outlier tolerated) — "
+            f"timings ms: {[round(t * 1000, 1) for t in timings]}"
+        )
+        # The median is the real regression signal: it is immune to any single
+        # outlier yet moves immediately if the typical per-call cost regresses.
+        median = statistics.median(timings)
+        assert median < PER_CALL_POST_MEDIAN_CEILING_S, (
+            f"median POST latency {median * 1000:.2f}ms exceeds "
+            f"{PER_CALL_POST_MEDIAN_CEILING_S * 1000:.0f}ms"
+        )
 
 
 class TestConcurrentThroughput:

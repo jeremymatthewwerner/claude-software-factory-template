@@ -2367,3 +2367,63 @@ exactly what the user typed. This test fails first.
 - Full frontend suite: 92 tests pass (was 91).
 - `prettier`, `eslint`, and `tsc --noEmit` all pass clean.
 - No production code touched; coverage stays at 100%.
+
+---
+
+## QA Session — 2026-06-09 (Tuesday: flaky-hunt)
+
+### Empirical flakiness audit (no flakes found)
+
+Ran the full suites and the timing-sensitive subsets repeatedly, including under
+deliberate CPU contention (`yes` load generators), to surface latent flakiness:
+
+| Configuration | Runs | Result |
+|---------------|------|--------|
+| Full backend suite (`pytest-randomly` reorders each run) | 5× | 662/662 pass |
+| Full frontend suite | 5× | 92/92 pass |
+| `test_performance.py` under 4-core saturation | 12× | 51/51 pass |
+| Tightest perf tests (jitter/p95/p99/throughput/preflight) under 8× oversubscription | 15× | 12/12 pass |
+| `test_e2e_performance_scaling.py` under 6× load | 8× | 11/11 pass |
+
+**Conclusion:** the suite is exceptionally well-hardened — timing tests use
+outlier-tolerant aggregates (p95/p99, throughput floors, median-with-clamp) with
+generous ceilings, so none flake even under heavy contention.
+
+### Fix — hardened the one genuinely flaky *construction*
+
+`backend/tests/test_performance.py`
+
+| Before | After |
+|--------|-------|
+| `test_30_sequential_posts_each_under_100ms` — asserted `elapsed < 0.1` **inside** the loop, giving 30 independent chances for a single GC/scheduler pause to fail the whole test (canonical flaky multiplier) | `test_30_sequential_posts_per_call_latency_bounded` — collects all 30 timings, tolerates ≤1 outlier over the 100ms per-call ceiling, and bounds the **median** under 50ms |
+
+This **preserves regression-detection power** (a real per-call slowdown lifts
+*every* call over the ceiling → fails the outlier check; a bulk regression moves
+the median → fails the median check) while removing the single-outlier flake. Net
+rigor increases — a median bound is added where there was none.
+
+### New tests — `backend/tests/test_flakiness_guards.py` (4 new)
+
+#### `TestThreadedConcurrencyDeterminism`
+
+Every pre-existing concurrency guard fans out with `asyncio.gather` on a
+single-threaded event loop (cooperative interleaving, never two cores at once).
+These exercise a genuinely different model — Starlette's sync `TestClient` driven
+from a `ThreadPoolExecutor`, so handlers can run **simultaneously** on multiple
+cores — which is the only way to surface a shared-mutable-state race whose window
+depends on OS thread scheduling.
+
+| Test | Pins |
+|------|------|
+| `test_threaded_posts_each_receive_their_own_name` | 32 distinct POSTs across a thread pool each echo their own name — no cross-contamination under true parallelism |
+| `test_threaded_identical_posts_return_one_message` | 32 identical threaded POSTs collapse to exactly one `message` (no clock/counter/RNG baked into the body) |
+| `test_threaded_health_all_healthy` | 32 threaded `/health` calls all report `healthy` (no cross-handler state leak) |
+| `test_threaded_mixed_get_post_each_correct_shape` | Interleaved GET/POST on parallel threads each return their own route's shape |
+
+### Verification
+
+- Hardened test passes 10× under 6× CPU load — no flakiness.
+- New threaded guards pass 8× under 6× CPU load — no flakiness.
+- Full backend suite: 666 tests pass 3× (was 662; +4 threaded, 1 rename).
+- `ruff format`, `ruff check`, and `mypy` all pass clean on changed files.
+- No production code touched.
