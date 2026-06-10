@@ -4,6 +4,62 @@ Documents test coverage, test descriptions, and quality improvements.
 
 ---
 
+## 2026-06-10 — QA Agent: integration-gaps session (issue #294)
+
+**Backend coverage is already 100% line + 100% branch on `app/main.py`** (666
+tests before this session), so this Wednesday integration-gaps run targets
+genuine HTTP-contract gaps — behaviors that are exercisable but never pinned —
+rather than coverage padding. A `grep` audit found the POST request-body
+contract exhaustively pinned (`requestBody.required: true`, a `422` response, the
+required `name` field) while its **inverse** had no test at all.
+
+### Backend — `backend/tests/test_request_body_contract_gaps.py` (new, 3 classes, 18 tests)
+
+#### `TestGetRoutesDeclareNoBodyContract`
+Pins the inverse of the POST body contract at the OpenAPI level:
+- `test_get_operation_declares_no_request_body` (parametrized over the 3 GET
+  routes) — no GET operation carries a `requestBody`.
+- `test_get_operation_declares_no_422_response` (parametrized) — no GET operation
+  declares a `422`, since GET validates no input.
+- `test_post_hello_is_the_sole_body_bearing_operation` — exactly one operation in
+  the whole schema (`POST /api/hello`) declares a `requestBody`, catching any new
+  body-bearing route slipping in.
+
+#### `TestGetRequestsIgnoreAttachedBody`
+Pins the runtime behavior that a body wrongly attached to a GET is ignored:
+- `test_get_with_attached_body_returns_200_with_canonical_shape` (parametrized) —
+  each GET returns 200 with its documented marker key when a JSON body is sent.
+- `test_get_hello_with_body_does_not_become_a_greeting` — a `{"name": ...}` body
+  does not personalise (or leak into) the static welcome message.
+- `test_get_hello_does_not_validate_attached_body` — a body that POST rejects with
+  422 (`{"name": 123}`) is still 200 on GET; the 422-on-POST asymmetry is pinned
+  inline.
+- `test_get_with_body_matches_bodiless_response_shape` (parametrized) — attaching a
+  body never changes the GET response's JSON key set.
+- `test_get_with_body_still_emits_valid_utc_timestamp` — the handler runs
+  end-to-end (valid UTC ISO 8601 timestamp) despite the stray body.
+
+#### `TestGetWithBodyIgnoredViaAsyncTransport`
+Re-pins the GET-ignores-body contract over the real-ASGI `AsyncClient` transport:
+- `test_get_hello_with_body_returns_200_via_async_client`
+- `test_get_health_with_invalid_body_returns_200_via_async_client`
+
+### Why these specific gaps?
+A regression that added a validated query parameter (or body model) to a GET route
+would inject a `422`/`requestBody` into its OpenAPI operation — silently changing
+every generated SDK — with no failing test. Likewise, clients, proxies, and
+retried requests sometimes attach a body to a GET; a change that wired body
+parsing onto a GET handler, or a middleware that rejected GET bodies with a 400,
+would currently go uncaught. Both behaviors were confirmed empirically over both
+transports before the tests were written.
+
+### Verification
+Full backend suite: **684 tests pass** (666 → 684). New module passed 3 consecutive
+runs under `pytest-randomly` with no flakiness. `ruff format`, `ruff check`, and
+`mypy` all clean.
+
+---
+
 ## 2026-06-04 — QA Agent: e2e-performance session (issue #274)
 
 **Backend coverage is already 100% line + 100% branch on `app/main.py`** (607
