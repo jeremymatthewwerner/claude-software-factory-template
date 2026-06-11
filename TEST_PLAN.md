@@ -4,6 +4,54 @@ Documents test coverage, test descriptions, and quality improvements.
 
 ---
 
+## 2026-06-11 — QA Agent: e2e-performance session (issue #297)
+
+**Backend coverage is already 100% line + 100% branch on `app/main.py`** (684
+tests before this session) and there are no Playwright/E2E tests in `frontend/`
+(`test:e2e` is a placeholder), so this Thursday e2e-performance run adds backend
+perf **regression guards** that exercise real frontend-facing request paths
+rather than coverage padding. An audit of the two existing perf suites
+(`test_performance.py`, `test_e2e_performance_scaling.py`) found two slices left
+open: **(1)** POST latency is pinned only at fixed sizes (1KB, 10KB) against
+absolute ceilings — nothing asserts latency grows *linearly* (not
+quadratically) with payload size; **(2)** every throughput *floor* is measured
+sequentially — no floor on concurrent requests-per-second.
+
+### Backend — `backend/tests/test_e2e_payload_and_throughput.py` (new, 3 classes, 9 tests)
+
+#### `TestPayloadSizeScaling`
+Samples POST latency across a 64B → 64KB body-size range (median of 7 reps per
+size) and asserts the curve is not quadratic:
+- `test_each_payload_size_under_largest_ceiling` (parametrized over 64B/1KB/16KB/64KB)
+  — median POST latency at every size stays under a generous 1s absolute ceiling.
+- `test_latency_grows_sub_quadratically_with_payload` — `median(64KB)/median(64B)`
+  stays under 50x. A linear handler's ratio is small (fixed overhead dominates);
+  a quadratic regression pushes it toward the square of the 1024x size ratio.
+- `test_marginal_cost_per_byte_does_not_increase_with_size` — amortized per-byte
+  cost at 64KB is within 4x the per-byte cost at 16KB (compares the two *largest*
+  sizes where marginal cost dominates, so an O(N²) term shows up directly).
+
+#### `TestConcurrentThroughputFloor`
+Asserts a minimum sustained requests-per-second computed from a concurrent
+fan-out — a guard distinct from the existing total-elapsed-time ceilings:
+- `test_concurrent_health_throughput_floor` — a 100-wide concurrent `/health`
+  fan-out sustains ≥ 50 req/s.
+- `test_concurrent_post_throughput_floor` — a 60-wide concurrent POST fan-out
+  sustains ≥ 30 req/s and every response echoes its own name (throughput not
+  bought by dropping/garbling responses).
+
+#### `TestReadWriteLatencyParity`
+- `test_small_post_median_within_factor_of_get_median` — median small-body POST
+  latency stays within 8x median GET latency, catching a regression that puts
+  synchronous work on the write path (blocking validator, sync log flush) that
+  the happy-path single-call ceilings would miss.
+
+All bounds are deliberately generous (≈half the sequential floors / 50x the
+quadratic separation) so they fail only on a real regression, never on shared-CI
+noise. Verified 3x with no flakiness; full suite: **693 passed**.
+
+---
+
 ## 2026-06-10 — QA Agent: integration-gaps session (issue #294)
 
 **Backend coverage is already 100% line + 100% branch on `app/main.py`** (666
