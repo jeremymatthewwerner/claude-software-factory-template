@@ -30,6 +30,14 @@ DISALLOWED_ORIGIN = "https://evil.example.com"
 # pins the full string.
 GREETING_TEMPLATE = "Hello, {name}! Welcome to your Software Factory."
 
+# The canonical (slash-free) GET paths the app serves: ``/health``,
+# ``/api/version`` and ``/api/hello``. Centralised as the single source of
+# truth for the route list that several suites parametrize over — previously
+# each file repeated this literal under its own name (``GET_PATHS``,
+# ``CANONICAL_GET_PATHS``, ``ALL_ROUTE_PATHS``), so adding a fourth GET route
+# meant hunting down every copy. Import this instead of re-declaring the list.
+GET_PATHS = ["/health", "/api/version", "/api/hello"]
+
 
 @pytest.fixture
 def client() -> TestClient:

@@ -4,6 +4,51 @@ Documents test coverage, test descriptions, and quality improvements.
 
 ---
 
+## 2026-06-12 — QA Agent: test-refactoring session (issue #300)
+
+**Backend coverage is already 100% line + 100% branch on `app/main.py`** (693
+tests), so this Friday test-refactoring run adds **no new tests** — it removes
+duplication instead. An audit found the canonical GET-route list
+`["/health", "/api/version", "/api/hello"]` repeated as **five separate
+literals** across the suite under three different names (`GET_PATHS`,
+`CANONICAL_GET_PATHS`, `ALL_ROUTE_PATHS`) plus two anonymous inline copies.
+Adding a fourth GET route would have meant finding and editing every copy — a
+silent-drift hazard where some suites parametrize over the new route and others
+don't.
+
+### Refactor — single source of truth for the GET-route list
+
+Added `GET_PATHS` to `backend/tests/conftest.py` as the one canonical list, with
+a docstring noting the three former local names it replaces. Updated every
+former copy to import it:
+
+| File | Before | After |
+|------|--------|-------|
+| `conftest.py` | (no shared constant) | **new** `GET_PATHS` constant |
+| `test_request_body_contract_gaps.py` | local `GET_PATHS = [...]` | imports `GET_PATHS` from conftest |
+| `test_routing_integration_gaps.py` | local `CANONICAL_GET_PATHS = [...]` | imports `GET_PATHS` (parametrize sites updated) |
+| `test_regression_prevention.py` | local `ALL_ROUTE_PATHS = [...]` literal | `ALL_ROUTE_PATHS = GET_PATHS` (descriptive alias kept, literal removed) |
+| `test_main.py` | inline `["/health", "/api/version", "/api/hello"]` in `@parametrize` | `@parametrize("path", GET_PATHS)` |
+| `test_integration.py` | inline `("/health", "/api/version", "/api/hello")` loop | `for path in GET_PATHS:` |
+
+### Refactor — removed a duplicated `DISALLOWED_ORIGIN`
+
+`test_routing_integration_gaps.py` re-declared `DISALLOWED_ORIGIN =
+"https://evil.example.com"` locally even though conftest already exports the
+identical constant (used by `test_edge_cases`, `test_flakiness_guards`,
+`test_integration_gaps`, `test_main`). Now imported from conftest, so the
+disallowed-origin value lives in exactly one place.
+
+### Verification
+
+- Full backend suite: **693 tests pass 3×** (unchanged count — pure refactor, no
+  tests added or removed).
+- `ruff format`, `ruff check`, and `mypy` all pass clean on changed files.
+- No production code touched; behaviour is byte-for-byte identical (the list
+  contents and ordering are unchanged, only their definition site moved).
+
+---
+
 ## 2026-06-11 — QA Agent: e2e-performance session (issue #297)
 
 **Backend coverage is already 100% line + 100% branch on `app/main.py`** (684

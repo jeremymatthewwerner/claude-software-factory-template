@@ -36,14 +36,15 @@ from fastapi.testclient import TestClient
 from httpx import AsyncClient
 
 from tests.conftest import (
+    GET_PATHS,
     assert_utc_iso8601,
     expected_greeting,
     get_openapi_schema,
 )
 
-# Canonical (slash-free) GET paths the app serves. Each takes no request body,
-# so none may declare a requestBody or a 422 in its OpenAPI operation.
-GET_PATHS = ["/health", "/api/version", "/api/hello"]
+# ``GET_PATHS`` (imported from conftest) are the canonical (slash-free) GET
+# paths the app serves. Each takes no request body, so none may declare a
+# requestBody or a 422 in its OpenAPI operation.
 
 # The documented top-level JSON key unique to each GET route's success payload.
 # Used to prove the handler ran normally even when a stray body is attached.

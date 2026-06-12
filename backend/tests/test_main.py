@@ -12,6 +12,7 @@ from app import __version__
 
 from .conftest import (
     DISALLOWED_ORIGIN,
+    GET_PATHS,
     LOCALHOST_ORIGIN,
     LOOPBACK_ORIGIN,
     assert_utc_iso8601,
@@ -523,7 +524,7 @@ class TestHEADMethod:
     HTTP semantics still apply: HEAD responses have no body regardless of status.
     """
 
-    @pytest.mark.parametrize("path", ["/health", "/api/version", "/api/hello"])
+    @pytest.mark.parametrize("path", GET_PATHS)
     def test_head_returns_405(self, client: TestClient, path: str) -> None:
         """HEAD on a defined route returns 405 (Starlette 1.0 does not auto-register HEAD)."""
         response = client.head(path)

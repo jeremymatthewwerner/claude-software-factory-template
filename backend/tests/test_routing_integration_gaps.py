@@ -34,15 +34,18 @@ from fastapi.testclient import TestClient
 from httpx import AsyncClient
 
 from app.main import app
-from tests.conftest import LOCALHOST_ORIGIN, expected_greeting
+from tests.conftest import (
+    DISALLOWED_ORIGIN,
+    GET_PATHS,
+    LOCALHOST_ORIGIN,
+    expected_greeting,
+)
 
-# Origin that is *not* on the CORS allow-list. Used to assert that redirect /
-# 405 responses to a foreign origin do not leak an Allow-Origin header.
-DISALLOWED_ORIGIN = "https://evil.example.com"
-
-# Canonical (slash-free) GET paths the app serves. Each has a trailing-slash
-# sibling that the router answers with a 307 to the canonical form.
-CANONICAL_GET_PATHS = ["/health", "/api/version", "/api/hello"]
+# ``DISALLOWED_ORIGIN`` (imported) is an origin *not* on the CORS allow-list,
+# used to assert that redirect / 405 responses to a foreign origin do not leak
+# an Allow-Origin header. ``GET_PATHS`` (imported) are the canonical
+# (slash-free) GET paths the app serves; each has a trailing-slash sibling that
+# the router answers with a 307 to the canonical form.
 
 
 class TestTrailingSlashRedirectIntegration:
@@ -58,7 +61,7 @@ class TestTrailingSlashRedirectIntegration:
     one-line change that turns every such request into a 404) would be silent.
     """
 
-    @pytest.mark.parametrize("path", CANONICAL_GET_PATHS)
+    @pytest.mark.parametrize("path", GET_PATHS)
     def test_trailing_slash_get_redirects_307_to_canonical(
         self, client: TestClient, path: str
     ) -> None:
@@ -163,7 +166,7 @@ class TestHeadMethodReturns405:
     HEAD, or breaking the 405 contract).
     """
 
-    @pytest.mark.parametrize("path", CANONICAL_GET_PATHS)
+    @pytest.mark.parametrize("path", GET_PATHS)
     def test_head_on_get_route_returns_405(self, client: TestClient, path: str) -> None:
         """``HEAD <path>`` returns 405 because HEAD is not a registered method."""
         response = client.head(path)
