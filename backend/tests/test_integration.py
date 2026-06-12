@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 from httpx import AsyncClient
 
 from .conftest import (
+    GET_PATHS,
     LOCALHOST_ORIGIN,
     assert_utc_iso8601,
     get_openapi_schema,
@@ -417,7 +418,7 @@ class TestFrontendInitSequenceCORS:
         self, client: TestClient
     ) -> None:
         """All three init endpoints return Access-Control-Allow-Origin for localhost:3000."""
-        for path in ("/health", "/api/version", "/api/hello"):
+        for path in GET_PATHS:
             response = client.get(path, headers={"Origin": LOCALHOST_ORIGIN})
             assert response.status_code == 200, f"{path} returned {response.status_code}"
             assert response.headers.get("access-control-allow-origin") == LOCALHOST_ORIGIN, (

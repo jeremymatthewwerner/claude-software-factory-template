@@ -37,7 +37,12 @@ import pytest
 from fastapi.testclient import TestClient
 from httpx import AsyncClient
 
-from .conftest import LOCALHOST_ORIGIN, cors_preflight_headers, get_openapi_schema
+from .conftest import (
+    GET_PATHS,
+    LOCALHOST_ORIGIN,
+    cors_preflight_headers,
+    get_openapi_schema,
+)
 
 # The exact set of Pydantic class names that the public OpenAPI surface exposes
 # as component schemas today. SDK generators emit these as TypeScript types /
@@ -1126,12 +1131,12 @@ class TestCORSPreflightContentLengthMatchesBody:
         )
 
 
-# Every registered path, paired with HTTP methods that are *not* registered on
-# it and therefore must yield a 405. DELETE/PUT/PATCH are registered nowhere in
-# the app, so they exercise the method-not-allowed path on every route without
-# overlapping the HEAD-405 surface already pinned in
-# ``test_routing_integration_gaps.py``.
-ALL_ROUTE_PATHS: list[str] = ["/health", "/api/version", "/api/hello"]
+# Every registered path (``GET_PATHS`` from conftest), paired with HTTP methods
+# that are *not* registered on it and therefore must yield a 405. DELETE/PUT/
+# PATCH are registered nowhere in the app, so they exercise the
+# method-not-allowed path on every route without overlapping the HEAD-405
+# surface already pinned in ``test_routing_integration_gaps.py``.
+ALL_ROUTE_PATHS: list[str] = GET_PATHS
 DISALLOWED_METHODS: list[str] = ["DELETE", "PUT", "PATCH"]
 
 # Routes that serve a body on a 2xx happy path, paired with a method/payload
