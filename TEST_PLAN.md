@@ -4,6 +4,62 @@ Documents test coverage, test descriptions, and quality improvements.
 
 ---
 
+## 2026-06-13 — QA Agent: edge-cases session (issue #303)
+
+**Backend is already at 100% line + branch coverage** (693 tests), so this
+Saturday edge-cases run adds **behavioural pins**, not coverage padding. It
+targets a layer no existing test touched: what happens to the raw request
+**bytes** *before* the decoded JSON reaches the value parser. Suite grows
+693 → 701 passing (+8) plus 2 documented `xfail`s; coverage stays 100%.
+
+### Backend — `backend/tests/test_request_body_encoding_edges.py` (new, 3 classes, 10 tests)
+
+#### `TestUndecodableBodyBytesReturn400`
+- `test_undecodable_bytes_return_400[latin1_e_acute|truncated_multibyte|stray_continuation]`
+  — illegal-UTF-8 bytes (`0xE9` Latin-1, truncated `0xC3` lead byte, stray
+  `0x80` continuation) inside a JSON skeleton return **`400`**, the
+  byte-decode error path — distinct from the `422` `json_invalid` path that
+  fires for decodable-but-malformed JSON.
+- `test_undecodable_body_detail_is_a_bare_string_not_a_list` — the `400`
+  response's `detail` is a **string** (`"There was an error parsing the
+  body"`), whereas the `422` path's `detail` is a **list** of error items.
+  Pins the response-shape split that clients branch on.
+- `test_undecodable_body_is_400_while_decodable_garbage_is_422` — asserts
+  both halves of the contrast in one test: undecodable bytes → `400`/string,
+  decodable non-JSON → `422`/list.
+
+#### `TestBodyEncodingAutoDetection`
+- `test_wide_encoding_body_round_trips[utf16_bom|utf32_bom|utf16be_no_bom]`
+  — UTF-16 (BOM), UTF-32 (BOM), and UTF-16-BE (no BOM, null-byte sniffed)
+  bodies are transparently decoded by `json.loads` (RFC 4627 §3 encoding
+  detection) and return **`200`** with the name echoed. Characterization
+  pins: a refactor to `body.decode("utf-8")` before parsing would flip
+  these to `400` and otherwise ship silently.
+
+#### `TestMalformedInputNeverCrashesServer`
+- `test_lone_surrogate_escape_does_not_return_5xx[lone_high_surrogate|lone_low_surrogate]`
+  — **`xfail(strict=True)`** documenting a latent defect: a lone surrogate
+  escape (`\uD83D` / `\uDE00`) decodes into a Python `str` that then fails
+  UTF-8 re-encoding during *response* serialization, surfacing as `500`.
+  The test asserts the desired contract (`status < 500` — malformed input
+  must never crash the server); `strict` mode flips it to a hard failure
+  (xpass) the day the crash is fixed, prompting removal of the marker.
+
+### Why these specific gaps?
+`test_edge_cases.py` already pins the *decoded-JSON* contract exhaustively
+(top-level non-objects, escape decoding, trailing garbage, the `422`
+discriminators). None of it reaches the **byte-decode** step beneath the
+JSON parser, where the `400`-vs-`422` split, the wide-encoding
+auto-detection, and the lone-surrogate crash all live — exactly the error
+paths a "edge-cases" focus should cover.
+
+### Verification
+- New file run 3× back-to-back: 8 passed, 2 xfailed each time (stable).
+- Full suite: **701 passed, 2 xfailed**, `app/main.py` 100% line + branch.
+- `ruff format` + `ruff check` clean.
+
+---
+
 ## 2026-06-12 — QA Agent: test-refactoring session (issue #300)
 
 **Backend coverage is already 100% line + 100% branch on `app/main.py`** (693
