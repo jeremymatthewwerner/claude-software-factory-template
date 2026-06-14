@@ -4,6 +4,79 @@ Documents test coverage, test descriptions, and quality improvements.
 
 ---
 
+## 2026-06-14 — QA Agent: regression-prevention session (issue #306)
+
+**Backend is already at 100% line + branch coverage** (701 tests), so this
+Sunday regression-prevention run adds **behavioural pins**, not coverage
+padding. Reviewing the past week's commits (#292–#304), the newest territory is
+the **request-body byte-decode error path** opened by #304
+(`test_request_body_encoding_edges.py`). That commit pinned only the *status*
+(400) and that `detail` is a *string*; the rest of the 400 decode-error response
+contract — its content-type, CORS headers, length, exact message, and hygiene —
+was left unpinned. The 400 is a *structurally distinct* path (raised while
+reading the body, before the router dispatches) from the 404/405/422 responses
+whose CORS/hygiene contracts are already pinned. Suite grows 701 → 716 passing
+(+15); coverage stays 100%.
+
+### Backend — `backend/tests/test_body_decode_error_contract.py` (new, 4 classes, 15 tests)
+
+#### `TestBodyDecodeErrorBaseContract`
+- `test_decode_error_content_type_is_json` — the 400 declares
+  `Content-Type: application/json` (not `text/plain`); a regression to a
+  plain-text error envelope would still satisfy #304's "detail is a string"
+  pin yet break every JSON consumer of `error.detail`.
+- `test_decode_error_detail_is_exact_documented_string` — the body is exactly
+  `{"detail": "There was an error parsing the body"}`; #304 pinned only the
+  *type*, SDK error renderers match on the *value*.
+- `test_decode_error_content_length_matches_body` — `Content-Length` equals the
+  body byte length; error-path symmetry with
+  `TestErrorResponseContentLengthMatchesBody` (which covers 422/404/405, not
+  this 400).
+- `test_decode_error_omits_forbidden_header[set-cookie|x-powered-by|strict-transport-security|x-frame-options|server]`
+  — the four-header (+`server`) hygiene contract holds on the body-decode path.
+
+#### `TestBodyDecodeErrorCarriesCORSFromAllowlistedOrigin`
+- `test_decode_error_echoes_allowlisted_origin` — the 400 from
+  `http://localhost:3000` echoes it in `Access-Control-Allow-Origin`. The
+  headline gap: `TestCORSOnErrorResponses` pins this for 404/405/422 (raised
+  *inside* CORSMiddleware), but the 400 is raised one layer up; dropping CORS
+  there makes the browser hide the real 400 from the frontend JS as an opaque
+  CORS error.
+- `test_decode_error_carries_vary_origin` — the 400 carries `Vary: Origin`
+  (shared-cache correctness).
+- `test_decode_error_carries_allow_credentials` — the 400 carries
+  `Access-Control-Allow-Credentials: true` (the app is `allow_credentials=True`;
+  a credentialed `fetch` needs it even on the error).
+
+#### `TestBodyDecodeErrorOmitsCORSFromNonAllowlistedOrigin`
+- `test_decode_error_from_disallowed_origin_has_no_acao` — no ACAO from
+  `https://evil.example.com`.
+- `test_decode_error_with_no_origin_has_no_acao` — no ACAO when no `Origin`
+  header is sent. The negative half of the CORS contract on this path.
+
+#### `TestBodyDecodeErrorOverAsyncTransport`
+- `test_async_decode_error_status_content_type_and_detail` — status/content-type/
+  detail hold over the real-ASGI `AsyncClient` (where the body-read-and-decode
+  step actually lives).
+- `test_async_decode_error_carries_cors_from_allowlisted_origin` — ACAO + Vary +
+  Allow-Credentials hold over async ASGI too.
+
+### Why these specific gaps?
+The CORS-on-error and content-length pins enumerate 404/405/422 because those
+are emitted by FastAPI/Starlette's exception handlers. The 400 body-decode error
+is raised by the body-reading layer *before* the router runs — a regression that
+mounted a body-size guard or error-formatter *outside* CORSMiddleware would drop
+CORS/hygiene on the 400 while leaving every existing pin green. Pinning the 400's
+full contract closes that blind spot.
+
+### Verification
+- New file run 3× back-to-back: 15 passed each time (stable).
+- Full suite run 3×: **716 passed, 2 xfailed**, `app/main.py` 100% line + branch.
+- `ruff format` + `ruff check` + `mypy` clean on the new file.
+- No production code touched.
+
+---
+
 ## 2026-06-13 — QA Agent: edge-cases session (issue #303)
 
 **Backend is already at 100% line + branch coverage** (693 tests), so this
