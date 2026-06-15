@@ -4,6 +4,36 @@ Documents test coverage, test descriptions, and quality improvements.
 
 ---
 
+## 2026-06-15 — QA Agent: coverage-sprint session (issue #311)
+
+**Both suites are already at 100% line + branch coverage** (716 backend, 92
+frontend tests), so Monday's coverage-sprint has no uncovered line to chase.
+Instead this run pins a genuine **behavioural contract that line coverage masks**:
+in `frontend/src/app/page.tsx`, the mount-time API check only gates on
+`res.ok` for the `/health` fetch. The `/api/version` and `/api/hello` GETs are
+**not** `.ok`-checked — a non-200 response with a parseable JSON body still keeps
+the UI "Connected" and renders the returned values. Existing tests only covered
+network *rejections* mid-sequence (`mid-sequence API failure edge cases`); none
+exercised a non-ok HTTP *status* that still parses, nor a `json()` parse failure
+on the version/hello GETs. Suite grows 92 → 96 passing (+4); coverage stays 100%.
+
+### Frontend — `frontend/__tests__/page.test.tsx`, new describe `coverage-sprint: only /health gates the healthy state` (4 tests)
+
+| Test | Pins |
+|------|------|
+| `stays Connected when /api/version returns a non-ok status with valid JSON` | A version GET HTTP 500 whose body still parses does NOT flip to Disconnected, and its `version` value is still rendered — proving only `/health` gates health state |
+| `stays Connected when /api/hello GET returns a non-ok status with valid JSON` | A hello GET HTTP 503 whose body still parses stays Connected and renders `Backend says: …` — the hello GET is intentionally not `.ok`-gated |
+| `flips to Disconnected when /api/version body fails to parse as JSON` | An `ok:true` version response whose `json()` rejects (truncated/HTML body) is caught and flips to unhealthy — the parse lives inside the mount try-block |
+| `flips to Disconnected when /api/hello GET body fails to parse as JSON` | Same parse-failure contract for the hello GET leg of the mount sequence |
+
+### Verification
+
+- New describe passes 3× with no flakiness; full frontend suite 96 tests pass.
+- `prettier --write` and `next lint` clean on changed files.
+- No production code touched — behavioural pins only.
+
+---
+
 ## 2026-06-14 — QA Agent: regression-prevention session (issue #306)
 
 **Backend is already at 100% line + branch coverage** (701 tests), so this

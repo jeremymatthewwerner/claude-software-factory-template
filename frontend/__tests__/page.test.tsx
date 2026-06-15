@@ -822,6 +822,85 @@ describe('Home Page', () => {
     });
   });
 
+  describe('coverage-sprint: only /health gates the healthy state', () => {
+    // page.tsx only checks `res.ok` on the /health fetch. The /api/version and
+    // /api/hello GETs on mount are intentionally NOT .ok-gated — as long as their
+    // body parses as JSON, the UI stays "Connected". These tests pin that contract,
+    // which existing tests miss: they only cover network *rejections* mid-sequence,
+    // never a non-ok HTTP *status* that still returns a parseable body.
+
+    it('stays Connected when /api/version returns a non-ok status with valid JSON', async () => {
+      (global.fetch as jest.Mock)
+        .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ status: 'healthy' }) })
+        // version: HTTP 500 but body still parses — must NOT flip to unhealthy
+        .mockResolvedValueOnce({ ok: false, json: () => Promise.resolve({ version: '9.9.9' }) })
+        .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ message: 'Hi' }) });
+
+      render(<Home />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Connected')).toBeInTheDocument();
+      });
+      // Version from the non-ok response is still rendered.
+      expect(screen.getByText('9.9.9')).toBeInTheDocument();
+      expect(screen.queryByText('Disconnected')).not.toBeInTheDocument();
+    });
+
+    it('stays Connected when /api/hello GET returns a non-ok status with valid JSON', async () => {
+      (global.fetch as jest.Mock)
+        .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ status: 'healthy' }) })
+        .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ version: '0.1.0' }) })
+        // hello GET: HTTP 503 but body parses — must NOT flip to unhealthy
+        .mockResolvedValueOnce({
+          ok: false,
+          json: () => Promise.resolve({ message: 'Backend greeting' }),
+        });
+
+      render(<Home />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Connected')).toBeInTheDocument();
+      });
+      expect(screen.getByText('Backend says: Backend greeting')).toBeInTheDocument();
+      expect(screen.queryByText('Disconnected')).not.toBeInTheDocument();
+    });
+
+    it('flips to Disconnected when /api/version body fails to parse as JSON', async () => {
+      (global.fetch as jest.Mock)
+        .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ status: 'healthy' }) })
+        // version: ok=true but json() rejects (e.g. truncated/HTML body) — caught → unhealthy
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.reject(new SyntaxError('bad json')),
+        });
+
+      render(<Home />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Disconnected')).toBeInTheDocument();
+      });
+      expect(screen.getByText('Could not connect to backend API')).toBeInTheDocument();
+    });
+
+    it('flips to Disconnected when /api/hello GET body fails to parse as JSON', async () => {
+      (global.fetch as jest.Mock)
+        .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ status: 'healthy' }) })
+        .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ version: '0.1.0' }) })
+        // hello GET: ok=true but json() rejects — caught → unhealthy
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.reject(new SyntaxError('bad json')),
+        });
+
+      render(<Home />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Disconnected')).toBeInTheDocument();
+      });
+      expect(screen.getByText('Could not connect to backend API')).toBeInTheDocument();
+    });
+  });
+
   describe('form state edge cases', () => {
     it('name input retains value after successful greeting', async () => {
       mockFetch({ ...HEALTHY_RESPONSES, '/api/hello': { message: 'Hello, Alice!' } });
