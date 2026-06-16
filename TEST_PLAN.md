@@ -4,6 +4,60 @@ Documents test coverage, test descriptions, and quality improvements.
 
 ---
 
+## 2026-06-16 — QA Agent: flaky-hunt session (issue #315)
+
+**The suite is stable.** The full backend suite ran **5×** under
+`pytest-randomly` (order reshuffled each run): `716 passed, 2 xfailed` every
+time. The frontend suite ran **3×**: `96 passed` every time. Zero flakes
+observed.
+
+The contribution closes a gap in the flakiness *guard* coverage, not in the
+product. Every guard in `test_flakiness_guards.py` pins determinism **within a
+single Python process** — but the two most common *cross-process* sources of
+"passes locally, flakes in CI" are unguarded, because both are read once at
+interpreter/C-library start and cannot be perturbed in-process:
+
+- **`PYTHONHASHSEED`** — randomizes `set`/`dict` iteration order per process.
+  The OpenAPI schema is built from sets/dicts; an order-leak into its bytes
+  would be invisible to every same-process guard (they share one seed) and
+  would only flake between CI runs that drew different seeds. `pytest-randomly`
+  re-seeds `PYTHONHASHSEED` across runs, so this is a live risk for this suite.
+- **`LC_ALL` / `LANG`** — the locale sibling of the existing `TZ` guard
+  (`TestTZEnvironmentVariableIndependence`). A handler that ever used
+  locale-sensitive formatting would pass on `C`/UTF-8 runners and flake only on
+  differently-configured machines.
+
+### Backend — `backend/tests/test_process_isolation_flakiness.py` (new, 3 classes, 10 tests)
+
+Each test launches the app in a fresh interpreter via `sys.executable` with a
+deliberately-perturbed environment, then compares the output across
+environments. Suite grows 716 → 726 backend tests (+10).
+
+| Class / Test | Pins |
+|------|------|
+| `TestHashSeedSchemaStability::test_openapi_json_identical_across_hash_seeds` | `app.openapi()` serializes to identical bytes under hash seeds `0`/`1`/`65535` |
+| `TestHashSeedSchemaStability::test_openapi_paths_set_identical_across_hash_seeds` | Declared path set is identical across seeds (diagnostic split from the byte check) |
+| `TestHashSeedSchemaStability::test_components_schema_set_identical_across_hash_seeds` | Declared component-schema name set is identical across seeds |
+| `TestHashSeedResponseStability::test_health_status_identical_across_hash_seeds` | `/health` `status` is the constant `healthy` under every seed |
+| `TestHashSeedResponseStability::test_post_hello_message_identical_across_hash_seeds` | `POST /api/hello` returns one `message` across seeds |
+| `TestHashSeedResponseStability::test_version_body_identical_across_hash_seeds` | Timestamp-free `/api/version` body is byte-identical across seeds |
+| `TestLocaleIndependence::test_health_timestamp_is_utc_under_each_locale` | `/health` timestamp has a zero UTC offset under every installed locale |
+| `TestLocaleIndependence::test_post_hello_message_identical_across_locales` | `POST /api/hello` `message` is identical across locales |
+| `TestLocaleIndependence::test_version_body_identical_across_locales` | `/api/version` body is byte-identical across locales |
+| `TestLocaleIndependence::test_openapi_schema_identical_across_locales` | `/openapi.json` is byte-identical across locales |
+
+Locale tests skip (rather than fail) when fewer than two candidate locales are
+installed, so the module stays green on minimal images.
+
+### Verification
+
+- New file passes **3×** with no flakiness (~11s/run; subprocess-bound).
+- Full backend suite: **726 passed, 2 xfailed** under `pytest-randomly`.
+- `ruff format`, `ruff check`, and `mypy` all clean on the new file.
+- No production code touched — flakiness-guard pins only.
+
+---
+
 ## 2026-06-15 — QA Agent: coverage-sprint session (issue #311)
 
 **Both suites are already at 100% line + branch coverage** (716 backend, 92
