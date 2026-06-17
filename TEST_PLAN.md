@@ -4,6 +4,45 @@ Documents test coverage, test descriptions, and quality improvements.
 
 ---
 
+## 2026-06-17 — QA Agent: integration-gaps session (issue #318)
+
+**Backend line/branch coverage is already 100%**, so this session targets a
+*behavioural* integration gap rather than a line-coverage one. The application
+routes (`/health`, `/api/version`, `/api/hello`) are pinned exhaustively, but
+the three endpoints FastAPI mounts automatically — `/openapi.json`, `/docs`
+(Swagger UI), and `/redoc` — are part of the live HTTP surface yet were only
+asserted to return `200` (`test_main`) and honour the CORS allow-list
+(`test_edge_cases`). Their HTTP *contract* was otherwise unpinned.
+
+**Key finding — a real asymmetry now pinned:** the app's `@app.get` routes
+return **405 for `HEAD`** (Starlette does not auto-append HEAD to a FastAPI
+`APIRoute`'s method set), but the three meta-endpoints are plain Starlette
+routes that **auto-handle `HEAD` (200)** and advertise `Allow: GET, HEAD` on
+their 405s. Both halves of the divergence are now pinned so a FastAPI upgrade or
+a `docs_url`/`openapi_url` change that flips it is caught deliberately.
+
+### Backend — `backend/tests/test_meta_endpoint_http_contract.py` (new, 5 classes, 36 tests)
+
+Suite grows 726 → 762 backend tests (+36). Every behaviour was confirmed over
+both the sync `TestClient` and the real-ASGI `AsyncClient` before writing.
+
+| Class | Pins |
+|------|------|
+| `TestMetaEndpointContentType` | `/openapi.json` serves `application/json`; `/docs` and `/redoc` serve `text/html; charset=utf-8` (charset explicitly asserted) |
+| `TestMetaEndpointMethodRejection` | `POST`/`PUT`/`DELETE`/`PATCH` on each meta-path return `405`; the 405 `Allow` header is exactly `{GET, HEAD}` |
+| `TestMetaEndpointHeadIsAutoHandled` | `HEAD` on each meta-path is `200` with an empty body; contrast pin that `HEAD` on the app's GET routes stays `405` |
+| `TestServedOpenAPIJsonBodyContract` | Served `/openapi.json` parses as JSON, declares an OpenAPI `3.x` version, and its `info.title` matches `app.title` |
+| `TestMetaEndpointAsyncTransportParity` | Over async ASGI: `GET` status + Content-Type, `POST` → `405`, and `/openapi.json` echoes ACAO for an allow-listed origin |
+
+### Verification
+
+- New file passes **3×** with no flakiness (~0.1s/run).
+- Full backend suite: **762 passed, 2 xfailed**.
+- `ruff format`, `ruff check`, and `mypy` all clean on the new file.
+- No production code touched — integration-contract pins only.
+
+---
+
 ## 2026-06-16 — QA Agent: flaky-hunt session (issue #315)
 
 **The suite is stable.** The full backend suite ran **5×** under
