@@ -4,6 +4,52 @@ Documents test coverage, test descriptions, and quality improvements.
 
 ---
 
+## 2026-06-18 — QA Agent: e2e-performance session (issue #321)
+
+**Backend line/branch coverage is already 100%** and there is no Playwright
+`waitForTimeout` E2E suite to optimize (the frontend `test:e2e` script is a
+stub), so this session adds **server-side end-to-end performance regression
+guards**. The three existing perf suites (`test_performance.py`,
+`test_e2e_performance_scaling.py`, `test_e2e_payload_and_throughput.py`) already
+pin single-call latency, p95/p99/jitter, cold start, head-of-line blocking,
+mixed validity, payload-size scaling, round-*ratio* stability, and both
+sequential and single-shot concurrent throughput floors. This session targets
+three slices none of them cover, each modelling how a *real frontend* drives the
+API (a sequence across endpoints, many sessions at once) rather than hammering
+one endpoint in isolation.
+
+### Backend — `backend/tests/test_e2e_journey_performance.py` (new, 3 classes, 7 tests)
+
+Suite grows 762 → 769 backend tests (+7). Every bound is 10–100× typical
+observed latency on a shared CI runner, so the tests fail only on a real
+regression. Confirmed to pass **3×** with no flakiness (~0.4s/run).
+
+| Class | Pins |
+|------|------|
+| `TestConcurrentUserJourneys` | 25 users each run the full sequential journey (health → version → GET hello → POST hello) *concurrently*; bounds every journey's end-to-end wall-time, the cross-journey p95, and that each user's POST echoes **that user's own** name — no per-request state bleed between concurrent sessions |
+| `TestCrossEndpointFairness` | In a heterogeneous fan-out mixing all GET endpoints, groups latency *by endpoint* and bounds both the slowest/fastest p95 **ratio** (relative starvation) and each endpoint's **absolute** p95 (everything-slow-together starvation) |
+| `TestPerRoundConcurrentThroughputFloor` | A minimum concurrent rps must hold on **every** round of a repeated fan-out (health-only, and mixed GET+POST), not just once; catches a post-warm-up collapse or steady downward drift that the single-shot floor and round-*ratio* guards both miss. Mixed round verifies every POST echo to prove throughput isn't bought by garbling responses |
+
+### Why these specific gaps?
+
+- Every existing concurrent test fans out *identical* calls. None model a
+  multi-endpoint **user journey** run by many concurrent sessions, so a
+  regression that serialized sessions or leaked state between them was unpinned.
+- Mixed-workload tests bound *total* batch time, which a regression can satisfy
+  while **starving one route**; a per-endpoint p95 fairness ratio catches that.
+- The concurrent rps floor is measured *once* and round stability bounds the
+  *ratio* of totals; neither floors **per-round** sustained rps, so a collapse
+  appearing only after warm-up slipped through.
+
+### Verification
+
+- New file passes **3×** with no flakiness (~0.4s/run).
+- Full backend suite: **769 passed, 2 xfailed**; coverage stays **100%**.
+- `ruff format`, `ruff check`, and `mypy` all clean on the new file.
+- No production code touched — performance regression guards only.
+
+---
+
 ## 2026-06-17 — QA Agent: integration-gaps session (issue #318)
 
 **Backend line/branch coverage is already 100%**, so this session targets a
