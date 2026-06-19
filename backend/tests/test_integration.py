@@ -7,7 +7,6 @@ API contract (response shapes) that the frontend TypeScript interfaces depend on
 """
 
 import asyncio
-from datetime import datetime
 
 import pytest
 from fastapi.testclient import TestClient
@@ -19,6 +18,7 @@ from .conftest import (
     assert_utc_iso8601,
     get_openapi_schema,
     openapi_component_for_response,
+    response_timestamp,
 )
 
 
@@ -788,11 +788,9 @@ class TestCrossEndpointTimestampOrderingInUserFlow:
         (GET hello), form submit (POST hello). Each handler creates its own
         timestamp; ordering must follow wall-clock ordering.
         """
-        ts_health = datetime.fromisoformat(client.get("/health").json()["timestamp"])
-        ts_get_hello = datetime.fromisoformat(client.get("/api/hello").json()["timestamp"])
-        ts_post_hello = datetime.fromisoformat(
-            client.post("/api/hello", json={"name": "FlowUser"}).json()["timestamp"]
-        )
+        ts_health = response_timestamp(client.get("/health"))
+        ts_get_hello = response_timestamp(client.get("/api/hello"))
+        ts_post_hello = response_timestamp(client.post("/api/hello", json={"name": "FlowUser"}))
 
         assert ts_health <= ts_get_hello, (
             f"/health timestamp {ts_health} is after /api/hello GET {ts_get_hello}"
@@ -807,14 +805,10 @@ class TestCrossEndpointTimestampOrderingInUserFlow:
         Catches a regression where any handler accidentally cached its first
         ``datetime.now()`` value (e.g. via a misused module-level default).
         """
-        first_health = datetime.fromisoformat(client.get("/health").json()["timestamp"])
-        first_post = datetime.fromisoformat(
-            client.post("/api/hello", json={"name": "Pass1"}).json()["timestamp"]
-        )
-        second_health = datetime.fromisoformat(client.get("/health").json()["timestamp"])
-        second_post = datetime.fromisoformat(
-            client.post("/api/hello", json={"name": "Pass2"}).json()["timestamp"]
-        )
+        first_health = response_timestamp(client.get("/health"))
+        first_post = response_timestamp(client.post("/api/hello", json={"name": "Pass1"}))
+        second_health = response_timestamp(client.get("/health"))
+        second_post = response_timestamp(client.post("/api/hello", json={"name": "Pass2"}))
         assert first_health <= second_health, (
             "Health timestamp moved backwards across two passes — possible clock cache"
         )

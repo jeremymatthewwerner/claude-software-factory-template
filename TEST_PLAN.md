@@ -2874,3 +2874,48 @@ depends on OS thread scheduling.
 - Full backend suite: 666 tests pass 3× (was 662; +4 threaded, 1 rename).
 - `ruff format`, `ruff check`, and `mypy` all pass clean on changed files.
 - No production code touched.
+
+## QA Run: Friday 2026-06-19 — test-refactoring (issue #324)
+
+**Focus:** reduce duplication & strengthen assertions in timestamp-ordering tests.
+
+### Refactor — centralise the `fromisoformat(resp.json()["timestamp"])` idiom
+
+Twelve timestamp-ordering/window tests across `test_main.py` and
+`test_integration.py` each re-implemented the same two-step idiom: pull the
+`timestamp` field out of a JSON response and `datetime.fromisoformat` it. Bare
+`fromisoformat` *silently accepts naive (non-UTC) timestamps*, so none of those
+ordering tests actually defended the UTC contract they implicitly assumed.
+
+**New conftest helper** — `response_timestamp(response) -> datetime`:
+routes every extraction through the existing `assert_utc_iso8601`, so each call
+site now additionally asserts the timestamp is a zero-offset UTC ISO 8601 string
+and returns the parsed `datetime` for the ordering/window comparisons that
+followed. Net: −12 duplicated literals, +12 UTC assertions, zero behaviour lost.
+
+| File | Sites refactored |
+|------|------------------|
+| `tests/test_main.py` | 4 (`test_health_timestamp_is_iso_format`, successive-timestamp pair, POST request-window, 10-call monotonic) |
+| `tests/test_integration.py` | 8 (cross-endpoint user-flow + repeated-flow timestamp tests) |
+
+Also dropped the now-unused `from datetime import datetime` import in
+`test_integration.py`.
+
+### New tests — `TestResponseTimestampHelper` (`test_main.py`, 4 new)
+
+Pins the helper's own contract so a regression surfaces with a clear name rather
+than as a confusing failure inside an unrelated ordering test. Uses a
+`_StubResponse` to test the pure parsing path with no HTTP round-trip.
+
+| Test | Pins |
+|------|------|
+| `test_returns_parsed_utc_datetime_for_live_response` | Against real `/health`, returns a zero-offset UTC datetime equal to an independent parse of the same string |
+| `test_accepts_z_suffixed_utc_timestamp` | `Z`/Zulu suffix parsed as zero-offset (equivalent to `+00:00`) |
+| `test_rejects_naive_timestamp` | Naive timestamp raises `AssertionError` — the guarantee the refactor buys for free |
+| `test_rejects_non_utc_offset_timestamp` | Aware-but-non-UTC offset (`+05:00`) raises — zero offset enforced, not mere awareness |
+
+### Verification
+
+- New helper tests pass; full backend suite: 773 tests pass 3× (was 769; +4 helper-contract tests).
+- `ruff format`, `ruff check`, and `mypy` all pass clean on changed files.
+- No production code touched.

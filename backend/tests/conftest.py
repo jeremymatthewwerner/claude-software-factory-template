@@ -102,6 +102,21 @@ def assert_utc_iso8601(timestamp: str) -> datetime:
     return parsed
 
 
+def response_timestamp(response: Any) -> datetime:
+    """Return the parsed, UTC-validated ``timestamp`` of a JSON response.
+
+    Wraps the ``datetime.fromisoformat(response.json()["timestamp"])`` idiom
+    that timestamp-ordering tests repeat verbatim. Beyond removing the
+    duplication, routing every extraction through :func:`assert_utc_iso8601`
+    means each ordering test now *also* asserts the timestamp is a
+    zero-offset UTC ISO 8601 string — strengthening assertions for free.
+
+    The parsed :class:`datetime` is returned so callers can keep doing the
+    ordering/window comparisons they did before.
+    """
+    return assert_utc_iso8601(response.json()["timestamp"])
+
+
 def name_from_greeting(message: str) -> str:
     """Extract the name from a ``"Hello, {name}! Welcome..."`` message.
 
