@@ -19,6 +19,7 @@ from .conftest import (
     cors_preflight_headers,
     expected_greeting,
     get_openapi_schema,
+    response_timestamp,
 )
 
 
@@ -36,8 +37,7 @@ class TestHealthEndpoint:
     def test_health_timestamp_is_iso_format(self, client: TestClient) -> None:
         """Health check timestamp is a non-empty ISO 8601 string."""
         response = client.get("/health")
-        timestamp = response.json()["timestamp"]
-        parsed = datetime.fromisoformat(timestamp)
+        parsed = response_timestamp(response)
         assert parsed is not None
 
 
@@ -418,8 +418,8 @@ class TestTimestampOrdering:
         self, client: TestClient, method: str, path: str
     ) -> None:
         """Two successive calls return timestamps where the second is not earlier."""
-        ts1 = datetime.fromisoformat(client.request(method, path).json()["timestamp"])
-        ts2 = datetime.fromisoformat(client.request(method, path).json()["timestamp"])
+        ts1 = response_timestamp(client.request(method, path))
+        ts2 = response_timestamp(client.request(method, path))
         assert ts2 >= ts1, f"Second timestamp {ts2} must not precede first {ts1}"
 
     def test_hello_post_timestamp_within_request_window(self, client: TestClient) -> None:
@@ -427,7 +427,7 @@ class TestTimestampOrdering:
         before = datetime.now(UTC)
         response = client.post("/api/hello", json={"name": "TimestampWindow"})
         after = datetime.now(UTC)
-        ts = datetime.fromisoformat(response.json()["timestamp"])
+        ts = response_timestamp(response)
         assert before <= ts <= after, f"Timestamp {ts} not in [{before}, {after}]"
 
     def test_health_timestamps_monotone_across_10_sequential_calls(
@@ -438,9 +438,7 @@ class TestTimestampOrdering:
         Extends the two-call ordering test to a longer run so that any cached or
         coarsely-rounded timestamp implementation fails quickly rather than occasionally.
         """
-        timestamps = [
-            datetime.fromisoformat(client.get("/health").json()["timestamp"]) for _ in range(10)
-        ]
+        timestamps = [response_timestamp(client.get("/health")) for _ in range(10)]
         for i in range(1, len(timestamps)):
             assert timestamps[i] >= timestamps[i - 1], (
                 f"Timestamp regression at position {i}: {timestamps[i]} < {timestamps[i - 1]}"
@@ -1130,3 +1128,65 @@ class TestRegressionCORSPreflightContents:
         assert max_age.isdigit() and int(max_age) > 0, (
             f"Access-Control-Max-Age must be a positive integer, got {max_age!r}"
         )
+
+
+class TestResponseTimestampHelper:
+    """Contract tests for the ``response_timestamp`` conftest helper.
+
+    The helper is exercised indirectly by every timestamp-ordering test, but
+    these tests pin its contract directly so a regression surfaces here with a
+    clear name rather than as a confusing failure in an unrelated ordering
+    test. ``_StubResponse`` lets the helper's pure parsing logic be tested
+    without an HTTP round-trip.
+    """
+
+    class _StubResponse:
+        """Minimal stand-in exposing the ``.json()`` method the helper calls."""
+
+        def __init__(self, payload: dict[str, object]) -> None:
+            self._payload = payload
+
+        def json(self) -> dict[str, object]:
+            return self._payload
+
+    def test_returns_parsed_utc_datetime_for_live_response(self, client: TestClient) -> None:
+        """Against a real /health response, the helper returns a UTC-aware datetime.
+
+        The returned value must equal an independent parse of the same
+        timestamp string, proving the helper extracts the right field.
+        """
+        response = client.get("/health")
+        raw = response.json()["timestamp"]
+        parsed = response_timestamp(response)
+        assert parsed.tzinfo is not None
+        offset = parsed.utcoffset()
+        assert offset is not None and offset.total_seconds() == 0
+        assert parsed == datetime.fromisoformat(raw)
+
+    def test_accepts_z_suffixed_utc_timestamp(self) -> None:
+        """A ``Z``-suffixed (Zulu) UTC timestamp is parsed as a zero-offset datetime.
+
+        Clients sometimes emit ``...Z`` rather than ``...+00:00``; both denote
+        UTC and the helper must treat them identically.
+        """
+        parsed = response_timestamp(self._StubResponse({"timestamp": "2026-06-19T12:00:00Z"}))
+        offset = parsed.utcoffset()
+        assert offset is not None and offset.total_seconds() == 0
+
+    def test_rejects_naive_timestamp(self) -> None:
+        """A timezone-naive timestamp raises AssertionError via assert_utc_iso8601.
+
+        This is the guarantee the refactor buys for free: ordering tests that
+        previously called bare ``datetime.fromisoformat`` (which silently
+        accepts naive strings) now reject a non-UTC timestamp.
+        """
+        with pytest.raises(AssertionError):
+            response_timestamp(self._StubResponse({"timestamp": "2026-06-19T12:00:00"}))
+
+    def test_rejects_non_utc_offset_timestamp(self) -> None:
+        """A timezone-aware but non-UTC offset raises AssertionError.
+
+        Pins that the helper enforces *zero* offset, not merely awareness.
+        """
+        with pytest.raises(AssertionError):
+            response_timestamp(self._StubResponse({"timestamp": "2026-06-19T12:00:00+05:00"}))
