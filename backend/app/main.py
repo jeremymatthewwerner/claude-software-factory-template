@@ -12,11 +12,16 @@ Endpoints:
 - POST /api/hello - Personalized greeting
 """
 
+import math
 from datetime import UTC, datetime
 from typing import Any
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from app import __version__
@@ -41,6 +46,51 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# ----- Exception handlers -----
+
+
+def _replace_non_finite(value: Any) -> Any:
+    """Recursively replace non-finite floats (``NaN``/``inf``/``-inf``) with strings.
+
+    Python's ``json`` parser accepts the non-standard JSON tokens ``NaN``,
+    ``Infinity`` and ``-Infinity`` (RFC 8259 forbids them). When such a token
+    reaches a request body, Pydantic rejects the resulting non-finite ``float``,
+    but the rejected value is then echoed back inside the 422 ``detail[].input``
+    field — and ``JSONResponse`` serializes with ``allow_nan=False``, so encoding
+    the non-finite float raises and the request 500s. Converting these values to
+    their ``repr`` string (``"nan"``/``"inf"``/``"-inf"``) makes the payload
+    JSON-encodable so the client gets a clean 422 instead of a server crash.
+    """
+    if isinstance(value, float) and not math.isfinite(value):
+        return str(value)
+    if isinstance(value, dict):
+        return {k: _replace_non_finite(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_replace_non_finite(v) for v in value]
+    return value
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(
+    request: Request, exc: RequestValidationError
+) -> JSONResponse:
+    """Return a clean 422 for invalid request bodies — never a 500.
+
+    Delegates to FastAPI's default handler so the response is byte-identical for
+    the overwhelmingly common case. The default handler only fails when the
+    offending input contains a non-finite float (``NaN``/``Infinity``), which it
+    cannot JSON-encode; in that case we rebuild the same payload with those
+    values sanitized so the client still receives a well-formed 422.
+    """
+    try:
+        return await request_validation_exception_handler(request, exc)
+    except ValueError:
+        return JSONResponse(
+            status_code=422,
+            content={"detail": _replace_non_finite(jsonable_encoder(exc.errors()))},
+        )
 
 
 # ----- Models -----

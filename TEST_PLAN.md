@@ -4,6 +4,65 @@ Documents test coverage, test descriptions, and quality improvements.
 
 ---
 
+## 2026-06-20 — QA Agent: edge-cases session (issue #327)
+
+**Backend line/branch coverage is already 100%**, so this Saturday edge-cases
+run targets *error-path behaviour*, not coverage. While analysing how the API
+handles non-standard request bodies it surfaced a **real defect**: posting a
+JSON body containing the non-standard constants `NaN`, `Infinity` or
+`-Infinity` (which Python's `json` parser accepts even though RFC 8259 §6
+forbids them) returned a **500 Internal Server Error**. The token parses to a
+non-finite `float`; Pydantic rejects it, but the rejected value is echoed back
+inside the 422 `detail[].input` field, and `JSONResponse` serializes with
+`allow_nan=False`, so encoding the non-finite float raised and the request
+crashed. A 500 on a *parseable* request is a denial-of-service-shaped bug — any
+client library that emits `Infinity` for an overflowed number could take the
+endpoint down.
+
+### Fix — `backend/app/main.py` (`validation_exception_handler`)
+
+Added a `RequestValidationError` handler that **delegates to FastAPI's default
+handler** (so the response is byte-identical for the overwhelmingly common
+case) and only deviates when the default would crash on a non-finite float — in
+which case it rebuilds the same 422 payload with those values stringified
+(`"nan"`/`"inf"`/`"-inf"`). No existing behaviour changes; the discriminator
+(`type`/`loc`/`msg`) clients branch on is preserved.
+
+### Backend — `backend/tests/test_edge_cases_error_paths.py` (new, 4 classes, 17 tests)
+
+Suite grows 773 → 790 backend tests (+17). Confirmed to pass **3×** with no
+flakiness (~0.1s/run).
+
+| Class | Pins |
+|------|------|
+| `TestNonStandardJSONConstantsDoNotCrash` | `NaN`/`Infinity`/`-Infinity` — as a field value and as the whole body — return a well-formed 422 (not a 500); the field-value case keeps its `string_type` discriminator; the echoed `input` is stringified so the response stays RFC-8259-valid JSON (no bare `NaN` token leaks to strict client parsers) |
+| `TestWhitespaceOnlyBodyIsMalformed` | A whitespace-only body (spaces/tabs/CRLF/mixed) is `json_invalid` — a third branch distinct from the tolerated *trailing* whitespace and the zero-byte `missing` case |
+| `TestPythonJSONExtensionsRejected` | Single-quoted strings, a trailing comma, and a leading-zero number are each `json_invalid` — guarding against a swap to a lenient (`json5`/`demjson`/YAML) parser |
+| `TestRequestContentEncodingIgnored` | The server does **not** decode `Content-Encoding` on requests: a `gzip`-declared *plain* JSON body succeeds (200), while *actually* gzipped bytes are a 4xx (never transparently inflated to 200) |
+
+### Why these specific gaps?
+
+- The existing `test_edge_cases.py` pins the *decoded-JSON* contract and strict
+  parsing (comments, concatenated objects, extra brace) exhaustively, but never
+  the non-standard numeric constants — the one input class that round-trips
+  *into* the parser yet *out of* a strict encoder, which is exactly why it
+  crashed.
+- Whitespace-only and the three dialect features are realistic client mistakes
+  (Python `str(dict)`, copy-pasted JS literals, C-style octal) that a lenient
+  parser would silently accept.
+- Request-side `Content-Encoding` was wholly unpinned; pinning both directions
+  documents that decompression is the edge/proxy's job, so a future
+  request-decompression middleware can't silently change the wire contract.
+
+### Verification
+
+- New suite passes **3×** (`pytest tests/test_edge_cases_error_paths.py`).
+- Full backend suite: **790 passed, 2 xfailed**, 3× consecutively, no flakes.
+- Coverage held at **100%** line + branch (new handler branches covered).
+- `ruff format`, `ruff check`, and `mypy` all clean.
+
+---
+
 ## 2026-06-18 — QA Agent: e2e-performance session (issue #321)
 
 **Backend line/branch coverage is already 100%** and there is no Playwright
