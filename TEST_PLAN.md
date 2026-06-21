@@ -4,6 +4,53 @@ Documents test coverage, test descriptions, and quality improvements.
 
 ---
 
+## 2026-06-21 — QA Agent: regression-prevention session (issue #330)
+
+**Backend line/branch coverage is already 100%** (54 stmts, 6 branches, 790
+tests before this run), so this Sunday regression-prevention pass targets
+*unpinned behaviour from the past week's commits*, not coverage.
+
+Reviewing the week, the only **real defect fix** was #328 (`fix NaN/Infinity
+500`), which added `app.main.validation_exception_handler` plus the recursive
+pure helper `app.main._replace_non_finite`. The Saturday edge-cases suite
+(`test_edge_cases_error_paths.py`) pins that fix only for the **top-level**
+`{"name": NaN}` shape. The parts most likely to silently regress under a future
+refactor of the helper — its **recursion** through nested containers and its
+**selectivity** (finite values pass through untouched) — were left unpinned.
+
+### Backend — `backend/tests/test_regression_nonfinite_sanitization.py` (new, 3 classes, 23 tests)
+
+Suite grows 790 → 813 backend tests (+23). Passes **3×** with no flakiness
+(~0.05s/run). Coverage held at **100%** line + branch.
+
+| Class | Pins |
+|------|------|
+| `TestNonFiniteSanitizationRecursesThroughContainers` | A `name` field that is a *container* of mixed non-finite/finite values echoes back through `detail[0].input` with **only** the `NaN`/`Infinity`/`-Infinity` floats stringified and every finite sibling, key, and structure preserved — through lists (`[NaN,1,Infinity]`→`["nan",1,"inf"]`), nested dicts (`{"x":NaN,"y":2}`→`{"x":"nan","y":2}`), and deep dict→list→dict alternation. A nested non-finite value leaks **no** bare `NaN`/`Infinity` token (verified by re-parsing the body with a strict `parse_constant` that rejects those tokens, i.e. browser `JSON.parse` semantics). |
+| `TestFiniteValuesAreNeverStringified` | The common-case 422 stays byte-identical to FastAPI's default: a finite `int` input (`123`) echoes as the int `123` (not `"123"`) and a finite `float` (`1.5`) as the float `1.5` — the fix did not broaden sanitization to finite values, so the `input` type SDK error models branch on is unchanged. |
+| `TestReplaceNonFiniteHelperContract` | Direct unit pins on the pure `_replace_non_finite`: each non-finite scalar becomes its `str()` repr (`nan`/`inf`/`-inf`); every finite/non-float scalar (incl. `bool`, `None`, `0.0`, the literal string `"nan"`) passes through identically by value *and* type; a deeply nested mixed structure is walked correctly; and the helper does **not** mutate its input (builds new containers). |
+
+### Why these specific gaps?
+
+- The edge-cases suite proved the fix stops the 500 for the simplest input shape,
+  but `_replace_non_finite` is *recursive* — its dict/list branches and its
+  "leave finite values alone" guard are exercised by 100% line coverage yet
+  pinned by **no behavioural assertion**. A refactor that flattened the helper to
+  the top level, or special-cased only `dict`, would keep 100% coverage while
+  reintroducing the 500 (or leaking a bare nested `NaN` token to strict clients).
+- Pinning that finite values are **not** stringified documents the deliberately
+  narrow scope of the fix (only the crash-causing inputs are altered), so a future
+  "just sanitize everything" simplification fails loudly instead of silently
+  changing the wire type of every validation error's `input` field.
+
+### Verification
+
+- New suite passes **3×** (`pytest tests/test_regression_nonfinite_sanitization.py`).
+- Full backend suite: **813 passed, 2 xfailed**, no flakes.
+- Coverage held at **100%** line + branch.
+- `ruff format`, `ruff check`, and `mypy` all clean.
+
+---
+
 ## 2026-06-20 — QA Agent: edge-cases session (issue #327)
 
 **Backend line/branch coverage is already 100%**, so this Saturday edge-cases
