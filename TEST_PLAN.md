@@ -3025,3 +3025,33 @@ than as a confusing failure inside an unrelated ordering test. Uses a
 - New helper tests pass; full backend suite: 773 tests pass 3× (was 769; +4 helper-contract tests).
 - `ruff format`, `ruff check`, and `mypy` all pass clean on changed files.
 - No production code touched.
+
+---
+
+## Monday (coverage-sprint): Preflight `Access-Control-Allow-Credentials` contract
+
+**Context.** Both backend (`app/main.py`, 100% line+branch, 813 passing) and frontend
+(100%) are already fully line-covered, so this sprint targets a *behavioral* gap rather
+than line padding. The app sets `allow_credentials=True`, and the CORS **preflight**
+(OPTIONS) response carries `Access-Control-Allow-Credentials: true` — but no test asserted
+that value on the preflight. `TestCORSCacheCorrectness` pins it only on real GET/POST
+responses; `TestCORSPreflightByteDeterminism` reads it off the preflight but asserts only
+*determinism* (the value is unchanging), not that it equals `true`. A regression to
+`allow_credentials=False` would silently drop the header from the preflight — breaking every
+credentialed cross-origin request — while every existing CORS test stayed green.
+
+### New tests — `TestRegressionCORSPreflightContents` (`test_main.py`, 2 new)
+
+| Test | Pins |
+|------|------|
+| `test_preflight_echoes_allow_credentials_true` | The allow-listed-origin preflight returns 200 and `Access-Control-Allow-Credentials: true` (exact lowercase string per the Fetch standard). Guards against `allow_credentials=False` slipping through with the existing preflight tests still passing. |
+| `test_preflight_from_disallowed_origin_is_rejected_without_allow_origin` | A disallowed-origin preflight short-circuits with HTTP 400 and **omits** `Access-Control-Allow-Origin`. Since Starlette emits `Allow-Credentials: true` on every preflight unconditionally, the real cross-origin safety net is the *withheld* `Allow-Origin` (browsers ignore credentials when origin is absent). Guards against loosened origin matching echoing an attacker's origin alongside the always-present credentials grant. |
+
+The class docstring was updated to record exactly which preflight headers are (and were not)
+pinned, so the boundary stays explicit for future contributors.
+
+### Verification
+
+- New tests pass 3× with no flakiness; full backend suite: 815 pass, 2 xfailed (was 813+2; +2).
+- `ruff format` + `ruff check` clean; 100% line+branch coverage maintained on `app/`.
+- No production code touched — test-only change.

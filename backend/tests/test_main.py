@@ -1074,8 +1074,9 @@ class TestRegressionCORSPreflightContents:
     """Pin the contents of the CORS preflight response.
 
     ``TestCORSMiddleware`` and ``TestCORSCacheCorrectness`` pin the
-    *presence* of ``Access-Control-Allow-Origin``, ``Vary: Origin``, and
-    ``Access-Control-Allow-Credentials``. They do **not** pin:
+    *presence* of ``Access-Control-Allow-Origin`` and ``Vary: Origin`` on the
+    preflight, and ``Access-Control-Allow-Credentials`` on **real** (GET/POST)
+    responses. They do **not** pin, on the **preflight** response:
 
     - ``Access-Control-Allow-Methods`` — the wildcard ``allow_methods=["*"]``
       configuration causes Starlette to emit every HTTP method. If a future
@@ -1084,6 +1085,15 @@ class TestRegressionCORSPreflightContents:
     - ``Access-Control-Max-Age`` — Starlette's default is 600 seconds. If a
       regression drops it to 0 (or removes the header), browsers re-issue
       preflight on every request, multiplying network traffic.
+    - ``Access-Control-Allow-Credentials`` — the app sets
+      ``allow_credentials=True``, so the preflight must echo
+      ``Allow-Credentials: true``; without it browsers reject the *actual*
+      credentialed (cookie/Authorization) request even though the preflight
+      otherwise succeeds. ``TestCORSCacheCorrectness`` pins this header only on
+      real GET/POST responses, and ``TestCORSPreflightByteDeterminism`` reads it
+      off the preflight but asserts only *determinism* (the value is unchanging),
+      not that it equals ``true`` — so flipping ``allow_credentials=False`` would
+      silently drop it from the preflight with every existing test still green.
     """
 
     def test_preflight_advertises_post_in_allow_methods(self, client: TestClient) -> None:
@@ -1127,6 +1137,57 @@ class TestRegressionCORSPreflightContents:
         assert max_age is not None, "Preflight is missing Access-Control-Max-Age header"
         assert max_age.isdigit() and int(max_age) > 0, (
             f"Access-Control-Max-Age must be a positive integer, got {max_age!r}"
+        )
+
+    def test_preflight_echoes_allow_credentials_true(self, client: TestClient) -> None:
+        """The preflight response carries ``Access-Control-Allow-Credentials: true``.
+
+        The app is configured with ``allow_credentials=True``. For a credentialed
+        cross-origin request (cookies or an ``Authorization`` header), browsers
+        require ``Access-Control-Allow-Credentials: true`` on **both** the
+        preflight and the actual response; either one missing aborts the request.
+        ``TestCORSCacheCorrectness`` pins this header on real GET/POST responses
+        but not on the preflight, and ``TestCORSPreflightByteDeterminism`` pins
+        only that the preflight value is *stable*, not that it is ``true``. So a
+        regression to ``allow_credentials=False`` would drop the header from the
+        preflight while every other CORS test stayed green — silently breaking
+        every credentialed cross-origin POST. The exact lowercase string
+        ``"true"`` is mandated by the Fetch standard (not ``"True"``/``"1"``).
+        """
+        response = client.options("/api/hello", headers=cors_preflight_headers("POST"))
+        assert response.status_code == 200
+        assert response.headers.get("access-control-allow-credentials") == "true", (
+            "Preflight must echo Access-Control-Allow-Credentials: true while "
+            "allow_credentials=True (got "
+            f"{response.headers.get('access-control-allow-credentials')!r})."
+        )
+
+    def test_preflight_from_disallowed_origin_is_rejected_without_allow_origin(
+        self, client: TestClient
+    ) -> None:
+        """A preflight from a non-allow-listed origin is rejected and omits Allow-Origin.
+
+        The complement to the positive pin above. Starlette emits
+        ``Access-Control-Allow-Credentials: true`` on *every* preflight
+        unconditionally (it derives solely from the ``allow_credentials=True``
+        config, not from origin matching), so the real cross-origin safety net is
+        that ``Access-Control-Allow-Origin`` is **withheld** for a rejected
+        origin — and per the Fetch standard a browser ignores Allow-Credentials
+        entirely when Allow-Origin is absent. The disallowed preflight short-
+        circuits with HTTP 400. Pinning both the 400 and the missing Allow-Origin
+        guards against a regression that loosened origin matching (e.g. a
+        wildcard or substring match) and started echoing an attacker's origin
+        alongside the always-present credentials grant.
+        """
+        response = client.options(
+            "/api/hello", headers=cors_preflight_headers("POST", origin=DISALLOWED_ORIGIN)
+        )
+        assert response.status_code == 400, (
+            f"A disallowed-origin preflight must be rejected with 400, got {response.status_code}"
+        )
+        assert response.headers.get("access-control-allow-origin") is None, (
+            "A disallowed-origin preflight must not echo an Allow-Origin header "
+            f"(got {response.headers.get('access-control-allow-origin')!r})"
         )
 
 
