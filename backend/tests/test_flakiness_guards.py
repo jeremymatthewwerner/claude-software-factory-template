@@ -69,6 +69,12 @@ Each test class targets a specific class of flakiness:
   their bodies must still be byte-identical across many iterations and
   across origin variation; otherwise clients that compare error bodies
   byte-for-byte would see intermittent diffs.
+* ``TestThreadedColdCacheSchemaDeterminism`` — the asyncio cold-cache guard
+  interleaves builders cooperatively on one core; this fires the schema
+  cache-fill across a true OS-thread pool so two builders can run on
+  different cores at the same instant. Catches a parallel cache-fill race
+  (a half-built schema published to another thread) that single-core
+  interleaving structurally cannot reach.
 
 Bounds are deliberately generous on iteration counts (200–500) because the
 underlying handlers are sub-millisecond — the whole module adds <2s of
@@ -1123,3 +1129,88 @@ class TestThreadedConcurrencyDeterminism:
                 assert name_from_greeting(message) == f"Mix{idx:03d}", (
                     f"threaded POST at idx {idx} did not echo its own name: {message!r}"
                 )
+
+
+class TestThreadedColdCacheSchemaDeterminism:
+    """Cold-cache OpenAPI generation must agree under *true OS-thread* parallelism.
+
+    :class:`TestOpenAPISchemaUnderConcurrency` already clears
+    ``app.openapi_schema`` and fires parallel rebuilds — but it does so with
+    ``asyncio.gather`` on a single-threaded event loop, where the builders
+    *interleave* yet never execute on two CPUs at the same instant. The schema
+    cache-fill is the one place the app performs non-trivial work lazily on
+    first touch, so it is exactly where a true-parallel race (two builders
+    mutating ``app.openapi_schema`` simultaneously on different cores, one
+    publishing a half-built dict another reads) would hide. That race is
+    invisible to cooperative interleaving and only a thread pool can surface
+    it — the same gap ``TestThreadedConcurrencyDeterminism`` closes for the
+    handler path, applied here to the schema-generation path.
+
+    The contract is *not* that two builders coordinate their writes; it is that
+    the schema each one *generates* is deterministic. Responses are therefore
+    compared as parsed dicts (two parallel builders may serialise keys in
+    different orders) rather than raw bytes. The original cache value is
+    restored in a ``finally`` block so the reset cannot leak into adjacent
+    tests — critical here because the cache lives on the shared module-level
+    ``app`` object that every other test imports.
+    """
+
+    def test_threaded_single_cold_fetch_all_agree(self) -> None:
+        """One cache reset, then 32 threads each fetch ``/openapi.json`` once — all agree.
+
+        With the cache cleared a single time, the first wave of threads races
+        to fill it. Every parsed schema must equal the first; a divergence
+        means a builder published output another thread could observe in a
+        partially-built state.
+        """
+        original = app.openapi_schema
+        app.openapi_schema = None
+        try:
+
+            def fetch(_: int) -> dict[str, object]:
+                # A fresh client per thread mirrors the multi-worker production
+                # model and avoids serialising on one client's internals.
+                with TestClient(app) as c:
+                    return dict(c.get("/openapi.json").json())
+
+            with ThreadPoolExecutor(max_workers=THREADED_FANOUT) as pool:
+                schemas = list(pool.map(fetch, range(THREADED_FANOUT)))
+
+            first = schemas[0]
+            for i, other in enumerate(schemas[1:], start=1):
+                assert other == first, (
+                    f"threaded cold-cache /openapi.json fetch #{i} diverged from #0 "
+                    "(parallel schema builders produced different output)"
+                )
+        finally:
+            app.openapi_schema = original
+
+    def test_threaded_reset_and_fetch_race_all_agree(self) -> None:
+        """Each thread clears the cache then fetches — hammering the build race — all agree.
+
+        Unlike the single-reset case, every thread invalidates the cache
+        immediately before its own fetch, so builders are continually racing
+        for the whole run rather than only on the opening wave. This maximises
+        the window in which two threads regenerate the schema simultaneously.
+        All parsed schemas must still be identical.
+        """
+        original = app.openapi_schema
+        app.openapi_schema = None
+        try:
+
+            def reset_and_fetch(_: int) -> dict[str, object]:
+                with TestClient(app) as c:
+                    app.openapi_schema = None
+                    return dict(c.get("/openapi.json").json())
+
+            with ThreadPoolExecutor(max_workers=THREADED_FANOUT) as pool:
+                schemas = list(pool.map(reset_and_fetch, range(THREADED_FANOUT)))
+
+            first = schemas[0]
+            for i, other in enumerate(schemas[1:], start=1):
+                assert other == first, (
+                    f"reset-and-fetch race fetch #{i} diverged from #0 "
+                    "(non-deterministic schema generation under true parallelism)"
+                )
+        finally:
+            app.openapi_schema = original

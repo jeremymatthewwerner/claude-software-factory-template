@@ -4,6 +4,45 @@ Documents test coverage, test descriptions, and quality improvements.
 
 ---
 
+## 2026-06-23 — QA Agent: flaky-hunt session (issue #337)
+
+**No flaky test was found.** Both suites are at **100% coverage** (backend 815
+tests, frontend 96) and the hunt was exhaustive:
+
+- Full backend suite run **5×** under `pytest-randomly` (fresh order/seed each
+  run) — zero flakes.
+- The timing/perf and e2e-throughput suites (the only wall-clock-sensitive
+  tests) stress-run **dozens of times under 2× CPU oversubscription** (8 busy
+  loops on 4 cores) — zero flakes.
+- Margin analysis of the tightest ratio guard
+  (`test_max_latency_within_50x_median`): the `median*50` term is **45–200 ms**
+  because TestClient keeps the `/health` median at ~1–4 ms, so the 5 ms floor
+  never binds — worst-call headroom stays **>44 ms** even under heavy load. The
+  guard is robust, not fragile (an initial hypothesis that it was the flakiest
+  test was empirically disproved).
+
+The existing flakiness-guard coverage is unusually complete — schema/message/
+timestamp determinism, async **and** true-thread concurrency, client isolation,
+GC, RNG-seed, `TZ`, `LC_ALL`/locale, and `PYTHONHASHSEED` (cross-process) are
+all already pinned. The single genuine gap: the cold-cache OpenAPI-schema race
+is only exercised under **`asyncio`** (`TestOpenAPISchemaUnderConcurrency`),
+which interleaves builders cooperatively on one core and can never run two
+builders on two cores at the same instant — the same limitation that motivated
+`TestThreadedConcurrencyDeterminism` for the handler path.
+
+### Backend — `backend/tests/test_flakiness_guards.py` (+1 class, +2 tests)
+
+Suite grows 815 → 817 backend tests. Passes **3×** (and **10×** under 2× CPU
+oversubscription) with no flakiness (~0.3s/run). Coverage held at **100%**.
+
+| Class | Pins |
+|------|------|
+| `TestThreadedColdCacheSchemaDeterminism` | Cold-cache OpenAPI generation must agree under **true OS-thread** parallelism — the one execution model no existing guard reaches. `test_threaded_single_cold_fetch_all_agree`: one cache reset, then 32 threads each fetch `/openapi.json` once; every parsed schema equals the first. `test_threaded_reset_and_fetch_race_all_agree`: each thread clears `app.openapi_schema` immediately before its own fetch, so builders race for the whole run (not just the opening wave); all parsed schemas identical. Schemas compared as parsed dicts (parallel builders may serialise keys in different orders); the original cache value is restored in `finally` so the shared-`app` reset cannot leak into adjacent tests. |
+
+No production code touched — flakiness-guard pins only.
+
+---
+
 ## 2026-06-21 — QA Agent: regression-prevention session (issue #330)
 
 **Backend line/branch coverage is already 100%** (54 stmts, 6 branches, 790
