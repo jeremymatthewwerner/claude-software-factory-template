@@ -4,6 +4,45 @@ Documents test coverage, test descriptions, and quality improvements.
 
 ---
 
+## 2026-06-24 — QA Agent: integration-gaps session (issue #340)
+
+Backend `app/main.py` is already at **100% line and branch coverage** (817
+tests). The integration gap closed here is a *contract* gap line coverage can't
+see: the **`Allow` header on 405 Method Not Allowed responses**. RFC 7231 §6.5.5
+requires a 405 to enumerate the supported methods, and the app delegates this
+entirely to Starlette's router — making the header's contents an emergent
+property of how FastAPI registers routes. Before this session only the **HEAD**
+case (`HEAD /health` → `Allow: GET`) was pinned; the ordinary disallowed verbs
+(`DELETE`/`PUT`/`PATCH`), bare `OPTIONS`, the GET-only meta routes, and the
+multi-method `/api/hello` path were all unverified.
+
+**Headline finding:** `DELETE /api/hello` returns `Allow: GET` — **not**
+`GET, POST` — even though both verbs are registered. FastAPI creates a separate
+`APIRoute` per decorator and Starlette reports only the first path-matching
+route's methods on a method mismatch (no sibling aggregation). This surprising,
+upgrade-fragile behaviour is now pinned in both directions.
+
+### Backend — `backend/tests/test_method_not_allowed_allow_header.py` (new, 8 classes + 1 guard, 56 tests)
+
+Suite grows 817 → 873 backend tests. Passes **3×** under `pytest-randomly`
+(~0.17s/run) with no flakiness. Coverage held at **100%**.
+
+| Class / test | Pins |
+|------|------|
+| `TestAllowHeaderPresentOnEvery405` | Every 405 from a real route (DELETE/PUT/PATCH × `/health`,`/api/version`,`/api/hello`) carries an `Allow` header that is present, non-empty, and contains only valid uppercase HTTP method tokens. |
+| `TestAllowHeaderAdvertisesGet` | All three app routes are GET-registered, so each 405 `Allow` includes `GET` (the client's recovery hint). |
+| `TestApiHelloAllowHeaderDoesNotAggregate` | The dual-method `/api/hello` 405 advertises exactly `{GET}`, never `POST` — pinning the no-sibling-aggregation behaviour. |
+| `TestBareOptionsAllowHeader` | A bare `OPTIONS` (no preflight headers) falls through CORS to the router → 405 with `Allow: GET`. |
+| `TestMetaRouteAllowHeader` | `/openapi.json`, `/docs`, `/redoc` 405s on non-GET verbs advertise `GET`. |
+| `TestAllowHeaderDeterminism` | 50× `DELETE /api/hello` yields one distinct `Allow` value (no mutable routing-state leak). |
+| `TestAllowHeaderCorsParityOnError` | A 405 from an allow-listed origin carries *both* the router's `Allow` and the middleware's `Access-Control-Allow-Origin` — neither layer clobbers the other. |
+| `TestAllowHeaderAsyncTransportParity` | The `{GET}`-only `Allow` on `DELETE /api/hello` holds over the real ASGI transport, not just the in-process `TestClient`. |
+| `test_no_app_route_registers_a_405_disallowed_verb` | Structural guard: fails loudly if a future route registers DELETE/PUT/PATCH, invalidating the suite's "disallowed verb" premise. |
+
+No production code touched — integration-contract pins only.
+
+---
+
 ## 2026-06-23 — QA Agent: flaky-hunt session (issue #337)
 
 **No flaky test was found.** Both suites are at **100% coverage** (backend 815
