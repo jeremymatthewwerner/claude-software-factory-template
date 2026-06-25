@@ -4,6 +4,44 @@ Documents test coverage, test descriptions, and quality improvements.
 
 ---
 
+## 2026-06-25 — QA Agent: e2e-performance session (issue #343)
+
+Backend `app/main.py` is already at **100% line and branch coverage** (873
+passed, 2 xfailed), so Thursday's e2e-performance focus has no coverage gap to
+close. Instead this run targets the suite's **wall-clock time**: profiling
+(`pytest --durations`) showed every one of the ~10 slowest tests living in
+`backend/tests/test_process_isolation_flakiness.py`, which launches 2–4 fresh
+interpreters per test (each paying the ~0.4–1.0s FastAPI import cost)
+**sequentially** inside dict/set comprehensions — making that one file ~12s of
+the ~30s suite.
+
+### Backend — `backend/tests/test_process_isolation_flakiness.py` (optimized, 0 tests added)
+
+The 7 multi-subprocess guards now spawn their per-environment interpreters
+**concurrently** through a new shared `_run_in_subprocesses(snippet, jobs)`
+helper backed by a `ThreadPoolExecutor`. Each `subprocess.run` blocks its
+worker purely on I/O (process spawn + the child's own import), so overlapping
+them gives a near-Nx speedup. Two small helpers (`_hash_seed_jobs`,
+`_locale_jobs`) build the per-job env-override maps so call sites read as one
+line. **No assertion changed** — each guard still compares exactly one output
+per seed/locale, keyed identically, preserving every per-key diagnostic message.
+
+| Change | Effect |
+|------|------|
+| Add `_run_in_subprocesses` thread-pool helper + `_hash_seed_jobs`/`_locale_jobs` | Launches the same snippet under all perturbed envs concurrently instead of serially |
+| Rewrite 3 `TestHashSeedSchemaStability` + 3 `TestHashSeedResponseStability` tests | Parallel hash-seed spawns; identical byte/set/value comparisons |
+| Rewrite 3 `TestLocaleIndependence` multi-locale tests | Parallel locale spawns; identical UTC-offset/message/byte comparisons |
+
+### Verification
+
+- File wall-clock: **~12s → ~5.5s** (cold); full suite **30.2s → 23.7s** (~22% faster), **15.9s** warm.
+- File passes **3×** under `pytest-randomly` with no flakiness; full backend suite **873 passed, 2 xfailed** 3×.
+- Coverage unchanged at **100%** line + branch.
+- `ruff format`, `ruff check`, and `mypy` all clean.
+- No production code touched — test-suite performance optimization only; all assertions byte-for-byte preserved.
+
+---
+
 ## 2026-06-24 — QA Agent: integration-gaps session (issue #340)
 
 Backend `app/main.py` is already at **100% line and branch coverage** (817

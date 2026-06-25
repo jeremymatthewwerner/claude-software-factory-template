@@ -30,9 +30,13 @@ start and cannot be changed in-process:
 
 Both classes run the app in a subprocess via ``sys.executable`` so the child
 inherits a deliberately-perturbed environment. Each subprocess imports FastAPI
-fresh (~0.3-0.4s) and prints a single line, so the module trades a one-off
-~10s of wall-clock for coverage of a flakiness class no in-process test can
-reach. Seed and locale counts are kept small for exactly this reason.
+fresh (~0.3-0.4s) and prints a single line, buying coverage of a flakiness class
+no in-process test can reach. Because every guard launches the *same* snippet
+under several environments and only compares the outputs, the per-test spawns
+are run concurrently through :func:`_run_in_subprocesses` (a thread pool): each
+``subprocess.run`` blocks its worker purely on I/O, so overlapping them cuts this
+file — previously the slowest in the suite — to roughly the cost of a single
+spawn without changing a single assertion.
 """
 
 from __future__ import annotations
@@ -41,6 +45,7 @@ import json
 import os
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -91,6 +96,42 @@ def _run_in_subprocess(snippet: str, env_overrides: dict[str, str]) -> str:
     return result.stdout.strip()
 
 
+def _run_in_subprocesses(snippet: str, jobs: dict[str, dict[str, str]]) -> dict[str, str]:
+    """Run ``snippet`` in a fresh interpreter for each job, all concurrently.
+
+    ``jobs`` maps a caller-chosen key (a hash seed or locale name) to the
+    environment overrides for that child; the return value maps the same keys
+    to each child's stdout.
+
+    Every guard in this module needs to launch the *same* snippet under several
+    perturbed environments and then compare the outputs. Doing that with a
+    sequential comprehension serialized N fresh-interpreter spawns (each paying
+    the ~0.4–1.0s FastAPI import cost), making this the slowest file in the
+    suite. Each :func:`_run_in_subprocess` call blocks its worker purely on I/O
+    (process spawn + the child's own import), so a thread pool overlaps those
+    waits for a near-Nx wall-clock speedup with **zero** change to what is
+    asserted — the comparison still sees one output per job, keyed identically.
+    Returning a dict (not a bare set) preserves each caller's per-key
+    diagnostic messages.
+    """
+    with ThreadPoolExecutor(max_workers=len(jobs)) as pool:
+        keyed = pool.map(
+            lambda item: (item[0], _run_in_subprocess(snippet, item[1])),
+            jobs.items(),
+        )
+        return dict(keyed)
+
+
+def _hash_seed_jobs() -> dict[str, dict[str, str]]:
+    """Map each pinned hash seed to its ``PYTHONHASHSEED`` env override."""
+    return {seed: {"PYTHONHASHSEED": seed} for seed in HASH_SEEDS}
+
+
+def _locale_jobs(locales: list[str]) -> dict[str, dict[str, str]]:
+    """Map each locale name to its ``LC_ALL``/``LANG`` env override."""
+    return {loc: {"LC_ALL": loc, "LANG": loc} for loc in locales}
+
+
 def _available_locales() -> set[str]:
     """Return the set of locale names installed on the host (``locale -a``)."""
     try:
@@ -134,10 +175,7 @@ class TestHashSeedSchemaStability:
 
     def test_openapi_json_identical_across_hash_seeds(self) -> None:
         """Serialized ``app.openapi()`` is identical under each distinct hash seed."""
-        outputs = {
-            seed: _run_in_subprocess(_OPENAPI_SNIPPET, {"PYTHONHASHSEED": seed})
-            for seed in HASH_SEEDS
-        }
+        outputs = _run_in_subprocesses(_OPENAPI_SNIPPET, _hash_seed_jobs())
         distinct = set(outputs.values())
         assert len(distinct) == 1, (
             "app.openapi() serialized to different bytes across PYTHONHASHSEED "
@@ -152,10 +190,8 @@ class TestHashSeedSchemaStability:
         test ever fails, this pinpoints whether the *set of routes* drifted
         (a registration-order leak) versus a deeper serialization change.
         """
-        path_sets = set()
-        for seed in HASH_SEEDS:
-            out = _run_in_subprocess(_OPENAPI_SNIPPET, {"PYTHONHASHSEED": seed})
-            path_sets.add(tuple(sorted(json.loads(out)["paths"].keys())))
+        outputs = _run_in_subprocesses(_OPENAPI_SNIPPET, _hash_seed_jobs())
+        path_sets = {tuple(sorted(json.loads(out)["paths"].keys())) for out in outputs.values()}
         assert len(path_sets) == 1, f"OpenAPI path set varied across hash seeds: {path_sets!r}"
 
     def test_components_schema_set_identical_across_hash_seeds(self) -> None:
@@ -165,10 +201,11 @@ class TestHashSeedSchemaStability:
         specific case where a hash-order leak reorders or drops a component
         only under certain seeds.
         """
-        component_sets = set()
-        for seed in HASH_SEEDS:
-            out = _run_in_subprocess(_OPENAPI_SNIPPET, {"PYTHONHASHSEED": seed})
-            component_sets.add(tuple(sorted(json.loads(out)["components"]["schemas"].keys())))
+        outputs = _run_in_subprocesses(_OPENAPI_SNIPPET, _hash_seed_jobs())
+        component_sets = {
+            tuple(sorted(json.loads(out)["components"]["schemas"].keys()))
+            for out in outputs.values()
+        }
         assert len(component_sets) == 1, (
             f"OpenAPI component-schema set varied across hash seeds: {component_sets!r}"
         )
@@ -187,7 +224,7 @@ class TestHashSeedResponseStability:
     def test_health_status_identical_across_hash_seeds(self) -> None:
         """``/health`` ``status`` is the constant ``healthy`` under every hash seed."""
         snippet = _REQUEST_SNIPPET_TEMPLATE.format(extract="c.get('/health').json()['status']")
-        statuses = {_run_in_subprocess(snippet, {"PYTHONHASHSEED": seed}) for seed in HASH_SEEDS}
+        statuses = set(_run_in_subprocesses(snippet, _hash_seed_jobs()).values())
         assert statuses == {"healthy"}, (
             f"/health status varied across PYTHONHASHSEED values: {statuses!r}"
         )
@@ -197,7 +234,7 @@ class TestHashSeedResponseStability:
         snippet = _REQUEST_SNIPPET_TEMPLATE.format(
             extract="c.post('/api/hello', json={'name': 'HashSeed'}).json()['message']"
         )
-        messages = {_run_in_subprocess(snippet, {"PYTHONHASHSEED": seed}) for seed in HASH_SEEDS}
+        messages = set(_run_in_subprocesses(snippet, _hash_seed_jobs()).values())
         assert messages == {"Hello, HashSeed! Welcome to your Software Factory."}, (
             f"POST /api/hello message varied across PYTHONHASHSEED values: {messages!r}"
         )
@@ -210,7 +247,7 @@ class TestHashSeedResponseStability:
         hash-order-dependent field anywhere in the version response.
         """
         snippet = _REQUEST_SNIPPET_TEMPLATE.format(extract="c.get('/api/version').text")
-        bodies = {_run_in_subprocess(snippet, {"PYTHONHASHSEED": seed}) for seed in HASH_SEEDS}
+        bodies = set(_run_in_subprocesses(snippet, _hash_seed_jobs()).values())
         assert len(bodies) == 1, (
             f"/api/version body varied across PYTHONHASHSEED values ({len(bodies)} distinct)"
         )
@@ -255,8 +292,8 @@ class TestLocaleIndependence:
             "off = datetime.fromisoformat(ts).utcoffset().total_seconds(); "
             "print(int(off))"
         )
-        for loc in present:
-            offset = _run_in_subprocess(snippet, {"LC_ALL": loc, "LANG": loc})
+        offsets = _run_in_subprocesses(snippet, _locale_jobs(present))
+        for loc, offset in offsets.items():
             assert offset == "0", (
                 f"/health timestamp had non-UTC offset {offset}s under locale {loc!r}"
             )
@@ -267,7 +304,7 @@ class TestLocaleIndependence:
         snippet = _REQUEST_SNIPPET_TEMPLATE.format(
             extract="c.post('/api/hello', json={'name': 'Locale'}).json()['message']"
         )
-        messages = {_run_in_subprocess(snippet, {"LC_ALL": loc, "LANG": loc}) for loc in present}
+        messages = set(_run_in_subprocesses(snippet, _locale_jobs(present)).values())
         assert messages == {"Hello, Locale! Welcome to your Software Factory."}, (
             f"POST /api/hello message varied across locales: {messages!r}"
         )
@@ -281,7 +318,7 @@ class TestLocaleIndependence:
         """
         present = self._present_locales()
         snippet = _REQUEST_SNIPPET_TEMPLATE.format(extract="c.get('/api/version').text")
-        bodies = {_run_in_subprocess(snippet, {"LC_ALL": loc, "LANG": loc}) for loc in present}
+        bodies = set(_run_in_subprocesses(snippet, _locale_jobs(present)).values())
         assert len(bodies) == 1, (
             f"/api/version body varied across locales ({len(bodies)} distinct): {present!r}"
         )
@@ -294,10 +331,7 @@ class TestLocaleIndependence:
         version number, a date) would diverge here. Pin the invariant.
         """
         present = self._present_locales()
-        outputs = {
-            loc: _run_in_subprocess(_OPENAPI_SNIPPET, {"LC_ALL": loc, "LANG": loc})
-            for loc in present
-        }
+        outputs = _run_in_subprocesses(_OPENAPI_SNIPPET, _locale_jobs(present))
         assert len(set(outputs.values())) == 1, (
             "app.openapi() serialized to different bytes across locales: "
             f"{{ {', '.join(f'{loc}: {len(o)}' for loc, o in outputs.items())} }}"
