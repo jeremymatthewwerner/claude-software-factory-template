@@ -37,6 +37,7 @@ from httpx import AsyncClient
 
 from tests.conftest import (
     GET_PATHS,
+    JSON_HEADERS,
     assert_utc_iso8601,
     expected_greeting,
     get_openapi_schema,
@@ -135,7 +136,7 @@ class TestGetRequestsIgnoreAttachedBody:
             "GET",
             path,
             content=json.dumps(VALID_POST_BODY),
-            headers={"Content-Type": "application/json"},
+            headers=JSON_HEADERS,
         )
         assert response.status_code == 200, (
             f"GET {path} with an attached body should be ignored and return 200; "
@@ -157,7 +158,7 @@ class TestGetRequestsIgnoreAttachedBody:
             "GET",
             "/api/hello",
             content=json.dumps(VALID_POST_BODY),
-            headers={"Content-Type": "application/json"},
+            headers=JSON_HEADERS,
         )
         assert response.status_code == 200
         message = response.json()["message"]
@@ -181,7 +182,7 @@ class TestGetRequestsIgnoreAttachedBody:
             "GET",
             "/api/hello",
             content=json.dumps(POST_INVALID_BODY),
-            headers={"Content-Type": "application/json"},
+            headers=JSON_HEADERS,
         )
         assert get_response.status_code == 200, (
             f"GET /api/hello validated an attached body (got {get_response.status_code}); "
@@ -206,7 +207,7 @@ class TestGetRequestsIgnoreAttachedBody:
                 "GET",
                 path,
                 content=json.dumps(VALID_POST_BODY),
-                headers={"Content-Type": "application/json"},
+                headers=JSON_HEADERS,
             ).json()
         )
         assert bodiless == with_body, (
@@ -225,7 +226,7 @@ class TestGetRequestsIgnoreAttachedBody:
             "GET",
             "/health",
             content=json.dumps(VALID_POST_BODY),
-            headers={"Content-Type": "application/json"},
+            headers=JSON_HEADERS,
         )
         assert response.status_code == 200
         assert_utc_iso8601(response.json()["timestamp"])
@@ -249,7 +250,7 @@ class TestGetWithBodyIgnoredViaAsyncTransport:
             "GET",
             "/api/hello",
             content=json.dumps(VALID_POST_BODY),
-            headers={"Content-Type": "application/json"},
+            headers=JSON_HEADERS,
         )
         assert response.status_code == 200
         message = response.json()["message"]
@@ -266,7 +267,7 @@ class TestGetWithBodyIgnoredViaAsyncTransport:
             "GET",
             "/health",
             content=json.dumps(POST_INVALID_BODY),
-            headers={"Content-Type": "application/json"},
+            headers=JSON_HEADERS,
         )
         assert response.status_code == 200
         assert response.json()["status"] == "healthy"

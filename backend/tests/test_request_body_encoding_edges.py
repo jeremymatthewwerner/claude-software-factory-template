@@ -41,9 +41,7 @@ by any existing test:
 import pytest
 from fastapi.testclient import TestClient
 
-from .conftest import name_from_greeting
-
-JSON_CT = {"Content-Type": "application/json"}
+from .conftest import JSON_HEADERS, name_from_greeting
 
 
 class TestUndecodableBodyBytesReturn400:
@@ -77,7 +75,7 @@ class TestUndecodableBodyBytesReturn400:
         A regression that funnelled the decode failure through the same
         422 validation path would change the status code clients see.
         """
-        response = client.post("/api/hello", content=raw_body, headers=JSON_CT)
+        response = client.post("/api/hello", content=raw_body, headers=JSON_HEADERS)
         assert response.status_code == 400, (
             f"undecodable body ({why}) returned {response.status_code} — expected 400 "
             f"(the byte-decode error path, distinct from 422 json_invalid): {response.text}"
@@ -94,7 +92,7 @@ class TestUndecodableBodyBytesReturn400:
         the characters of the string if these two shapes were ever merged —
         pinning the type split guards against that silent breakage.
         """
-        response = client.post("/api/hello", content=b'{"name":"\xe9"}', headers=JSON_CT)
+        response = client.post("/api/hello", content=b'{"name":"\xe9"}', headers=JSON_HEADERS)
         assert response.status_code == 400
         detail = response.json()["detail"]
         assert isinstance(detail, str) and detail.strip(), (
@@ -113,8 +111,10 @@ class TestUndecodableBodyBytesReturn400:
         single test documents the contrast a client relies on and fails
         loudly if a framework change collapses the two paths into one.
         """
-        undecodable = client.post("/api/hello", content=b'{"name":"\xff"}', headers=JSON_CT)
-        decodable_garbage = client.post("/api/hello", content=b"not valid json", headers=JSON_CT)
+        undecodable = client.post("/api/hello", content=b'{"name":"\xff"}', headers=JSON_HEADERS)
+        decodable_garbage = client.post(
+            "/api/hello", content=b"not valid json", headers=JSON_HEADERS
+        )
         assert undecodable.status_code == 400
         assert isinstance(undecodable.json()["detail"], str)
         assert decodable_garbage.status_code == 422
@@ -153,7 +153,7 @@ class TestBodyEncodingAutoDetection:
     ) -> None:
         """A body encoded as ``{encoding}`` is decoded and the name echoed (200)."""
         raw = f'{{"name":"{name}"}}'.encode(encoding)
-        response = client.post("/api/hello", content=raw, headers=JSON_CT)
+        response = client.post("/api/hello", content=raw, headers=JSON_HEADERS)
         assert response.status_code == 200, (
             f"{why} returned {response.status_code} — the parser's RFC-4627 encoding "
             f"auto-detection regressed (a switch to utf-8-only pre-decode does this): "
@@ -207,7 +207,7 @@ class TestMalformedInputNeverCrashesServer:
         from app.main import app
 
         non_raising_client = TestClient(app, raise_server_exceptions=False)
-        response = non_raising_client.post("/api/hello", content=raw_body, headers=JSON_CT)
+        response = non_raising_client.post("/api/hello", content=raw_body, headers=JSON_HEADERS)
         assert response.status_code < 500, (
             f"{which} produced {response.status_code} — malformed client input must "
             f"never yield a 5xx; expected a 4xx rejection"

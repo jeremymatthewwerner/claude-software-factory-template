@@ -35,7 +35,7 @@ from fastapi.testclient import TestClient
 
 from app.main import _replace_non_finite
 
-JSON_HEADERS = {"Content-Type": "application/json"}
+from .conftest import JSON_HEADERS
 
 
 def _strict_json_loads(text: str) -> object:

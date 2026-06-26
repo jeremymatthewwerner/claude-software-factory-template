@@ -4,6 +4,54 @@ Documents test coverage, test descriptions, and quality improvements.
 
 ---
 
+## 2026-06-26 — QA Agent: test-refactoring session (issue #346)
+
+Backend `app/main.py` is already at **100% line and branch coverage** (873
+passed, 2 xfailed), so Friday's test-refactoring focus targets **duplication**,
+not new coverage. Audit found the JSON request header
+`{"Content-Type": "application/json"}` — attached to every body-parsing /
+validation `POST /api/hello` test — hard-coded **33 times across 8 files**, and
+worse, independently re-declared as a *module-level constant under two
+different names*: `JSON_CT` (in `test_body_decode_error_contract.py`,
+`test_request_body_encoding_edges.py`) and `JSON_HEADERS` (in
+`test_edge_cases_error_paths.py`, `test_regression_nonfinite_sanitization.py`).
+One idea, three spellings — a Content-Type change would have meant hunting down
+every copy.
+
+### Refactor — single source of truth for the JSON request header
+
+Added `JSON_HEADERS` to `backend/tests/conftest.py` as the one canonical
+constant (with a docstring noting it must be treated as immutable — spread it,
+`{**JSON_HEADERS, "Origin": ...}`, rather than mutate). All eight files now
+import it; the four divergent local declarations are gone.
+
+| File | Before | After |
+|------|--------|-------|
+| `conftest.py` | (no shared constant) | **new** `JSON_HEADERS` constant |
+| `test_body_decode_error_contract.py` | local `JSON_CT = {...}` | imports `JSON_HEADERS`; 3 usages renamed |
+| `test_request_body_encoding_edges.py` | local `JSON_CT = {...}` | imports `JSON_HEADERS`; 6 usages renamed |
+| `test_edge_cases_error_paths.py` | local `JSON_HEADERS = {...}` | imports from conftest |
+| `test_regression_nonfinite_sanitization.py` | local `JSON_HEADERS = {...}` | imports from conftest |
+| `test_edge_cases.py` | 16 inline literals | imports `JSON_HEADERS` |
+| `test_main.py` | 3 inline literals (one multi-key) | imports `JSON_HEADERS`; multi-key uses `{**JSON_HEADERS, "Content-Length": "0"}` |
+| `test_integration.py` | 1 inline literal | imports `JSON_HEADERS` |
+| `test_request_body_contract_gaps.py` | 7 inline literals | imports `JSON_HEADERS` |
+
+Intentional Content-Type *variants* (`application/json; charset=utf-8`,
+`Application/JSON` mixed-case) were deliberately **not** folded into the
+constant — they pin distinct parser behaviours and must stay as literals.
+
+### Verification
+
+- **No new tests, no behaviour change** — a pure refactor. The header dict is
+  byte-identical, so every one of the 873 assertions is unchanged.
+- Full backend suite **873 passed, 2 xfailed** run **3×** with no flakiness.
+- Coverage unchanged at **100%** line + branch.
+- `ruff format`, `ruff check`, and `mypy` all clean.
+- No production code touched.
+
+---
+
 ## 2026-06-25 — QA Agent: e2e-performance session (issue #343)
 
 Backend `app/main.py` is already at **100% line and branch coverage** (873

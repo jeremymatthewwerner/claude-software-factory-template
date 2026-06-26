@@ -38,6 +38,16 @@ GREETING_TEMPLATE = "Hello, {name}! Welcome to your Software Factory."
 # meant hunting down every copy. Import this instead of re-declaring the list.
 GET_PATHS = ["/health", "/api/version", "/api/hello"]
 
+# Request headers that mark a body as JSON. Centralised as the single source of
+# truth for the ``{"Content-Type": "application/json"}`` dict that body-parsing
+# and validation tests attach to ``POST /api/hello`` requests. Previously each
+# suite either inlined the literal or re-declared its own module-level constant
+# under a divergent name (``JSON_CT`` in some files, ``JSON_HEADERS`` in others),
+# so the same idea lived under three spellings. Import this instead. Treat it as
+# immutable — when a test needs extra headers, spread it (``{**JSON_HEADERS,
+# "Origin": ...}``) rather than mutating it in place.
+JSON_HEADERS = {"Content-Type": "application/json"}
+
 
 @pytest.fixture
 def client() -> TestClient:

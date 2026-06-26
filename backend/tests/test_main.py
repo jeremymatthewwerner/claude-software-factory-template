@@ -13,6 +13,7 @@ from app import __version__
 from .conftest import (
     DISALLOWED_ORIGIN,
     GET_PATHS,
+    JSON_HEADERS,
     LOCALHOST_ORIGIN,
     LOOPBACK_ORIGIN,
     assert_utc_iso8601,
@@ -96,7 +97,7 @@ class TestHelloNameEndpoint:
         response = client.post(
             "/api/hello",
             content="not json",
-            headers={"Content-Type": "application/json"},
+            headers=JSON_HEADERS,
         )
         assert response.status_code == 422
 
@@ -842,7 +843,7 @@ class TestHTTPMethodEdgeCases:
         response = client.post(
             "/api/hello",
             content=b"",
-            headers={"Content-Type": "application/json", "Content-Length": "0"},
+            headers={**JSON_HEADERS, "Content-Length": "0"},
         )
         assert response.status_code == 422
 
@@ -959,7 +960,7 @@ class TestExactGreetingFormat:
         response = client.post(
             "/api/hello",
             content=b'{"name":"first","name":"second"}',
-            headers={"Content-Type": "application/json"},
+            headers=JSON_HEADERS,
         )
         assert response.status_code == 200
         assert response.json()["message"] == expected_greeting("second")
