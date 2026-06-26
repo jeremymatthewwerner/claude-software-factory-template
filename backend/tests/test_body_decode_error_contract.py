@@ -53,14 +53,13 @@ import pytest
 from fastapi.testclient import TestClient
 from httpx import AsyncClient, Response
 
-from .conftest import DISALLOWED_ORIGIN, LOCALHOST_ORIGIN
+from .conftest import DISALLOWED_ORIGIN, JSON_HEADERS, LOCALHOST_ORIGIN
 
 # A POST body that is illegal UTF-8 *inside* an otherwise well-formed JSON
 # skeleton, so the failure is purely at the byte-decode step (the 400 path),
 # not the JSON-grammar step (the 422 path). 0xE9 is Latin-1 'é' sent without
 # UTF-8 transcoding — a real way a misconfigured client mangles its payload.
 UNDECODABLE_BODY = b'{"name":"\xe9"}'
-JSON_CT = {"Content-Type": "application/json"}
 
 # The exact human-readable message Starlette emits for a body it cannot decode.
 # #304 pinned only that this is a *string*; SDK error renderers that match on the
@@ -80,7 +79,7 @@ FORBIDDEN_RESPONSE_HEADERS: list[str] = [
 
 def _post_undecodable(client: TestClient, origin: str | None = None) -> Response:
     """POST the undecodable body, optionally from ``origin``; return the response."""
-    headers = dict(JSON_CT)
+    headers = dict(JSON_HEADERS)
     if origin is not None:
         headers["Origin"] = origin
     return client.post("/api/hello", content=UNDECODABLE_BODY, headers=headers)
@@ -255,7 +254,9 @@ class TestBodyDecodeErrorOverAsyncTransport:
         self, async_client: AsyncClient
     ) -> None:
         """Over async ASGI: 400, JSON content-type, exact detail string."""
-        response = await async_client.post("/api/hello", content=UNDECODABLE_BODY, headers=JSON_CT)
+        response = await async_client.post(
+            "/api/hello", content=UNDECODABLE_BODY, headers=JSON_HEADERS
+        )
         assert response.status_code == 400
         assert response.headers.get("content-type", "").startswith("application/json")
         assert response.json() == {"detail": EXPECTED_DETAIL}
@@ -268,7 +269,7 @@ class TestBodyDecodeErrorOverAsyncTransport:
         response = await async_client.post(
             "/api/hello",
             content=UNDECODABLE_BODY,
-            headers={**JSON_CT, "Origin": LOCALHOST_ORIGIN},
+            headers={**JSON_HEADERS, "Origin": LOCALHOST_ORIGIN},
         )
         assert response.status_code == 400
         assert response.headers.get("access-control-allow-origin") == LOCALHOST_ORIGIN

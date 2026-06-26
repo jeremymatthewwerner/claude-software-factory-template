@@ -24,9 +24,7 @@ parser or middleware swap could silently flip.
 import pytest
 from fastapi.testclient import TestClient
 
-from .conftest import expected_greeting
-
-JSON_HEADERS = {"Content-Type": "application/json"}
+from .conftest import JSON_HEADERS, expected_greeting
 
 
 class TestNonStandardJSONConstantsDoNotCrash:

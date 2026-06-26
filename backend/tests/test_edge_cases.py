@@ -46,6 +46,7 @@ from fastapi.testclient import TestClient
 
 from .conftest import (
     DISALLOWED_ORIGIN,
+    JSON_HEADERS,
     LOCALHOST_ORIGIN,
     cors_preflight_headers,
     expected_greeting,
@@ -69,7 +70,7 @@ class TestTopLevelNonObjectBodyReturns422:
         response = client.post(
             "/api/hello",
             content=b"null",
-            headers={"Content-Type": "application/json"},
+            headers=JSON_HEADERS,
         )
         assert response.status_code == 422
 
@@ -78,7 +79,7 @@ class TestTopLevelNonObjectBodyReturns422:
         response = client.post(
             "/api/hello",
             content=b"true",
-            headers={"Content-Type": "application/json"},
+            headers=JSON_HEADERS,
         )
         assert response.status_code == 422
 
@@ -87,7 +88,7 @@ class TestTopLevelNonObjectBodyReturns422:
         response = client.post(
             "/api/hello",
             content=b"42",
-            headers={"Content-Type": "application/json"},
+            headers=JSON_HEADERS,
         )
         assert response.status_code == 422
 
@@ -102,7 +103,7 @@ class TestTopLevelNonObjectBodyReturns422:
         response = client.post(
             "/api/hello",
             content=b'"Alice"',
-            headers={"Content-Type": "application/json"},
+            headers=JSON_HEADERS,
         )
         assert response.status_code == 422
 
@@ -190,7 +191,7 @@ class TestJSONBodyParsingEdges:
         response = client.post(
             "/api/hello",
             content=b"\xef\xbb\xbf" + b'{"name":"Bob"}',
-            headers={"Content-Type": "application/json"},
+            headers=JSON_HEADERS,
         )
         assert response.status_code == 200
         assert "Bob" in response.json()["message"]
@@ -205,7 +206,7 @@ class TestJSONBodyParsingEdges:
         response = client.post(
             "/api/hello",
             content=b'{"name":"Carol"}   \r\n\t',
-            headers={"Content-Type": "application/json"},
+            headers=JSON_HEADERS,
         )
         assert response.status_code == 200
         assert "Carol" in response.json()["message"]
@@ -222,7 +223,7 @@ class TestJSONBodyParsingEdges:
         response = client.post(
             "/api/hello",
             content=b'{"name":"Carol"}xxx',
-            headers={"Content-Type": "application/json"},
+            headers=JSON_HEADERS,
         )
         assert response.status_code == 422
 
@@ -495,7 +496,7 @@ class TestRequestBodyJSONStrictness:
         response = client.post(
             "/api/hello",
             content=b'{"name":"Alice"/* a comment */}',
-            headers={"Content-Type": "application/json"},
+            headers=JSON_HEADERS,
         )
         assert response.status_code == 422
 
@@ -512,7 +513,7 @@ class TestRequestBodyJSONStrictness:
         response = client.post(
             "/api/hello",
             content=b'{"name":"X"}{"name":"Y"}',
-            headers={"Content-Type": "application/json"},
+            headers=JSON_HEADERS,
         )
         assert response.status_code == 422
 
@@ -529,7 +530,7 @@ class TestRequestBodyJSONStrictness:
         response = client.post(
             "/api/hello",
             content=b'{"name":"X"}}',
-            headers={"Content-Type": "application/json"},
+            headers=JSON_HEADERS,
         )
         assert response.status_code == 422
 
@@ -662,7 +663,7 @@ class TestNameValueJSONEscapeSequences:
         response = client.post(
             "/api/hello",
             content=b'{"name":"\\u0041lice"}',
-            headers={"Content-Type": "application/json"},
+            headers=JSON_HEADERS,
         )
         assert response.status_code == 200
         assert response.json()["message"] == expected_greeting("Alice")
@@ -680,7 +681,7 @@ class TestNameValueJSONEscapeSequences:
         response = client.post(
             "/api/hello",
             content=b'{"name":"\\uD83D\\uDE00"}',
-            headers={"Content-Type": "application/json"},
+            headers=JSON_HEADERS,
         )
         assert response.status_code == 200
         assert response.json()["message"] == expected_greeting("\U0001f600")
@@ -695,7 +696,7 @@ class TestNameValueJSONEscapeSequences:
         response = client.post(
             "/api/hello",
             content=b'{"name":"A\\u00e9B"}',
-            headers={"Content-Type": "application/json"},
+            headers=JSON_HEADERS,
         )
         assert response.status_code == 200
         assert response.json()["message"] == expected_greeting("AéB")
@@ -712,7 +713,7 @@ class TestNameValueJSONEscapeSequences:
         response = client.post(
             "/api/hello",
             content=b'{"name":"A\\tB"}',
-            headers={"Content-Type": "application/json"},
+            headers=JSON_HEADERS,
         )
         assert response.status_code == 200
         assert response.json()["message"] == expected_greeting("A\tB")
@@ -1053,7 +1054,7 @@ class TestValidationErrorDiscriminators:
         detail = self._detail(
             client,
             content=b"null",
-            headers={"Content-Type": "application/json"},
+            headers=JSON_HEADERS,
         )
         assert detail[0]["type"] == "missing", (
             f"null-body discriminator drifted to {detail[0]['type']!r}"
@@ -1071,7 +1072,7 @@ class TestValidationErrorDiscriminators:
         detail = self._detail(
             client,
             content=b"not valid json",
-            headers={"Content-Type": "application/json"},
+            headers=JSON_HEADERS,
         )
         assert detail[0]["type"] == "json_invalid", (
             f"malformed-JSON discriminator drifted to {detail[0]['type']!r} — "

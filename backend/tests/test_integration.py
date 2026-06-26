@@ -14,6 +14,7 @@ from httpx import AsyncClient
 
 from .conftest import (
     GET_PATHS,
+    JSON_HEADERS,
     LOCALHOST_ORIGIN,
     assert_utc_iso8601,
     get_openapi_schema,
@@ -237,7 +238,7 @@ class TestValidationErrorFormat:
         response = client.post(
             "/api/hello",
             content=b"not valid json",
-            headers={"Content-Type": "application/json"},
+            headers=JSON_HEADERS,
         )
         assert response.status_code == 422
 
