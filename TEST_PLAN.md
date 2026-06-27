@@ -3219,3 +3219,62 @@ pinned, so the boundary stays explicit for future contributors.
 - New tests pass 3× with no flakiness; full backend suite: 815 pass, 2 xfailed (was 813+2; +2).
 - `ruff format` + `ruff check` clean; 100% line+branch coverage maintained on `app/`.
 - No production code touched — test-only change.
+
+## QA Run: Saturday 2026-06-27 — edge-cases (issue #349)
+
+**Context.** Backend `app/main.py` is at 100% line+branch coverage (54 stmts, 6 branches),
+so this pass chases a *behavioural* error-path edge, not lines. The non-finite-float
+sanitizer (`app.main._replace_non_finite`, shipped #328) is already heavily pinned — but
+**every** existing test (`test_edge_cases_error_paths.py::TestNonStandardJSONConstantsDoNotCrash`
+and the whole `test_regression_nonfinite_sanitization.py` suite) reaches it through the
+**non-standard JSON tokens** `NaN` / `Infinity` / `-Infinity` (RFC 8259 §6 forbids these).
+`json.loads` *also* yields a non-finite `float` from an **RFC-8259-valid number literal** that
+overflows the IEEE-754 `double` range — `json.loads("1e400") == inf`. That value reaches the
+same crash-prone code path (echoed into the 422 `detail[].input`, which a pre-#328
+`allow_nan=False` encoder could not serialize → 500) through a **different, syntactically-valid
+door**. No test pinned the overflow door; a regression that sanitized only the token path would
+ship a silent 500/token-leak for overflowed numbers.
+
+### New tests — `backend/tests/test_numeric_overflow_nonfinite.py` (5 new classes, 12 new tests)
+
+#### `TestOverflowNumberDoesNotCrash`
+| Test | Pins |
+|------|------|
+| `test_overflow_number_returns_clean_422_with_stringified_input` (4 params: `1e400`, `-1e400`, `1e999`, `1E400`) | An overflowing number returns a well-formed 422 (never a 500) and the echoed `input` is the stringified `inf`/`-inf` repr. |
+
+#### `TestOverflowNumberIsValidJSONSyntax`
+| Test | Pins |
+|------|------|
+| `test_overflow_number_is_wrong_type_not_parse_error` | `{"name": 1e400}` is `type=='string_type'` at `loc==['body','name']` — a *validation* failure (it parsed and reached Pydantic), explicitly **not** `json_invalid`. This is the load-bearing distinction from the `Infinity` *token*, which lives in the parse-error bucket. |
+| `test_overflow_body_is_genuinely_rfc_valid_json` | Anchors the premise at the parser level: `json.loads("1e400")` succeeds and yields a non-finite `inf` — valid syntax, not a dialect extension. |
+
+#### `TestFiniteHugeNumberBoundaryPreserved`
+| Test | Pins |
+|------|------|
+| `test_finite_huge_number_echoed_as_number_not_string` | The complementary boundary: `1e308` (below `float` max ~1.8e308) stays a finite JSON *number* in the echoed `input` — the sanitizer never over-reaches past the finite/non-finite line by stringifying large-but-finite magnitudes. |
+
+#### `TestNestedOverflowRecursesLikeTokenPath`
+| Test | Pins |
+|------|------|
+| `test_overflow_inside_array_is_selectively_stringified` | `{"name": [1e400, 1.5]}` echoes `["inf", 1.5]` — overflow feeds the same recursive walk as the token path; finite siblings survive. |
+| `test_overflow_inside_nested_dict_is_selectively_stringified` | `{"name": {"big": -1e400, "ok": 2}}` echoes `{"big": "-inf", "ok": 2}` — dict recursion over an overflowed value; keys and finite siblings preserved. |
+
+#### `TestOverflowResponseLeaksNoNonStandardTokens`
+| Test | Pins |
+|------|------|
+| `test_response_is_strict_json_with_no_bare_nonfinite_token` (3 params: scalar +/-, nested) | The 422 body carries no bare `Infinity`/`NaN` token and round-trips through a strict `json.loads(..., parse_constant=...)` decoder — so a strict client parser (`JSON.parse`) accepts it. |
+
+### Why this specific edge?
+
+The overflow path is a *realistic* client mistake (a hand-rolled serializer or template emitting
+a huge magnitude) and an RFC-8259-valid one, unlike the `Infinity` token that every existing test
+uses. It exercises the same 500-prone sanitizer code through a syntactically-valid entry point, so
+a regression that special-cased only the named tokens — or that drew the finite/non-finite line in
+the wrong place — would slip past the entire existing non-finite suite. The finite-boundary pin
+(`1e308`) gives the overflow pins their meaning by drawing the line exactly at IEEE-754 max.
+
+### Verification
+
+- New tests pass 3× across randomized seeds with no flakiness; full backend suite: 885 pass, 2 xfailed (was 873+2; +12).
+- `ruff format` + `ruff check` clean; `mypy` clean; 100% line+branch coverage maintained on `app/`.
+- No production code touched — test-only change.
