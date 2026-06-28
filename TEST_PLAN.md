@@ -4,6 +4,51 @@ Documents test coverage, test descriptions, and quality improvements.
 
 ---
 
+## 2026-06-28 — QA Agent: regression-prevention session (issue #352)
+
+Backend `app/main.py` is already at **100% line + branch coverage** (885 passed
+before this run), so this Sunday regression-prevention pass targets a *recently
+fixed bug with no test guarding the fix*. Reviewing recent `fix(` commits surfaced
+**#309 — `fix(backend): move curl install before HEALTHCHECK in Dockerfile`**: the
+container `HEALTHCHECK` shells out to `curl -f http://localhost:8000/health`, but
+the `RUN apt-get install ... curl` layer originally sat *after* the `HEALTHCHECK`
+directive, so the probe referenced a binary the image had not yet provided. The fix
+reordered the install ahead of the directive — but **nothing pinned that ordering**.
+A future Dockerfile edit could silently reintroduce the bug, and it would only
+surface as a container that never reports healthy (the production smoke/canary path),
+invisible to the entire Python suite.
+
+### Backend — `backend/tests/test_regression_dockerfile_healthcheck.py` (new, 3 classes, 7 tests)
+
+Parses the Dockerfile into *logical* instructions (joining `\`-continued lines) so a
+cosmetic reformat does not flap; only a real reorder or dropped install trips them.
+
+| Class | Tests | Pins |
+|-------|-------|------|
+| `TestHealthcheckExistsAndUsesCurlAgainstHealth` | 3 | exactly one `HEALTHCHECK`; it invokes `curl`; it targets `/health` |
+| `TestCurlInstalledBeforeHealthcheck` | 3 | a single `apt-get install curl` layer exists; it appears **before** the `HEALTHCHECK` (the exact #309 invariant, by first-physical-line position); it cleans apt lists (`rm -rf /var/lib/apt/lists/*`) |
+| `TestDockerfileBaseImageProvidesNoCurl` | 1 | base image stays a `python:*-slim` variant (which omits curl) — a fat-base swap surfaces here so the curl pins can be re-evaluated deliberately |
+
+### Why this gap?
+
+Every other recent fix is already pinned: the non-finite-float 500 (#328) and its
+RFC-valid overflow door (#350) are covered across `test_edge_cases_error_paths.py`,
+`test_regression_nonfinite_sanitization.py`, and `test_numeric_overflow_nonfinite.py`.
+The Dockerfile fix was the one production-breaking change with **zero** regression
+coverage — and the most likely to silently regress, since image build/runtime
+behaviour is outside the unit suite's reach.
+
+### Verification
+
+- New suite passes **3×** (`pytest tests/test_regression_dockerfile_healthcheck.py`).
+- **Negative check:** reconstructed the pre-#309 (curl-after-HEALTHCHECK) Dockerfile
+  in-memory and confirmed `test_curl_install_appears_before_healthcheck` fails on it —
+  the pin genuinely catches the regression, not just the current good state.
+- Full backend suite: **892 passed**, 2 xfailed (+7). `app/` stays 100% line+branch.
+- `ruff format`/`ruff check`/`mypy` clean. Test-only change; no production code touched.
+
+---
+
 ## 2026-06-26 — QA Agent: test-refactoring session (issue #346)
 
 Backend `app/main.py` is already at **100% line and branch coverage** (873
