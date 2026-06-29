@@ -4,6 +4,50 @@ Documents test coverage, test descriptions, and quality improvements.
 
 ---
 
+## 2026-06-29 — QA Agent: coverage-sprint session (issue #355)
+
+Backend `app/main.py` and the frontend are both already at **100% line + branch
+coverage** (892 passed before this run), so this Monday coverage-sprint targets a
+*behavioral contract gap* rather than padding line coverage. Reviewing the
+non-finite-float sanitizer (`_replace_non_finite` / `validation_exception_handler`,
+shipped in #328) surfaced one: every existing pin
+(`test_regression_nonfinite_sanitization.py`, `test_numeric_overflow_nonfinite.py`,
+`test_edge_cases_error_paths.py`) drives the sanitizer through the **`{"name":
+<non-finite>}` object shape only** — the non-finite value nested under a field, with
+validation `loc == ["body", "name"]`. The **top-level body shape was entirely
+unpinned**: a bare scalar body (`NaN`/`Infinity`/`-Infinity`) where the non-finite
+value *is* `detail[0].input` at the document root (`loc == ["body"]`), and a
+top-level JSON array (`[1, NaN, Infinity]`) where the list-recursion branch runs at
+the root. A regression that only walked dict-valued inputs (or special-cased the
+`"name"` field) would 500 on a bare top-level `NaN` body while the entire existing
+suite stayed green.
+
+### Backend — `backend/tests/test_nonfinite_toplevel_body.py` (new, 2 classes, 7 tests)
+
+| Class | Tests | Pins |
+|-------|-------|------|
+| `TestTopLevelBareNonFiniteBody` | 4 | a bare top-level `NaN`/`Infinity`/`-Infinity` body returns a clean **422** (not 500) with the scalar stringified to `nan`/`inf`/`-inf` directly at `detail[0].input`; the validation error `loc` is `["body"]` (document root), distinguishing it from the nested `["body", "name"]` shape |
+| `TestTopLevelNonFiniteArrayBody` | 3 | a top-level array `[1, NaN, Infinity]` echoes as `[1, "nan", "inf"]` (finite int preserved); a container nested inside the root array (`[{"k": -Infinity}, NaN]` → `[{"k": "-inf"}, "nan"]`) is walked; a top-level non-finite body leaks **no** bare `NaN`/`Infinity` token (re-parsed with a strict `parse_constant`, i.e. browser `JSON.parse` semantics) |
+
+### Why this gap?
+
+The sanitizer's nested-field behavior is exhaustively pinned, but the top-level body
+is a genuinely distinct validation-error shape: the rejected `input` sits at the root
+of `detail[0]` instead of inside a dict under a key. This is the one path the
+`{"name": ...}` suites structurally cannot reach.
+
+### Verification
+
+- New suite passes **3×** (`pytest tests/test_nonfinite_toplevel_body.py`).
+- **Mutation check:** disabled the `_replace_non_finite(...)` call in the handler
+  (re-introducing the raw-encode 500) and confirmed all 7 tests fail with
+  `ValueError: Out of range float values are not JSON compliant` — the pins genuinely
+  catch the regression, not just the current good state.
+- Full backend suite: **899 passed**, 2 xfailed (+7). `app/` stays 100% line+branch.
+- `ruff format`/`ruff check` clean. Test-only change; no production code touched.
+
+---
+
 ## 2026-06-28 — QA Agent: regression-prevention session (issue #352)
 
 Backend `app/main.py` is already at **100% line + branch coverage** (885 passed
