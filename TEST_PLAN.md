@@ -4,6 +4,43 @@ Documents test coverage, test descriptions, and quality improvements.
 
 ---
 
+## 2026-06-30 — QA Agent: flaky-hunt session (issue #359)
+
+The backend (`app/main.py`) and frontend are both at **100% line + branch
+coverage**, and the full backend suite ran **five times back-to-back under
+`pytest-randomly` (reshuffling order each run) with zero flakes** — the suite is
+stable today. This Tuesday flaky-hunt therefore pins a *previously-unguarded
+source* of cross-process flakiness rather than chasing a live flake.
+
+**Gap found:** `test_process_isolation_flakiness.py` already pins cross-process
+`PYTHONHASHSEED` determinism for the OpenAPI schema and the **success**
+responses (`/health`, `POST /api/hello`, `/api/version`), and
+`test_flakiness_guards.py::TestErrorResponseBodyDeterminism` pins the 404/405/422
+**error** bodies — but only *in-process*, under the single hash seed the test
+process happened to launch with. The **422 validation-error body across distinct
+hash seeds was entirely unpinned**. That body is the most hash-order-sensitive
+output in the app: unlike the model-declared success responses, the 422 `detail`
+is assembled at runtime from `exc.errors()` (a list of plain `dict`s) and, for
+non-finite inputs, rebuilt key-by-key by `_replace_non_finite` +
+`jsonable_encoder` — the only non-trivial application logic in the service. A
+regression that let `str`/`bytes` hash randomization leak iteration order into
+those bytes would pass every in-process guard (they share one seed) and surface
+only as an intermittent diff between two CI runs that drew different seeds.
+
+### Backend — `backend/tests/test_process_isolation_flakiness.py` (1 class, 2 tests added)
+
+| Test | Pins |
+|------|------|
+| `TestHashSeedErrorResponseStability::test_missing_field_422_body_identical_across_hash_seeds` | `POST /api/hello` with an empty body (`{}`) — built by FastAPI's *default* validation handler — serializes to one byte-identical 422 body under hash seeds `0`/`1`/`65535` |
+| `TestHashSeedErrorResponseStability::test_nonfinite_422_body_identical_across_hash_seeds` | `POST /api/hello` with `[{"k": -Infinity}, NaN]` forces the app's *custom* `except ValueError` branch, recursing `_replace_non_finite` through a nested `dict`+`list` (echoed as `[{"k": "-inf"}, "nan"]`); the serialized 422 body is byte-identical across the same three seeds |
+
+Both tests reuse the existing concurrent subprocess harness (`_run_in_subprocesses`
++ `_hash_seed_jobs`), so they add no new infrastructure and run in ~1.1s total.
+Verified passing 3× in isolation and within the full reshuffled suite
+(**901 passed, 2 xfailed**).
+
+---
+
 ## 2026-06-29 — QA Agent: coverage-sprint session (issue #355)
 
 Backend `app/main.py` and the frontend are both already at **100% line + branch

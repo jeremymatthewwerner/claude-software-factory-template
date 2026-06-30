@@ -253,6 +253,67 @@ class TestHashSeedResponseStability:
         )
 
 
+class TestHashSeedErrorResponseStability:
+    """The 422 validation-error body must not depend on ``PYTHONHASHSEED``.
+
+    This is the cross-process complement to
+    :class:`tests.test_flakiness_guards.TestErrorResponseBodyDeterminism`, which
+    fires 50 identical requests but can only ever observe the *one* hash seed
+    the test process was launched under. The error body is the most hash-order-
+    sensitive output in the whole app: unlike the success responses (whose
+    fields are declared by Pydantic models in a fixed order), the 422 ``detail``
+    is assembled at runtime from ``exc.errors()`` — a list of plain ``dict``\\ s —
+    and, for non-finite inputs, rebuilt key-by-key by :func:`app.main._replace_non_finite`
+    and :func:`fastapi.encoders.jsonable_encoder`. That dict-of-dicts assembly is
+    exactly where ``str``/``bytes`` hash randomization would leak iteration order
+    into the serialized bytes. A regression that did so would pass every in-
+    process guard (they all share the parent's single seed) and surface only as
+    an intermittent diff between two CI runs that happened to draw different
+    seeds — the canonical "passes locally, flakes in CI" failure. Pinning it
+    across distinct seeds makes such a regression fail here, deterministically.
+
+    Two payloads are exercised because they travel different code paths:
+
+    * The **missing-field** body (``POST {}``) is built entirely by FastAPI's
+      *default* validation handler — the common case for every malformed
+      request the app sees.
+    * The **non-finite** body (``[{"k": -Infinity}, NaN]``) forces the app's
+      *custom* ``except ValueError`` branch in ``validation_exception_handler``,
+      recursing :func:`app.main._replace_non_finite` through a nested ``dict``
+      and ``list``. This is the only non-trivial application logic in the
+      service, so guarding its cross-seed byte-stability is the highest-value
+      probe in this file.
+    """
+
+    def test_missing_field_422_body_identical_across_hash_seeds(self) -> None:
+        """``POST /api/hello`` with an empty body yields one 422 across seeds."""
+        snippet = _REQUEST_SNIPPET_TEMPLATE.format(extract="c.post('/api/hello', json={}).text")
+        bodies = set(_run_in_subprocesses(snippet, _hash_seed_jobs()).values())
+        assert len(bodies) == 1, (
+            "missing-field 422 body varied across PYTHONHASHSEED values "
+            f"({len(bodies)} distinct): {bodies!r}"
+        )
+
+    def test_nonfinite_422_body_identical_across_hash_seeds(self) -> None:
+        """The non-finite-sanitized 422 body is byte-identical across hash seeds.
+
+        ``[{"k": -Infinity}, NaN]`` is rejected by Pydantic and echoed back
+        through ``_replace_non_finite`` as ``[{"k": "-inf"}, "nan"]``. The
+        nested ``dict`` makes this the most ordering-sensitive payload the app
+        can produce; the serialized bytes must agree under every seed.
+        """
+        extract = (
+            "c.post('/api/hello', content=b'[{\"k\": -Infinity}, NaN]', "
+            "headers={'Content-Type': 'application/json'}).text"
+        )
+        snippet = _REQUEST_SNIPPET_TEMPLATE.format(extract=extract)
+        bodies = set(_run_in_subprocesses(snippet, _hash_seed_jobs()).values())
+        assert len(bodies) == 1, (
+            "non-finite-sanitized 422 body varied across PYTHONHASHSEED values "
+            f"({len(bodies)} distinct): {bodies!r}"
+        )
+
+
 class TestLocaleIndependence:
     """Handler output must not depend on the process ``LC_ALL`` / ``LANG`` locale.
 
