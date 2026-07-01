@@ -3404,3 +3404,46 @@ the wrong place — would slip past the entire existing non-finite suite. The fi
 - New tests pass 3× across randomized seeds with no flakiness; full backend suite: 885 pass, 2 xfailed (was 873+2; +12).
 - `ruff format` + `ruff check` clean; `mypy` clean; 100% line+branch coverage maintained on `app/`.
 - No production code touched — test-only change.
+
+---
+
+## QA Run: Wednesday 2026-07-01 — integration-gaps (issue #362)
+
+Backend line + branch coverage of `app/main.py` was already **100%**, so this run targeted an
+*integration* gap: a behaviour spanning **two independently-served endpoints** that no existing
+test pinned.
+
+### Gap — runtime cross-endpoint version consistency
+
+A client can learn the API version two ways: the runtime endpoint `GET /api/version` (`.version`)
+and the served contract `GET /openapi.json` (`.info.version`). Both derive from `app.__version__`
+today, but that shared origin is an implementation detail — from a black-box client's perspective
+they are two separate responses from two separate code paths (a hand-written handler vs. FastAPI's
+schema generator). Existing coverage pinned each surface *in isolation*: `test_openapi_schema_metadata`
+ties `info.version` to the `__version__` **source constant**, and `TestAPIContractVersion` pins the
+`/api/version` response *shape*. Nothing compared the two **runtime responses** to each other, nor
+across the sync/async transports. A future change that hardcoded a version in one path would drift
+the documented API version from the served one, undetected.
+
+### New tests — `backend/tests/test_version_consistency_integration.py` (1 new class, 4 new tests)
+
+#### `TestRuntimeVersionConsistencyAcrossEndpoints`
+| Test | Pins |
+|------|------|
+| `test_api_version_matches_served_openapi_info_version` | The core black-box guarantee: `GET /api/version` `.version` is byte-identical to `GET /openapi.json` `.info.version`. No `__version__` import — pins the contract a real client observes. |
+| `test_version_consistency_is_stable_across_repeated_requests` | Both surfaces report a single, unchanging version across 5 interleaved calls each — guards against a per-request version (timestamp/PID/random), making the agreement a stable property rather than a one-shot coincidence. |
+| `test_api_version_matches_openapi_over_async_transport` | The same cross-endpoint agreement holds over the async ASGI transport, whose call machinery differs from `TestClient`. |
+| `test_version_agrees_across_both_endpoints_and_both_transports` | The strongest form: all four (endpoint × transport) reads collapse to a single value — transport choice never leaks into the advertised version and the two endpoints never diverge on either transport. |
+
+### Why this gap
+
+Version drift between a running service and its advertised contract is a classic, silent
+integration failure: unit tests pass because each endpoint is correct alone, yet a client trusting
+the OpenAPI schema to know the deployed version is misled. These black-box pins catch that class of
+regression at the HTTP boundary — the layer a real consumer sees.
+
+### Verification
+
+- New tests pass 3× with no flakiness; full backend suite: 905 pass, 2 xfailed (was 901 + 2; +4).
+- `ruff format` + `ruff check` clean; 100% line + branch coverage maintained on `app/`.
+- No production code touched — test-only change.
