@@ -4,6 +4,46 @@ Documents test coverage, test descriptions, and quality improvements.
 
 ---
 
+## 2026-07-02 — QA Agent: e2e-performance session (issue #365)
+
+The backend is at **100% line + branch coverage** (`app/main.py`: 54 stmts, 6
+branches) with 905 passing tests, so this Thursday e2e-performance run pins a
+*new orthogonal perf property* rather than chasing coverage. (The "6" the
+workflow reported is the branch count, not a percentage.)
+
+**Gap found:** the **write path (`POST /api/hello`) under concurrent contention**
+was unguarded for tail latency. Auditing the four perf suites:
+- `test_performance.py::TestNonHealthTailLatency` pins POST p95, but over 200
+  **sequential** calls — no request ever contends with another.
+- `test_e2e_performance_scaling.py::TestConcurrentTailLatency` times each request
+  individually *inside* a fan-out, but **GET-only** (`/health`, `/api/version`) —
+  never the body-read → JSON-decode → Pydantic-validate → format pipeline.
+- `test_e2e_journey_performance.py::TestCrossEndpointFairness` fans out
+  `GET_PATHS` **only**; POST is excluded, so write-path starvation under mixed
+  load is unpinned.
+- No concurrent suite pins **p99** of an in-fan-out latency distribution (they
+  stop at p95/max).
+
+A write-path tail regression that only manifests under concurrency (validation
+or body decode contending on the event loop when many POSTs are in flight)
+slips past all of them.
+
+### Backend — `backend/tests/test_e2e_write_path_tail_latency.py` (new, 2 classes, 4 tests)
+
+| Test | Pins |
+|------|------|
+| `TestConcurrentWritePathTailLatency::test_concurrent_post_p95_individual_latency_bounded` | In a 100-wide concurrent POST fan-out, the p95 of individual write-path latencies stays under the ceiling; every response echoes its own name (no cross-talk) |
+| `TestConcurrentWritePathTailLatency::test_concurrent_post_p99_individual_latency_bounded` | Same fan-out, bounds **p99** — a deeper tail than any existing concurrent guard, catching a rare-but-severe straggler p95 smooths over |
+| `TestConcurrentWritePathTailLatency::test_no_single_concurrent_post_exceeds_p99_ceiling` | No single POST in the fan-out exceeds the p99 ceiling — catches one badly-stalled request that healthy percentiles would hide |
+| `TestWritePathFairnessUnderMixedContention::test_post_p95_within_factor_of_get_p95_in_mixed_fanout` | In an interleaved GET+POST fan-out, POST p95 stays within a bounded factor of GET p95 — catches a regression that serialised only the write path (lock/blocking validator) while GET-only tail guards still pass |
+
+Every test also asserts each POST echoes its own name, so a latency win can
+never be bought by garbling or skipping validation. Bounds are generous (100x+
+typical observed latency) so they fail only on real regressions. Verified
+passing 3× in isolation and within the full suite (**909 passed, 2 xfailed**).
+
+---
+
 ## 2026-06-30 — QA Agent: flaky-hunt session (issue #359)
 
 The backend (`app/main.py`) and frontend are both at **100% line + branch
