@@ -55,7 +55,7 @@ from typing import Any
 import pytest
 from httpx import AsyncClient, Response
 
-from .conftest import GET_PATHS, name_from_greeting
+from .conftest import GET_PATHS, name_from_greeting, percentile
 
 # --- Concurrent user-journey budget --------------------------------------
 
@@ -155,7 +155,7 @@ class TestConcurrentUserJourneys:
             *[_run_user_journey(async_client, i) for i in range(JOURNEY_USERS)]
         )
         latencies = sorted(elapsed for elapsed, _ in results)
-        p95 = latencies[int(len(latencies) * 0.95)]
+        p95 = percentile(latencies, 0.95)
         assert p95 < JOURNEY_P95_CEILING_S, (
             f"concurrent journey p95 {p95 * 1000:.1f}ms exceeds "
             f"{JOURNEY_P95_CEILING_S * 1000:.0f}ms — straggling session under contention"
@@ -208,7 +208,7 @@ class TestCrossEndpointFairness:
         per_endpoint_p95: dict[str, float] = {}
         for path in GET_PATHS:
             lat = sorted(e for p, e in samples if p == path)
-            per_endpoint_p95[path] = lat[int(len(lat) * 0.95)]
+            per_endpoint_p95[path] = percentile(lat, 0.95)
 
         slowest = max(per_endpoint_p95.values())
         fastest = max(min(per_endpoint_p95.values()), FAIRNESS_P95_FLOOR_S)
@@ -242,7 +242,7 @@ class TestCrossEndpointFairness:
 
         for path in GET_PATHS:
             lat = sorted(e for p, e in samples if p == path)
-            p95 = lat[int(len(lat) * 0.95)]
+            p95 = percentile(lat, 0.95)
             assert p95 < FAIRNESS_ABS_P95_CEILING_S, (
                 f"{path} p95 {p95 * 1000:.1f}ms in mixed fan-out exceeds "
                 f"{FAIRNESS_ABS_P95_CEILING_S * 1000:.0f}ms — absolute starvation"

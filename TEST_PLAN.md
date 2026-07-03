@@ -4,6 +4,55 @@ Documents test coverage, test descriptions, and quality improvements.
 
 ---
 
+## 2026-07-03 — QA Agent: test-refactoring session (issue #368)
+
+Backend is at **100% line + branch coverage** with 909 passing tests, so this
+Friday **test-refactoring** run removes cross-file duplication rather than
+chasing coverage. (The "6" the workflow reported is `app/main.py`'s branch
+count, not a percentage.)
+
+**Duplication removed — per-request timing + percentile arithmetic:**
+- `_timed_get(client, path)` was re-declared **byte-for-byte in two suites**
+  (`test_e2e_performance_scaling.py`, `test_e2e_write_path_tail_latency.py`).
+- `_timed_post(client, name)` lived only in the write-path suite but is the
+  natural partner of the GET helper.
+- `_percentile(sorted, pct)` existed in the write-path suite, while
+  `test_performance.py` re-derived the same nearest-rank index math **inline**
+  (`sorted[int(len*0.95)]`, `[int(len*0.99)]`, `[len//2]`), and
+  `test_e2e_performance_scaling.py` / `test_e2e_journey_performance.py` each
+  inlined their own `[int(len*0.95)]` copies.
+
+All three helpers now live once in `conftest.py` (`timed_get`, `timed_post`,
+`percentile`) and are imported by the five perf/e2e suites that used them. The
+nested fairness wrappers in the write-path suite were renamed
+`timed_get`/`timed_post` → `sample_get`/`sample_post` to avoid shadowing the
+now-imported helpers. No test behaviour changed: `percentile` reproduces the
+exact clamped nearest-rank index the suites always used (`int(len*pct)` capped
+at the last element), so every p50/p95/p99 value is identical.
+
+### Backend — `backend/tests/test_conftest_helpers.py` (new, 1 class, 8 tests)
+
+New shared logic must be pinned, so `conftest.percentile` gets a focused
+contract test:
+
+| Test | Pins |
+|------|------|
+| `TestPercentile::test_matches_inline_nearest_rank_index` | Result equals the `sorted[int(len*pct)]` idiom it replaced, across pct ∈ {0, .5, .9, .95, .99} — proves the refactor shifted no percentile value |
+| `TestPercentile::test_p50_is_the_upper_median_of_even_length` | p50 lands on index `len//2`, matching the old `median` idiom |
+| `TestPercentile::test_pct_one_is_clamped_to_last_element` | `pct == 1.0` returns the max instead of an `IndexError` |
+| `TestPercentile::test_pct_above_one_still_clamps_to_last_element` | An over-unity `pct` cannot walk off the end |
+| `TestPercentile::test_pct_zero_returns_first_element` | The 0th percentile is index 0 |
+| `TestPercentile::test_single_element_list_returns_that_element_for_any_pct` | A one-sample list has one value at every percentile |
+| `TestPercentile::test_empty_list_raises_valueerror` | An empty distribution raises `ValueError`, not `IndexError` |
+| `TestPercentile::test_index_never_out_of_range_across_sizes` | For sizes {1,2,10,40,100,200} p95 ≤ p99 ≤ p100 == max, in range — guards the clamp against every fan-out width the suites use |
+
+**Net:** +8 test methods (13 cases counting the parametrized one; 909 → 922
+passing incl. the 5 refactored suites), three duplicated helpers collapsed into
+one shared, tested home. Coverage unchanged at 100%; full suite green 3× under
+`-p no:randomly`.
+
+---
+
 ## 2026-07-02 — QA Agent: e2e-performance session (issue #365)
 
 The backend is at **100% line + branch coverage** (`app/main.py`: 54 stmts, 6

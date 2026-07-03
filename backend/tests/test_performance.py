@@ -23,7 +23,7 @@ from httpx import ASGITransport, AsyncClient
 
 from app.main import app
 
-from .conftest import LOCALHOST_ORIGIN, cors_preflight_headers, name_from_greeting
+from .conftest import LOCALHOST_ORIGIN, cors_preflight_headers, name_from_greeting, percentile
 
 # Latency bounds — generous to avoid flakiness on shared CI runners.
 # Single-call ceilings: 500 ms is ~100x typical observed latency for these
@@ -321,7 +321,7 @@ class TestLatencyDistribution:
     def test_p95_latency_under_ceiling(self, client: TestClient) -> None:
         """95th-percentile /health latency stays under 50ms over 200 calls."""
         sorted_timings = self._measure_health(client, 200)
-        p95 = sorted_timings[int(len(sorted_timings) * 0.95)]
+        p95 = percentile(sorted_timings, 0.95)
         assert p95 < P95_CEILING_S, (
             f"p95 latency {p95 * 1000:.2f}ms exceeds {P95_CEILING_S * 1000:.0f}ms"
         )
@@ -333,7 +333,7 @@ class TestLatencyDistribution:
         even when the median looks fine.
         """
         sorted_timings = self._measure_health(client, 200)
-        p99 = sorted_timings[int(len(sorted_timings) * 0.99)]
+        p99 = percentile(sorted_timings, 0.99)
         assert p99 < P99_CEILING_S, (
             f"p99 latency {p99 * 1000:.2f}ms exceeds {P99_CEILING_S * 1000:.0f}ms"
         )
@@ -346,7 +346,7 @@ class TestLatencyDistribution:
         (lock contention, GC pause, sync I/O on a hot path).
         """
         sorted_timings = self._measure_health(client, 100)
-        median = sorted_timings[len(sorted_timings) // 2]
+        median = percentile(sorted_timings, 0.5)
         worst = sorted_timings[-1]
         # 5ms floor handles the case where median is essentially zero on a
         # very fast runner — without it, a 1µs median would make any real
@@ -884,7 +884,7 @@ class TestNonHealthTailLatency:
             timings.append(time.perf_counter() - start)
             assert response.status_code == 200
         sorted_timings = sorted(timings)
-        p95 = sorted_timings[int(len(sorted_timings) * 0.95)]
+        p95 = percentile(sorted_timings, 0.95)
         assert p95 < NON_HEALTH_P95_CEILING_S, (
             f"{method} {path} p95 {p95 * 1000:.2f}ms exceeds "
             f"{NON_HEALTH_P95_CEILING_S * 1000:.0f}ms"

@@ -2,13 +2,14 @@
 Pytest configuration, fixtures, and shared test helpers.
 """
 
+import time
 from collections.abc import AsyncGenerator
 from datetime import datetime
 from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
-from httpx import ASGITransport, AsyncClient
+from httpx import ASGITransport, AsyncClient, Response
 
 from app.main import app
 
@@ -135,6 +136,53 @@ def name_from_greeting(message: str) -> str:
     is parsed in exactly one place.
     """
     return message.split("Hello, ", 1)[1].split("!", 1)[0]
+
+
+async def timed_get(client: AsyncClient, path: str) -> tuple[Response, float]:
+    """Issue a GET and return ``(response, elapsed_seconds)``.
+
+    Timing each coroutine individually lets a concurrent fan-out report the
+    *per-request* latency distribution, not just the batch wall-time — that is
+    what surfaces a straggler hiding under contention. Centralised here because
+    the perf/e2e suites each re-declared a byte-identical copy of this helper.
+    """
+    start = time.perf_counter()
+    response = await client.get(path)
+    return response, time.perf_counter() - start
+
+
+async def timed_post(client: AsyncClient, name: str) -> tuple[Response, float, str]:
+    """Issue a personalized ``POST /api/hello`` and return
+    ``(response, elapsed_seconds, name)``.
+
+    The write-path partner of :func:`timed_get`. Timing each coroutine
+    individually lets a concurrent fan-out report the per-request write-path
+    latency distribution rather than only the batch wall-time. The ``name`` is
+    threaded back through the tuple so the caller can verify each response
+    echoed the exact name it was called with (guarding against a latency win
+    achieved by silently dropping validation).
+    """
+    start = time.perf_counter()
+    response = await client.post("/api/hello", json={"name": name})
+    return response, time.perf_counter() - start, name
+
+
+def percentile(sorted_values: list[float], pct: float) -> float:
+    """Return the ``pct`` (0-1) percentile of an already-sorted list.
+
+    Uses the nearest-rank index ``int(len * pct)`` — the convention the perf
+    suites have always used — clamped to the final element so ``pct`` values at
+    or near ``1.0`` never index out of range. Centralised so the p95/p99/median
+    index arithmetic lives in exactly one place instead of being re-derived
+    inline in every latency assertion.
+
+    The caller must pass an already-sorted, non-empty list; an empty list has
+    no percentile and raises :class:`ValueError`.
+    """
+    if not sorted_values:
+        raise ValueError("percentile() requires a non-empty list")
+    idx = min(int(len(sorted_values) * pct), len(sorted_values) - 1)
+    return sorted_values[idx]
 
 
 def openapi_component_for_response(
