@@ -44,13 +44,12 @@ runners) so these fail only on real regressions, not on runner noise.
 from __future__ import annotations
 
 import asyncio
-import time
 from collections.abc import Coroutine
 
 import pytest
-from httpx import AsyncClient, Response
+from httpx import AsyncClient
 
-from .conftest import name_from_greeting
+from .conftest import name_from_greeting, percentile, timed_get, timed_post
 
 # --- Ceilings (generous; sized for shared CI runners) --------------------
 
@@ -82,33 +81,6 @@ WRITE_VS_READ_P95_RATIO_CEILING = 6.0
 FAIRNESS_P95_FLOOR_S = 0.002
 
 
-async def _timed_post(client: AsyncClient, name: str) -> tuple[Response, float, str]:
-    """Issue a personalized POST and return ``(response, elapsed_seconds, name)``.
-
-    Timing each coroutine individually lets a concurrent fan-out report the
-    *per-request* write-path latency distribution, not just the batch
-    wall-time — that is what surfaces a straggler hiding under contention. The
-    name is threaded through so the caller can verify each response echoed the
-    exact name it was called with.
-    """
-    start = time.perf_counter()
-    response = await client.post("/api/hello", json={"name": name})
-    return response, time.perf_counter() - start, name
-
-
-async def _timed_get(client: AsyncClient, path: str) -> tuple[Response, float]:
-    """Issue a GET and return ``(response, elapsed_seconds)``."""
-    start = time.perf_counter()
-    response = await client.get(path)
-    return response, time.perf_counter() - start
-
-
-def _percentile(sorted_latencies: list[float], pct: float) -> float:
-    """Return the ``pct`` (0-1) percentile of an already-sorted latency list."""
-    idx = min(int(len(sorted_latencies) * pct), len(sorted_latencies) - 1)
-    return sorted_latencies[idx]
-
-
 class TestConcurrentWritePathTailLatency:
     """The POST write path must have a bounded tail *under contention*.
 
@@ -125,7 +97,7 @@ class TestConcurrentWritePathTailLatency:
     ) -> None:
         """In a 100-wide concurrent POST fan-out, p95 individual latency stays bounded."""
         names = [f"P95U{i:03d}" for i in range(POST_FANOUT)]
-        results = await asyncio.gather(*[_timed_post(async_client, n) for n in names])
+        results = await asyncio.gather(*[timed_post(async_client, n) for n in names])
 
         assert all(r.status_code == 200 for r, _, _ in results)
         # Each response must echo its own name — no cross-talk under contention.
@@ -136,7 +108,7 @@ class TestConcurrentWritePathTailLatency:
             )
 
         latencies = sorted(elapsed for _, elapsed, _ in results)
-        p95 = _percentile(latencies, 0.95)
+        p95 = percentile(latencies, 0.95)
         assert p95 < WRITE_TAIL_P95_CEILING_S, (
             f"concurrent POST p95 individual latency {p95 * 1000:.2f}ms exceeds "
             f"{WRITE_TAIL_P95_CEILING_S * 1000:.0f}ms — write-path straggler under contention"
@@ -153,14 +125,14 @@ class TestConcurrentWritePathTailLatency:
         over is surfaced here.
         """
         names = [f"P99U{i:03d}" for i in range(POST_FANOUT)]
-        results = await asyncio.gather(*[_timed_post(async_client, n) for n in names])
+        results = await asyncio.gather(*[timed_post(async_client, n) for n in names])
 
         assert all(r.status_code == 200 for r, _, _ in results)
         for response, _, name in results:
             assert name_from_greeting(response.json()["message"]) == name
 
         latencies = sorted(elapsed for _, elapsed, _ in results)
-        p99 = _percentile(latencies, 0.99)
+        p99 = percentile(latencies, 0.99)
         assert p99 < WRITE_TAIL_P99_CEILING_S, (
             f"concurrent POST p99 individual latency {p99 * 1000:.2f}ms exceeds "
             f"{WRITE_TAIL_P99_CEILING_S * 1000:.0f}ms — deep write-path tail under contention"
@@ -177,7 +149,7 @@ class TestConcurrentWritePathTailLatency:
         stay fast, so percentiles look healthy) is caught here.
         """
         names = [f"MAXU{i:03d}" for i in range(POST_FANOUT)]
-        results = await asyncio.gather(*[_timed_post(async_client, n) for n in names])
+        results = await asyncio.gather(*[timed_post(async_client, n) for n in names])
 
         assert all(r.status_code == 200 for r, _, _ in results)
         worst_response, worst_latency, worst_name = max(results, key=lambda r: r[1])
@@ -206,12 +178,12 @@ class TestWritePathFairnessUnderMixedContention:
         """POST p95 stays within a bounded factor of GET p95 in an interleaved fan-out."""
         names = [f"FAIR{i:03d}" for i in range(FAIRNESS_CALLS_PER_ENDPOINT)]
 
-        async def timed_get(path: str) -> tuple[str, float]:
-            _, elapsed = await _timed_get(async_client, path)
+        async def sample_get(path: str) -> tuple[str, float]:
+            _, elapsed = await timed_get(async_client, path)
             return "GET", elapsed
 
-        async def timed_post(name: str) -> tuple[str, float]:
-            response, elapsed, echoed = await _timed_post(async_client, name)
+        async def sample_post(name: str) -> tuple[str, float]:
+            response, elapsed, echoed = await timed_post(async_client, name)
             # Correctness gate: fairness must not be met by garbling responses.
             assert response.status_code == 200
             assert name_from_greeting(response.json()["message"]) == echoed
@@ -221,14 +193,14 @@ class TestWritePathFairnessUnderMixedContention:
         # rather than running as two back-to-back blocks.
         coros: list[Coroutine[object, object, tuple[str, float]]] = []
         for name in names:
-            coros.append(timed_get("/health"))
-            coros.append(timed_post(name))
+            coros.append(sample_get("/health"))
+            coros.append(sample_post(name))
         samples = await asyncio.gather(*coros)
 
         get_lat = sorted(e for kind, e in samples if kind == "GET")
         post_lat = sorted(e for kind, e in samples if kind == "POST")
-        get_p95 = max(_percentile(get_lat, 0.95), FAIRNESS_P95_FLOOR_S)
-        post_p95 = _percentile(post_lat, 0.95)
+        get_p95 = max(percentile(get_lat, 0.95), FAIRNESS_P95_FLOOR_S)
+        post_p95 = percentile(post_lat, 0.95)
 
         ratio = post_p95 / get_p95
         assert ratio < WRITE_VS_READ_P95_RATIO_CEILING, (

@@ -44,9 +44,9 @@ import statistics
 import time
 
 import pytest
-from httpx import AsyncClient, Response
+from httpx import AsyncClient
 
-from .conftest import name_from_greeting
+from .conftest import name_from_greeting, percentile, timed_get
 
 # --- Ceilings (generous; sized for shared CI runners) --------------------
 
@@ -68,18 +68,6 @@ ROUND_DEGRADATION_FACTOR = 4.0
 
 # Interleaved valid (200) + invalid (422) concurrent batch ceiling.
 MIXED_VALIDITY_CEILING_S = 1.0
-
-
-async def _timed_get(client: AsyncClient, path: str) -> tuple[Response, float]:
-    """Issue a GET and return ``(response, elapsed_seconds)``.
-
-    Timing each coroutine individually lets a concurrent fan-out report the
-    *per-request* latency distribution, not just the batch wall-time — that
-    is what surfaces a straggler hiding under contention.
-    """
-    start = time.perf_counter()
-    response = await client.get(path)
-    return response, time.perf_counter() - start
 
 
 class TestConcurrencyScaling:
@@ -150,11 +138,11 @@ class TestConcurrentTailLatency:
         self, async_client: AsyncClient
     ) -> None:
         """In a 50-wide concurrent fan-out, p95 individual latency stays bounded."""
-        results = await asyncio.gather(*[_timed_get(async_client, "/health") for _ in range(50)])
+        results = await asyncio.gather(*[timed_get(async_client, "/health") for _ in range(50)])
         assert all(r.status_code == 200 for r, _ in results)
 
         latencies = sorted(elapsed for _, elapsed in results)
-        p95 = latencies[int(len(latencies) * 0.95)]
+        p95 = percentile(latencies, 0.95)
         assert p95 < CONCURRENT_TAIL_P95_CEILING_S, (
             f"concurrent p95 individual latency {p95 * 1000:.2f}ms exceeds "
             f"{CONCURRENT_TAIL_P95_CEILING_S * 1000:.0f}ms — straggler under contention"
@@ -166,7 +154,7 @@ class TestConcurrentTailLatency:
     ) -> None:
         """No single request in a 50-wide fan-out exceeds the single-call ceiling."""
         results = await asyncio.gather(
-            *[_timed_get(async_client, "/api/version") for _ in range(50)]
+            *[timed_get(async_client, "/api/version") for _ in range(50)]
         )
         assert all(r.status_code == 200 for r, _ in results)
 
@@ -193,7 +181,7 @@ class TestHeadOfLineBlocking:
     ) -> None:
         """One 10KB POST + 40 small GETs issued together all finish under ceiling."""
         big_name = "A" * 10240
-        coros = [_timed_get(async_client, "/health") for _ in range(40)]
+        coros = [timed_get(async_client, "/health") for _ in range(40)]
 
         start = time.perf_counter()
         big_post_task = async_client.post("/api/hello", json={"name": big_name})
@@ -325,7 +313,7 @@ class TestMixedValidityConcurrency:
             return time.perf_counter() - start
 
         latencies = await asyncio.gather(*[timed_invalid() for _ in range(40)])
-        p95 = sorted(latencies)[int(len(latencies) * 0.95)]
+        p95 = percentile(sorted(latencies), 0.95)
         assert p95 < CONCURRENT_TAIL_P95_CEILING_S, (
             f"concurrent 422 p95 latency {p95 * 1000:.2f}ms exceeds "
             f"{CONCURRENT_TAIL_P95_CEILING_S * 1000:.0f}ms — validation path stalls under load"
