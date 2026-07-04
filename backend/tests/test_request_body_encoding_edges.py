@@ -27,15 +27,18 @@ by any existing test:
    every UTF-16/32 client. These are characterization pins: they record
    what the parser does today so the behaviour can't change unnoticed.
 
-3. **Lone surrogate escape currently 500s.** A ``\\uD83D`` escape with no
-   paired low surrogate decodes into a Python ``str`` containing a lone
-   surrogate, which then fails UTF-8 re-encoding during *response*
-   serialization — an unhandled error surfacing as ``500``. That is a
-   latent defect (malformed client input must never crash the server), so
-   it is pinned with ``xfail(strict=True)`` asserting the *desired*
-   contract (status ``< 500``). The test documents the limitation today
-   and will flip to a hard failure (xpass) the moment the crash is fixed,
-   prompting removal of the marker.
+3. **Lone surrogate escape now returns a clean 422 (was a 500).** A
+   ``\\uD83D`` escape with no paired low surrogate decodes into a Python
+   ``str`` containing a lone surrogate, which cannot be UTF-8-encoded. It
+   used to flow through the ``name: str`` handler and crash *response*
+   serialization with an unhandled ``UnicodeEncodeError`` → ``500`` — a
+   DoS-shaped defect (malformed client input must never crash the server).
+   ``HelloRequest`` now rejects unpaired surrogates in a ``field_validator``
+   (turning the latent 500 into a 422), and the validation-error handler
+   sanitizes any lone surrogate echoed in ``detail[].input`` so the 422
+   body is itself well-formed JSON. The tests below pin that contract; the
+   previous ``xfail(strict=True)`` marker has been removed now that the fix
+   is in place.
 """
 
 import pytest
@@ -167,27 +170,19 @@ class TestMalformedInputNeverCrashesServer:
 
     A lone UTF-16 surrogate escape (a high surrogate ``\\uD83D`` with no
     paired low surrogate, or vice versa) is accepted by the JSON *decoder*
-    into a Python ``str`` holding an unpaired surrogate. FastAPI then fails
-    to UTF-8-encode that surrogate when serializing the *response*, raising
-    an unhandled error that surfaces as ``500``.
+    into a Python ``str`` holding an unpaired surrogate. That string cannot
+    be UTF-8-encoded, so it used to crash *response* serialization with an
+    unhandled ``UnicodeEncodeError`` surfacing as ``500`` — a DoS-shaped
+    defect (a client should get a ``4xx`` for bad input, never a ``5xx``).
 
-    This is a latent defect, not a contract: a client should get a ``4xx``
-    (its input was bad), never a ``5xx`` (the server fell over). The test
-    asserts the desired contract (``status < 500``) under
-    ``xfail(strict=True)`` so it:
-
-    * documents the known limitation without pretending the crash is correct,
-    * does not redden CI today (reported as xfail), and
-    * flips to a hard failure (xpass) the instant the underlying framework
-      or a local fix starts returning a proper ``4xx`` — at which point the
-      marker should be removed.
+    ``HelloRequest`` now rejects unpaired surrogates in a ``field_validator``,
+    so the request is turned away with a clean ``422`` before the handler
+    ever builds a response it cannot encode. These tests pin that contract;
+    the previous ``xfail(strict=True)`` marker was removed once the fix
+    landed. A regression that drops the validator (or funnels the crash back
+    through the response serializer) would flip these to a 500 and fail here.
     """
 
-    @pytest.mark.xfail(
-        reason="Lone surrogate escapes currently 500 on response serialization; "
-        "desired contract is a 4xx. Remove this marker once fixed.",
-        strict=True,
-    )
     @pytest.mark.parametrize(
         "raw_body,which",
         [
@@ -196,19 +191,37 @@ class TestMalformedInputNeverCrashesServer:
         ],
         ids=["lone_high_surrogate", "lone_low_surrogate"],
     )
-    def test_lone_surrogate_escape_does_not_return_5xx(self, raw_body: bytes, which: str) -> None:
-        """A {which} escape must not crash the server (no 5xx).
+    def test_lone_surrogate_escape_returns_clean_422(self, raw_body: bytes, which: str) -> None:
+        """A {which} escape is rejected with a well-formed ``422`` (no 5xx).
 
-        Uses a client configured with ``raise_server_exceptions=False`` so
-        the unhandled error is surfaced as a real ``500`` response rather
-        than re-raised into the test, letting the assertion express the
-        desired status-code contract directly.
+        Uses a client configured with ``raise_server_exceptions=False`` so a
+        regression that reintroduced the crash would surface as a real ``500``
+        response the assertion can catch, rather than re-raising into the test.
+
+        Pins three facets of the contract:
+
+        * the status is exactly ``422`` (a clean validation rejection, and
+          categorically ``< 500``),
+        * the ``detail`` is the standard list-of-errors shape, and
+        * the echoed ``detail[].input`` is a plain (ASCII-safe) string — the
+          lone surrogate was sanitized so the 422 body is itself valid JSON
+          and does not re-trigger the encode failure it documents.
         """
         from app.main import app
 
         non_raising_client = TestClient(app, raise_server_exceptions=False)
         response = non_raising_client.post("/api/hello", content=raw_body, headers=JSON_HEADERS)
-        assert response.status_code < 500, (
+        assert response.status_code == 422, (
             f"{which} produced {response.status_code} — malformed client input must "
-            f"never yield a 5xx; expected a 4xx rejection"
+            f"never yield a 5xx; expected a clean 422 rejection: {response.text!r}"
+        )
+        detail = response.json()["detail"]
+        assert isinstance(detail, list) and detail, (
+            f"{which}: 422 body must carry a non-empty 'detail' list, got {detail!r}"
+        )
+        # The response bytes must be re-parseable as JSON without a leaked lone
+        # surrogate (which would make ``response.json()`` or a strict client
+        # parser choke). Reaching this line already proves the body decoded.
+        assert isinstance(detail[0]["input"], str), (
+            f"{which}: echoed input should be a sanitized string, got {detail[0]['input']!r}"
         )
