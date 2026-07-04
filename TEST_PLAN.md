@@ -3536,3 +3536,58 @@ regression at the HTTP boundary — the layer a real consumer sees.
 - New tests pass 3× with no flakiness; full backend suite: 905 pass, 2 xfailed (was 901 + 2; +4).
 - `ruff format` + `ruff check` clean; 100% line + branch coverage maintained on `app/`.
 - No production code touched — test-only change.
+
+---
+
+## QA Run: Saturday 2026-07-04 — edge-cases (issue #371)
+
+Backend line + branch coverage of `app/main.py` was already **100%**, so this run hunted an
+*unpinned error-path behaviour* — and surfaced a genuine **latent `500` defect** the suite had
+itself flagged with an `xfail(strict=True)`. Unlike prior edge-case runs, this one **fixes
+production code**, not just tests.
+
+### Defect — lone UTF-16 surrogate escapes crashed the server (HTTP 500)
+
+A request body such as `{"name":"\uD83D"}` (a high surrogate with no paired low surrogate) is
+accepted by the JSON *decoder* into a Python `str` holding an unpaired surrogate. That value
+satisfies the `name: str` annotation, so it flowed through the handler unchecked and only failed
+when the *response* was serialized: a lone surrogate cannot be UTF-8-encoded, so `JSONResponse`
+raised an unhandled `UnicodeEncodeError` → **500**. A 500 on parseable client input is a
+DoS-shaped defect — any client that emits an unpaired surrogate could take the endpoint down.
+`tests/test_request_body_encoding_edges.py` had documented the desired contract (status < 500)
+under `xfail(strict=True)`, waiting for a fix.
+
+### Fix — `backend/app/main.py`
+
+1. **Reject at validation time.** `HelloRequest` gains a `field_validator` that rejects any `name`
+   holding an unpaired surrogate (keyed off UTF-8 encodability), converting the latent 500 into a
+   clean **422** *before* the handler builds a response it cannot encode. Legal surrogate *pairs*
+   (which decode to real astral characters like `😀` and are UTF-8-encodable) are unaffected.
+2. **Sanitize the error echo.** `_replace_lone_surrogates` rewrites any lone surrogate that the
+   validation-error payload would otherwise echo back in `detail[].input` to its ASCII
+   `backslashreplace` form — because that echo would itself re-trigger the same encode failure and
+   turn the 422 back into a 500. This mirrors the existing `_replace_non_finite` sanitizer for
+   non-finite floats.
+
+### New / changed tests
+
+#### `backend/tests/test_lone_surrogate_rejection.py` (new — 3 classes, 25 tests)
+| Class | Pins |
+|-------|------|
+| `TestLoneSurrogateBodyReturns422` | Every unpaired-surrogate shape (min/max high & low surrogate, embedded between ASCII, reversed pair) returns a well-formed 422; the discriminator is `value_error` at `loc==['body','name']`; the 422 body re-parses and its echoed `input` carries no raw surrogate code point. |
+| `TestLegalSurrogatePairStillAccepted` | Legal surrogate pairs and raw-UTF-8 astral characters still round-trip with 200 — the validator does not over-reject. |
+| `TestReplaceLoneSurrogatesUnit` | Direct pins on the pure `_replace_lone_surrogates` recursion: scalar backslash-escaping, passthrough of encodable/non-string values, nested dict/list recursion, and input-not-mutated. |
+
+#### `backend/tests/test_request_body_encoding_edges.py` (changed)
+`TestMalformedInputNeverCrashesServer` — the `xfail(strict=True)` marker was **removed** now that
+the fix is in place, and `test_lone_surrogate_escape_does_not_return_5xx` was renamed to
+`test_lone_surrogate_escape_returns_clean_422` and strengthened to pin the exact 422 status, the
+`detail` list shape, and the sanitized string `input`.
+
+### Verification
+
+- New tests pass 3× with no flakiness; full backend suite: **949 pass, 0 xfailed** (was 922 pass +
+  2 xfailed; the 2 xfails flipped to real passes and 25 new tests were added).
+- `ruff format` + `ruff check` clean; `mypy` clean; 100% line + branch coverage maintained on `app/`
+  (now covering the new validator and sanitizer).
+- **Production code touched** — `app/main.py` fixes a latent 500 → clean 422.
