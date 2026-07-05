@@ -4,6 +4,57 @@ Documents test coverage, test descriptions, and quality improvements.
 
 ---
 
+## 2026-07-05 — QA Agent: regression-prevention session (issue #374)
+
+Backend `app/main.py` was already at **100% line + branch coverage** (960 tests
+before this run counted the new ones; the "12" the workflow reported is the
+module's *branch count*, not a percentage), so this Sunday regression-prevention
+pass reviewed the most recent bug fix — **#372 (`3c81af3`)**, which stopped a
+lone UTF-16 surrogate from crashing the server with a 500 — and found a **live,
+un-pinned hole in that very fix**. Like #372, this run **fixes production code**,
+not just tests.
+
+### Defect — a lone surrogate in a JSON *object key* still crashed the server (HTTP 500)
+
+Fix #372 guarded the `name` *value* (via a `field_validator`) and sanitized
+surrogate *string values* echoed in the 422 error body (via
+`_replace_lone_surrogates`). But `_replace_lone_surrogates` recursed into dict
+**values** while rebuilding dict **keys** untouched
+(`{k: _replace_lone_surrogates(v) ...}`). A lone surrogate can also arrive as a
+JSON object **key** — e.g. a `{"\uD83D": "x"}` body with no `name` field.
+Pydantic reports a `missing` error whose `input` is the *whole body dict*,
+surrogate key and all; JSON object keys are UTF-8-encoded exactly like values,
+so the un-sanitized key re-triggered the same `UnicodeEncodeError` in
+`JSONResponse.render()` → **500**. This is the identical DoS-shaped defect #372
+set out to eliminate, reached through the key path.
+
+**Confirmed reproduction (before fix):** `POST /api/hello` with body
+`{"\uD83D": "x"}` → `500 Internal Server Error`.
+
+### Fix — `backend/app/main.py`
+
+`_replace_lone_surrogates` now sanitizes dict **keys** as well as values
+(`{_replace_lone_surrogates(k): _replace_lone_surrogates(v) ...}`). Non-string
+keys pass through unchanged; valid keys (including legal astral characters) are
+untouched. All surrogate-key variants now return a clean **422**.
+
+### New tests — `backend/tests/test_regression_surrogate_object_keys.py` (new — 2 classes, 11 tests)
+
+| Class | Pins |
+|-------|------|
+| `TestLoneSurrogateInObjectKeyReturns422` | A lone surrogate in an object key returns a clean 422 (never 5xx) across four body shapes — extra key with `name` missing, wrong-type `name` with a sibling surrogate key, a nested surrogate key, and two distinct surrogate keys; the 422 body's raw bytes are UTF-8-decodable and re-parse to the standard FastAPI error envelope. |
+| `TestReplaceLoneSurrogatesSanitizesKeys` | Direct pins on the sanitizer's key handling: a lone-surrogate key is backslash-transcribed, every sanitized key is UTF-8-encodable, nested surrogate keys recurse, valid keys (incl. astral chars) pass through unchanged, and non-string keys survive untouched. |
+
+### Verification
+
+- New tests pass **3×** with no flakiness; verified to **fail (7/11)** against
+  the pre-fix code and **pass (11/11)** after — genuine regression coverage.
+- Full backend suite: **960 pass** (was 949); `ruff format` + `ruff check` +
+  `mypy` clean; 100% line + branch coverage maintained on `app/`.
+- **Production code touched** — `app/main.py` fixes a latent 500 → clean 422.
+
+---
+
 ## 2026-07-03 — QA Agent: test-refactoring session (issue #368)
 
 Backend is at **100% line + branch coverage** with 909 passing tests, so this

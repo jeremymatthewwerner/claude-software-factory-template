@@ -87,6 +87,12 @@ def _replace_lone_surrogates(value: Any) -> Any:
     well-formed 422. Strings that *are* valid UTF-8 (the overwhelmingly common
     case, including legal surrogate *pairs* that decode to astral characters)
     pass through untouched.
+
+    Both dict **keys** and values are sanitized: a lone surrogate can appear in
+    a JSON object key (e.g. a ``{"\\uD83D": "x"}`` body whose whole dict is
+    echoed back as a ``missing``-field error's ``input``), and JSON object keys
+    are UTF-8-encoded just like values — so an un-sanitized key would re-trigger
+    the very encode crash this function exists to prevent.
     """
     if isinstance(value, str):
         try:
@@ -95,7 +101,7 @@ def _replace_lone_surrogates(value: Any) -> Any:
             return value.encode("utf-8", "backslashreplace").decode("ascii")
         return value
     if isinstance(value, dict):
-        return {k: _replace_lone_surrogates(v) for k, v in value.items()}
+        return {_replace_lone_surrogates(k): _replace_lone_surrogates(v) for k, v in value.items()}
     if isinstance(value, list):
         return [_replace_lone_surrogates(v) for v in value]
     return value
