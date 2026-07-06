@@ -3642,3 +3642,73 @@ the fix is in place, and `test_lone_surrogate_escape_does_not_return_5xx` was re
 - `ruff format` + `ruff check` clean; `mypy` clean; 100% line + branch coverage maintained on `app/`
   (now covering the new validator and sanitizer).
 - **Production code touched** — `app/main.py` fixes a latent 500 → clean 422.
+
+---
+
+## QA Run: Monday 2026-07-06 — coverage-sprint (issue #377)
+
+### Context — coverage already saturated, so this sprint closes a *behavioral* gap
+
+Backend `app/main.py` and the frontend already sit at **100% line + branch coverage** (960 backend
+tests, 96 frontend tests before this run; the workflow's "current coverage: 12" is a stale
+hardcoded default, not a measurement). Padding line coverage would add no value. Instead this run
+pins an untested **interaction** between two existing sanitizers.
+
+### Gap — the two request-body sanitizers were never exercised *together*
+
+`app.main.validation_exception_handler` rebuilds an un-encodable 422 payload through a chain of
+two sanitizers:
+
+```python
+_replace_lone_surrogates(_replace_non_finite(jsonable_encoder(exc.errors())))
+```
+
+Each fixes a distinct crash: `_replace_non_finite` stringifies `NaN`/`Infinity`/`-Infinity` (which
+a strict `allow_nan=False` encoder rejects), and `_replace_lone_surrogates` rewrites lone UTF-16
+surrogates (which cannot be UTF-8-encoded). Every existing suite sends **exactly one** defect kind
+per request — `test_nonfinite_toplevel_body.py` only non-finite floats, `test_lone_surrogate_
+rejection.py` only lone surrogates. **No test sent a body carrying both**, so the *composition* —
+required whenever one malformed payload holds both a non-finite float and a lone surrogate — was
+unverified. A regression that ran only one sanitizer, short-circuited on the first defect, or let
+one pass clobber the other's output would 500 on such a body while the whole existing single-defect
+suite stayed green.
+
+### New tests — `backend/tests/test_combined_sanitizer_composition.py` (2 classes, 12 tests)
+
+#### `TestBothDefectsInOneRequestBodyYieldCleanResponse` (7 tests)
+
+Drives the handler over HTTP with bodies that carry **both** defect kinds at once; each asserts a
+clean 422 whose response body is both strict-JSON (no `NaN`/`Infinity` token survives a
+`parse_constant` decoder) *and* UTF-8-encodable (no raw surrogate survives).
+
+| Test | What it validates |
+|------|-------------------|
+| `test_top_level_array_root_with_both_defects` (3 params: NaN/Infinity/-Infinity) | Body `[<non-finite>, "\uD83D"]` — a top-level array is echoed whole as `input`, exercising the **list-recursion** branch of both sanitizers on one value. |
+| `test_missing_name_object_with_both_defects_in_values` (3 params) | Body `{"a": <non-finite>, "b": "\uD83D"}` (no `name`) — the whole dict is echoed, exercising the **dict-value** branch a "walk only lists / special-case name" sanitizer would miss. |
+| `test_nested_dict_under_name_with_both_defects` | Body `{"name": {"deep": NaN, "s": "\uD83D"}}` — both defects one level deep inside a field's echoed input. |
+| `test_lone_surrogate_in_object_key_alongside_nonfinite_value` | Body `{"\uD83D": Infinity}` — the one shape needing surrogate-sanitization on a dict **key** and non-finite-sanitization on the paired value simultaneously. |
+
+#### `TestSanitizerCompositionIsSerializable` (5 tests)
+
+Pure-function pins on `_replace_lone_surrogates ∘ _replace_non_finite` over a payload holding both
+defect kinds at several nesting depths.
+
+| Test | What it validates |
+|------|-------------------|
+| `test_composition_output_is_json_response_encodable` | The chained output survives the exact encoding `JSONResponse` performs — `json.dumps(..., allow_nan=False, ensure_ascii=False).encode("utf-8")` — and re-parses under a strict decoder. |
+| `test_composition_removes_both_defect_kinds` | No non-finite float and no raw surrogate code point remain anywhere in the result. |
+| `test_composition_is_order_independent` | Applying the two sanitizers in either order yields the same result — their domains are disjoint, so neither can clobber the other's fix. |
+| `test_composition_does_not_mutate_input` | Both passes build new containers; the caller's original payload still holds the raw defect values (no in-place corruption of the echoed errors). |
+
+### Why this gap matters
+
+The composition is what actually runs in production for any single malformed body that trips both
+encoders at once. A mutation sanity check confirms the guard bites: bypassing `_replace_lone_
+surrogates` makes `POST /api/hello` with body `[NaN, "\uD83D"]` return **500**, which these tests
+turn into a loud failure.
+
+### Verification
+
+- New tests pass 3× with no flakiness; full backend suite: **972 pass** (was 960; +12 new tests).
+- `ruff format` + `ruff check` clean; 100% line + branch coverage maintained on `app/`.
+- **No production code changed** — this run adds regression pins only.
