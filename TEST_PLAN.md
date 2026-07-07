@@ -4,6 +4,47 @@ Documents test coverage, test descriptions, and quality improvements.
 
 ---
 
+## 2026-07-07 — QA Agent: flaky-hunt session (issue #381)
+
+The suite is stable today: the full backend suite (972 tests) ran **5×** under
+`pytest-randomly` with distinct seeds (1–5) and the seven timing-sensitive
+suites ran **8×** back-to-back — **zero flakes**. There was no live flake to
+chase, so this Tuesday flaky-hunt pins a *previously-unguarded latent-flakiness
+source* instead.
+
+### Gap found — the shared perf timing helpers had no contract test
+
+`conftest.timed_get` / `timed_post` produce the per-request `elapsed` values that
+**every** p50/p95/p99 and fairness-ratio assertion across the five perf/e2e
+suites sorts and bounds. Yet `test_conftest_helpers.py` deliberately pins only
+`percentile`, stating the timing helpers are merely "exercised end-to-end." The
+helpers time with the *monotonic* `time.perf_counter()`; a refactor to a wall
+clock (`time.time()`, **non-monotonic** — steppable by NTP or a manual clock
+change) would keep the perf suites passing on most runs but occasionally emit a
+**negative** `elapsed`, which sorts below every real sample and silently shifts
+the percentile index. That is a textbook "passes locally, flakes in CI"
+regression, and nothing caught it at the helper level.
+
+### Backend — `backend/tests/test_timing_helper_contract.py` (new, 2 classes, 7 tests)
+
+| Class / test | Pins |
+|--------------|------|
+| `TestTimedGetContract::test_returns_response_and_nonnegative_finite_elapsed` | `timed_get` returns a `(Response, float)` 2-tuple with a finite, non-negative `elapsed`. |
+| `TestTimedGetContract::test_returns_the_actual_response_for_the_requested_path` | The response in the tuple is the one for the path requested (tuple not transposed) — `/health` returns `healthy`. |
+| `TestTimedGetContract::test_elapsed_never_negative_across_many_calls` | Across 100 GETs no `elapsed` is ever negative/non-finite — the guard that fires if `perf_counter` is swapped for a non-monotonic clock. |
+| `TestTimedPostContract::test_returns_triple_with_nonnegative_elapsed_and_echoed_name` | `timed_post` returns `(Response, float, str)`; elapsed ≥ 0; the threaded name is echoed by the response body. |
+| `TestTimedPostContract::test_threads_special_character_name_through_unchanged` | A unicode/whitespace/punctuation name survives the tuple and the POST echo unchanged (the correctness key the concurrent write-path tests depend on). |
+| `TestTimedPostContract::test_elapsed_never_negative_across_many_calls` | Across 100 POSTs no `elapsed` is ever negative/non-finite. |
+| `TestTimedPostContract::test_each_call_threads_its_own_distinct_name` | 20 distinct names each thread back to their own call — no cross-wiring in the helper. |
+
+### Verification
+
+- New tests pass **3×** with no flakiness; full backend suite **979 pass** (was
+  972) under `pytest-randomly`; `ruff format` + `ruff check` clean.
+- No production code changed — pure test-infrastructure hardening.
+
+---
+
 ## 2026-07-05 — QA Agent: regression-prevention session (issue #374)
 
 Backend `app/main.py` was already at **100% line + branch coverage** (960 tests
