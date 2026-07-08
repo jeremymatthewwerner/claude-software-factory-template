@@ -4,6 +4,50 @@ Documents test coverage, test descriptions, and quality improvements.
 
 ---
 
+## 2026-07-08 — QA Agent: integration-gaps session (issue #384)
+
+Line/branch coverage of `app/main.py` is already **100%** (987 tests). This
+Wednesday integration-gaps session closes a *cross-component* gap line coverage
+can't see: whether the CORS middleware still wraps the response built by the
+validation handler's **sanitized rebuild path**.
+
+### Gap found — CORS untested on the `except ValueError` rebuild response
+
+`validation_exception_handler` (`backend/app/main.py`) has two paths. The
+**default path** delegates to FastAPI's `request_validation_exception_handler`.
+The **sanitized rebuild path** (`except ValueError`) builds a *brand-new*
+`JSONResponse(status_code=422, ...)` when the offending input can't be
+JSON-encoded — a non-finite `float` (`NaN`/`Infinity`) or a string holding a lone
+UTF-16 surrogate. `TestCORSOnErrorResponses` (test_integration_gaps.py) pins CORS
+survival on 404 / 405 / missing-field `json={}` 422 — all the **default** path.
+Nothing asserted that CORS headers survive on the *freshly-constructed* response
+from the rebuild branch. A regression that registered the handler outside the
+`CORSMiddleware` chain, or hand-set `headers=` on the rebuilt response, would
+strip CORS from exactly this path — leaving a browser unable to read the
+sanitized validation error while every existing test stayed green.
+
+### Backend — `backend/tests/test_cors_on_sanitized_error_path.py` (new, 1 class, 8 tests)
+
+| Class / test | Pins |
+|--------------|------|
+| `TestCORSOnSanitizedErrorPath::test_allowlisted_origin_gets_acao_and_vary_on_rebuilt_422` | Both allow-listed origins (`localhost:3000`, `127.0.0.1:3000`) × both sanitizer inputs (non-finite float, lone surrogate) get `Access-Control-Allow-Origin` echo + `Vary: Origin` on the rebuilt 422. |
+| `TestCORSOnSanitizedErrorPath::test_disallowed_origin_omits_acao_on_rebuilt_422` | A disallowed origin gets **no** `ACAO` header on the rebuild path (× both inputs) — no origin leak. |
+| `TestCORSOnSanitizedErrorPath::test_rebuilt_422_carries_cors_over_real_asgi_transport` | The allow-listed case keeps CORS integration over the real-ASGI `AsyncClient` transport too, not just in-process `TestClient` (× both inputs). |
+
+Each test is **self-validating**: it re-asserts the sanitized marker (`"nan"` /
+`"\ud83d"`) in the echoed `detail[].input`, so if a future change routed these
+inputs through the default path instead, the guard fails rather than silently
+pinning the wrong path.
+
+### Verification
+
+- New tests pass **3×** under `pytest-randomly` with no flakiness; full backend
+  suite **987 pass** (was 979); 100% coverage held; `ruff format` + `ruff check`
+  clean.
+- No production code changed — pure integration-contract pins.
+
+---
+
 ## 2026-07-07 — QA Agent: flaky-hunt session (issue #381)
 
 The suite is stable today: the full backend suite (972 tests) ran **5×** under
