@@ -3797,3 +3797,65 @@ turn into a loud failure.
 - New tests pass 3× with no flakiness; full backend suite: **972 pass** (was 960; +12 new tests).
 - `ruff format` + `ruff check` clean; 100% line + branch coverage maintained on `app/`.
 - **No production code changed** — this run adds regression pins only.
+
+---
+
+## QA Session — 2026-07-09 (Thursday: e2e-performance)
+
+### New tests — `backend/tests/test_e2e_sanitized_error_path_performance.py` (3 classes, 8 tests)
+
+Focus: **e2e-performance**. `app/` is already at 100% line + branch coverage, so this run closes a
+*behavioral* perf gap rather than padding coverage. Five perf suites already pin a broad surface, and
+the error path is *partially* covered (`test_performance.py` sequential 422/404/405 latency;
+`test_e2e_performance_scaling.py` interleaved 200/422 batch + concurrent 422 p95). But every one of
+those error-path guards triggers the **plain** validation path (missing field / wrong type), whose
+echoed `input` is already JSON-safe — so FastAPI's default handler succeeds and the handler's
+`except ValueError` **rebuild branch never runs**. That branch
+(`_replace_lone_surrogates(_replace_non_finite(jsonable_encoder(exc.errors())))`) runs the two
+**recursive** sanitizers that exist to stop malformed, attacker-controlled input from 500-ing the
+server. No perf test measured its latency, its scaling, or its fairness — a quadratic/blocking
+regression there would be a DoS vector invisible to the whole suite.
+
+#### `TestSanitizedRebuildBranchTailLatency` (3 tests)
+
+Fires branch-forcing bodies concurrently and bounds the 422 tail. Each response passes a correctness
+gate (`_assert_clean_sanitized_422`): status 422 **and** the raw response bytes re-parse under a
+strict decoder that rejects `NaN`/`Infinity` — so a fast pass can't be bought by crashing or by
+leaking a bare non-standard token on the wire.
+
+| Test | What it validates |
+|------|-------------------|
+| `test_concurrent_nonfinite_422_p95_bounded` | 100-wide concurrent `{"name": [NaN, 1, Infinity, -Infinity]}` fan-out — p95 of the `_replace_non_finite` rebuild path stays under ceiling. |
+| `test_concurrent_nonfinite_422_p99_bounded` | Same fan-out, p99 — a deeper tail than any existing error-path guard (which stop at p95). |
+| `test_concurrent_surrogate_422_p95_bounded` | 100-wide concurrent lone-surrogate (`["\uD83D", ...]`) fan-out — drives the *second* recursive sanitizer, `_replace_lone_surrogates`, under the same load. |
+
+#### `TestSanitizerScalesWithStructureSize` (2 logical tests, 4 cases)
+
+The recursive sanitizers walk the entire echoed structure, so their cost is an attacker-controlled
+knob. Scales a single non-finite array across 10 → 2000 elements (200x) and pins the curve's shape.
+
+| Test | What it validates |
+|------|-------------------|
+| `test_each_structure_size_under_largest_ceiling` (3 params: 10/200/2000 elems) | Median rebuild-branch latency at every sampled size stays under the absolute ceiling. |
+| `test_latency_grows_sub_quadratically_with_structure_size` | median(2000 elems) / median(10 elems) stays below a 60x cap — separates a linear recursive walk from an O(N²) regression (which would push the ratio toward the ~40000x square of the size ratio). |
+
+#### `TestRebuildBranchFairnessVsPlainPath` (1 test)
+
+| Test | What it validates |
+|------|-------------------|
+| `test_rebuild_p95_within_factor_of_plain_p95_in_mixed_fanout` | Interleaves rebuild-branch 422s (non-finite body) and plain missing-field 422s in one fan-out; the rebuild p95 must stay within 10x the plain p95 — isolating the *extra* cost of the rebuild branch, so a regression that made only that branch block the loop fails here while every plain-path guard still passes. |
+
+### Why this gap matters
+
+The rebuild branch is the exact code written to keep malformed input from crashing the server; a
+perf regression in its recursive sanitizers is a denial-of-service vector. Mutation checks confirm
+the correctness gate bites: neutering `_replace_non_finite` makes the concurrent non-finite test
+fail with `ValueError: Out of range float values are not JSON compliant`, and neutering
+`_replace_lone_surrogates` makes the surrogate test fail with `UnicodeEncodeError` — both a 500 the
+gate turns into a loud failure.
+
+### Verification
+
+- New tests pass 3× with no flakiness; full backend suite: **995 pass** (was 987; +8 new tests).
+- `ruff format` + `ruff check` + `mypy` clean; 100% line + branch coverage maintained on `app/`.
+- **No production code changed** — this run adds regression pins only.
