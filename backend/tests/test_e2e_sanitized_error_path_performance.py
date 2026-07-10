@@ -55,7 +55,6 @@ scaling shape, and cross-path fairness, which hold regardless.
 from __future__ import annotations
 
 import asyncio
-import json
 import statistics
 import time
 from collections.abc import Coroutine
@@ -64,7 +63,7 @@ import pytest
 from fastapi.testclient import TestClient
 from httpx import AsyncClient, Response
 
-from .conftest import JSON_HEADERS, percentile
+from .conftest import JSON_HEADERS, percentile, strict_json_loads
 
 # --- Payloads that force the sanitized rebuild branch --------------------
 
@@ -164,12 +163,7 @@ def _assert_clean_sanitized_422(response: Response) -> None:
     # Raw bytes must be valid UTF-8 (no leaked lone surrogate on the wire).
     text = raw.decode("utf-8")
     # Strict re-parse: reject NaN/Infinity so a leaked non-finite token fails loudly.
-    json.loads(text, parse_constant=_reject_nonstandard_constant)
-
-
-def _reject_nonstandard_constant(token: str) -> object:
-    """``parse_constant`` hook that fails if a bare ``NaN``/``Infinity`` survived."""
-    raise AssertionError(f"non-standard JSON constant {token!r} leaked into the response body")
+    strict_json_loads(text)
 
 
 def _median_rebuild_latency(client: TestClient, body: bytes, reps: int) -> float:

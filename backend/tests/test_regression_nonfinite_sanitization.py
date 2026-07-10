@@ -27,7 +27,6 @@ helper:
   was *a* string.
 """
 
-import json
 import math
 
 import pytest
@@ -35,31 +34,12 @@ from fastapi.testclient import TestClient
 
 from app.main import _replace_non_finite
 
-from .conftest import JSON_HEADERS
-
-
-def _strict_json_loads(text: str) -> object:
-    """Parse ``text`` rejecting the non-standard ``NaN`` / ``Infinity`` tokens.
-
-    Python's ``json.loads`` accepts those tokens by default (the very leniency that
-    caused the original 500). Passing a ``parse_constant`` that raises makes the
-    parser strict — equivalent to a browser's ``JSON.parse`` — so any bare
-    non-finite token surviving in the response body fails loudly here.
-    """
-
-    def _reject(token: str) -> object:
-        raise AssertionError(f"response body contains a non-standard JSON token: {token!r}")
-
-    return json.loads(text, parse_constant=_reject)
+from .conftest import JSON_HEADERS, first_error, strict_json_loads
 
 
 def _first_error_input(response_text: str) -> object:
     """Return ``detail[0].input`` from a 422 body, parsed strictly."""
-    body = _strict_json_loads(response_text)
-    assert isinstance(body, dict)
-    detail = body["detail"]
-    assert isinstance(detail, list) and detail
-    return detail[0]["input"]
+    return first_error(response_text)["input"]
 
 
 class TestNonFiniteSanitizationRecursesThroughContainers:
@@ -120,7 +100,7 @@ class TestNonFiniteSanitizationRecursesThroughContainers:
 
         The edge-cases suite pins this only for the top-level ``{"name": NaN}`` case.
         A regression that broke recursion would 500 (or, if it half-worked, emit a
-        bare nested token) — ``_strict_json_loads`` rejects any such token, so a
+        bare nested token) — ``strict_json_loads`` rejects any such token, so a
         clean parse here proves the whole nested body is RFC-8259-valid JSON.
         """
         response = client.post(
@@ -130,7 +110,7 @@ class TestNonFiniteSanitizationRecursesThroughContainers:
         )
         assert response.status_code == 422
         # Raises if any bare NaN/Infinity/-Infinity token survived anywhere in the body.
-        parsed = _strict_json_loads(response.text)
+        parsed = strict_json_loads(response.text)
         assert isinstance(parsed, dict) and "detail" in parsed
 
 

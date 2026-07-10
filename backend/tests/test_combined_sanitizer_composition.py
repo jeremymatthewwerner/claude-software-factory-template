@@ -38,7 +38,7 @@ from fastapi.testclient import TestClient
 
 from app.main import _replace_lone_surrogates, _replace_non_finite
 
-from .conftest import JSON_HEADERS
+from .conftest import JSON_HEADERS, first_error, strict_json_loads
 
 # The three canonical non-finite JSON tokens paired with the ``repr`` string
 # ``_replace_non_finite`` rewrites them to. Centralised so the HTTP and unit
@@ -53,26 +53,15 @@ LONE_SURROGATE_ESCAPE = "\\uD83D"
 LONE_SURROGATE_SANITIZED = "\\ud83d"
 
 
-def _reject_nonstandard_token(token: str) -> object:
-    """``json.loads`` ``parse_constant`` hook that fails on ``NaN``/``Infinity``.
-
-    Python's ``json.loads`` accepts those non-standard tokens by default — the very
-    leniency behind the original 500. Wiring this as ``parse_constant`` makes the
-    parser strict (equivalent to a browser's ``JSON.parse``), so any non-finite
-    token surviving into the response body fails loudly instead of round-tripping
-    silently.
-    """
-    raise AssertionError(f"response body contains a non-standard JSON token: {token!r}")
-
-
 def _assert_clean_422(response: Any) -> dict[str, Any]:
     """Assert ``response`` is a 422 whose body is strict-JSON *and* UTF-8 clean.
 
     Returns ``detail[0]`` for further inspection. This is the crux of the whole
-    file: a body that still held a non-finite float would trip
-    :func:`_reject_nonstandard_token`, and a body that still held a lone surrogate
-    would raise ``UnicodeEncodeError`` on ``.encode("utf-8")`` — so both survivals
-    are caught here, proving *both* sanitizers ran.
+    file: a body that still held a non-finite float would trip the strict
+    ``parse_constant`` inside :func:`~tests.conftest.strict_json_loads` (via
+    :func:`~tests.conftest.first_error`), and a body that still held a lone
+    surrogate would raise ``UnicodeEncodeError`` on ``.encode("utf-8")`` — so both
+    survivals are caught here, proving *both* sanitizers ran.
     """
     assert response.status_code == 422, (
         f"a body carrying both a non-finite float and a lone surrogate must yield a "
@@ -81,13 +70,7 @@ def _assert_clean_422(response: Any) -> dict[str, Any]:
     # No lone surrogate survived: the response text must be UTF-8 encodable.
     response.text.encode("utf-8")
     # No non-finite token survived: strict parse rejects NaN/Infinity.
-    body = json.loads(response.text, parse_constant=_reject_nonstandard_token)
-    assert isinstance(body, dict), f"422 body is not a JSON object: {body!r}"
-    detail = body["detail"]
-    assert isinstance(detail, list) and detail, f"422 body has no detail list: {body!r}"
-    first = detail[0]
-    assert isinstance(first, dict), f"detail[0] is not an object: {first!r}"
-    return first
+    return first_error(response.text)
 
 
 def _assert_no_raw_surrogate(value: Any) -> None:
@@ -236,7 +219,7 @@ class TestSanitizerCompositionIsSerializable:
         encoded = json.dumps(composed, allow_nan=False, ensure_ascii=False).encode("utf-8")
         assert encoded, "composed payload encoded to empty bytes"
         # And it must be strict-JSON on the way back in (no NaN/Infinity tokens).
-        json.loads(encoded.decode("utf-8"), parse_constant=_reject_nonstandard_token)
+        strict_json_loads(encoded.decode("utf-8"))
 
     def test_composition_removes_both_defect_kinds(self) -> None:
         """After composition, no non-finite float and no raw surrogate remain."""

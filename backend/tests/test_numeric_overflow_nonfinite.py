@@ -42,7 +42,7 @@ import math
 import pytest
 from fastapi.testclient import TestClient
 
-from .conftest import JSON_HEADERS
+from .conftest import JSON_HEADERS, strict_json_loads
 
 
 class TestOverflowNumberDoesNotCrash:
@@ -209,17 +209,6 @@ class TestOverflowResponseLeaksNoNonStandardTokens:
         assert "Infinity" not in response.text and "NaN" not in response.text, (
             f"response leaked a non-standard bare token: {response.text!r}"
         )
-        # ``allow_nan=False`` makes the decoder reject the non-standard constants, so a
-        # successful parse proves the body is strict RFC-8259 JSON.
-        json.loads(response.text, parse_constant=_reject_constant)
-
-
-def _reject_constant(token: str) -> object:
-    """``json.loads`` ``parse_constant`` hook that fails if a non-finite token appears.
-
-    ``json.loads`` invokes this only for the bare ``Infinity`` / ``-Infinity`` / ``NaN``
-    tokens. Raising here turns "the response contains a non-standard token" into a hard
-    parse failure, so a leaked token fails the surrounding test instead of silently
-    decoding.
-    """
-    raise AssertionError(f"response contained a non-standard JSON token: {token!r}")
+        # A strict decoder rejects the non-standard constants, so a successful parse
+        # proves the body is strict RFC-8259 JSON.
+        strict_json_loads(response.text)

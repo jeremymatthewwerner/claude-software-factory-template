@@ -25,38 +25,10 @@ a dict. A regression that, for example, only walked dict-valued inputs (or speci
 stayed green. This file closes that gap.
 """
 
-import json
-
 import pytest
 from fastapi.testclient import TestClient
 
-from .conftest import JSON_HEADERS
-
-
-def _strict_json_loads(text: str) -> object:
-    """Parse ``text`` rejecting the non-standard ``NaN`` / ``Infinity`` tokens.
-
-    Python's ``json.loads`` accepts those tokens by default (the very leniency that caused the
-    original 500). A ``parse_constant`` that raises makes the parser strict — equivalent to a
-    browser's ``JSON.parse`` — so any bare non-finite token surviving in the response body fails
-    loudly here instead of silently passing.
-    """
-
-    def _reject(token: str) -> object:
-        raise AssertionError(f"response body contains a non-standard JSON token: {token!r}")
-
-    return json.loads(text, parse_constant=_reject)
-
-
-def _first_error(response_text: str) -> dict[str, object]:
-    """Return ``detail[0]`` from a 422 body, parsed strictly."""
-    body = _strict_json_loads(response_text)
-    assert isinstance(body, dict), f"422 body is not a JSON object: {body!r}"
-    detail = body["detail"]
-    assert isinstance(detail, list) and detail, f"422 body has no detail list: {body!r}"
-    first = detail[0]
-    assert isinstance(first, dict)
-    return first
+from .conftest import JSON_HEADERS, first_error, strict_json_loads
 
 
 class TestTopLevelBareNonFiniteBody:
@@ -86,7 +58,7 @@ class TestTopLevelBareNonFiniteBody:
             f"a bare top-level non-finite body must not 500: got {response.status_code}, "
             f"body {response.text!r}"
         )
-        error = _first_error(response.text)
+        error = first_error(response.text)
         assert error["input"] == expected, (
             f"top-level non-finite scalar must be stringified to {expected!r}; "
             f"got input={error['input']!r}"
@@ -101,7 +73,7 @@ class TestTopLevelBareNonFiniteBody:
         """
         response = client.post("/api/hello", content=b"NaN", headers=JSON_HEADERS)
         assert response.status_code == 422
-        error = _first_error(response.text)
+        error = first_error(response.text)
         assert error["loc"] == ["body"], (
             f"a bare top-level body should fail at loc ['body'], not under a field: "
             f"got loc={error['loc']!r}"
@@ -125,7 +97,7 @@ class TestTopLevelNonFiniteArrayBody:
             f"a top-level array with non-finite floats must not 500: got {response.status_code}, "
             f"body {response.text!r}"
         )
-        error = _first_error(response.text)
+        error = first_error(response.text)
         assert error["input"] == [1, "nan", "inf"], (
             "root-level list recursion regressed: only the non-finite floats should be "
             f"stringified and the finite int 1 preserved; got input={error['input']!r}"
@@ -141,7 +113,7 @@ class TestTopLevelNonFiniteArrayBody:
             "/api/hello", content=b'[{"k": -Infinity}, NaN]', headers=JSON_HEADERS
         )
         assert response.status_code == 422
-        error = _first_error(response.text)
+        error = first_error(response.text)
         assert error["input"] == [{"k": "-inf"}, "nan"], (
             "recursion into a container nested inside the root array regressed; "
             f"got input={error['input']!r}"
@@ -150,13 +122,13 @@ class TestTopLevelNonFiniteArrayBody:
     def test_top_level_non_finite_leaks_no_bare_token(self, client: TestClient) -> None:
         """A top-level non-finite body leaves no bare ``NaN``/``Infinity`` in the response JSON.
 
-        ``_strict_json_loads`` raises on any surviving non-standard token, so a clean parse here
+        ``strict_json_loads`` raises on any surviving non-standard token, so a clean parse here
         proves the whole 422 body is RFC-8259-valid JSON even when the offending value sat at the
         document root rather than under a field.
         """
         response = client.post("/api/hello", content=b"[NaN, -Infinity]", headers=JSON_HEADERS)
         assert response.status_code == 422
-        parsed = _strict_json_loads(response.text)
+        parsed = strict_json_loads(response.text)
         assert isinstance(parsed, dict) and "detail" in parsed, (
             f"422 body should be a JSON object with a detail list; got {parsed!r}"
         )

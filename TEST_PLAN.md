@@ -4,6 +4,63 @@ Documents test coverage, test descriptions, and quality improvements.
 
 ---
 
+## 2026-07-10 — QA Agent: test-refactoring session (issue #391)
+
+Line/branch coverage of `app/main.py` is already **100%** (995 tests), so this
+Friday **test-refactoring** run targets **duplication** rather than coverage:
+five sanitizer suites each carried a near-identical private copy of a "strict
+JSON parse that rejects the non-standard `NaN`/`Infinity`/`-Infinity` tokens"
+`parse_constant` hook.
+
+### Duplication found — the strict-JSON re-parse hook, copied five times
+
+The sanitizer suites re-parse a 422 response body *strictly* to prove no bare
+non-finite token leaked onto the wire — `json.loads(..., parse_constant=<raise>)`,
+equivalent to a browser's `JSON.parse`. Each suite had re-declared that hook
+under its own name, and two suites also re-declared a `_strict_json_loads`
+wrapper and a `_first_error*` accessor:
+
+| File | Private copy removed |
+|------|----------------------|
+| `test_nonfinite_toplevel_body.py` | `_strict_json_loads` + `_first_error` |
+| `test_regression_nonfinite_sanitization.py` | `_strict_json_loads` (+ `_first_error_input` now a one-liner) |
+| `test_combined_sanitizer_composition.py` | `_reject_nonstandard_token` |
+| `test_e2e_sanitized_error_path_performance.py` | `_reject_nonstandard_constant` |
+| `test_numeric_overflow_nonfinite.py` | `_reject_constant` |
+
+### Consolidation — two shared helpers in `conftest.py`
+
+Added `strict_json_loads(text)` (the single strict parser, rejecting non-standard
+tokens) and `first_error(response_text)` (strict-parse a 422 body and return
+`detail[0]`, with descriptive assertions). All nine private copies now import
+these instead, and the three files whose only remaining `json.` use was the
+deleted hook dropped their now-unused `import json`.
+
+### Backend — `backend/tests/test_conftest_helpers.py` (2 new classes, 9 tests)
+
+New shared logic must be pinned, so the consolidated helpers get focused
+contract tests — a regression that made the parser lenient again (letting a
+leaked `NaN`/`Infinity` token decode silently) would fail here at the source
+instead of going unnoticed across every caller.
+
+| Class / test | Pins |
+|--------------|------|
+| `TestStrictJsonLoads::test_parses_ordinary_json_object` | Ordinary JSON round-trips to the equivalent Python value. |
+| `TestStrictJsonLoads::test_bare_non_finite_token_raises_assertionerror` | Bare `NaN`/`Infinity`/`-Infinity` scalars each raise `AssertionError` (parametrized). |
+| `TestStrictJsonLoads::test_non_finite_token_nested_in_container_raises` | A non-standard token buried inside a container is still rejected. |
+| `TestStrictJsonLoads::test_quoted_nan_string_is_accepted` | The *sanitized* form `"nan"` (a quoted string) parses cleanly — only bare tokens fail. |
+| `TestFirstError::test_returns_first_detail_entry` | `detail[0]` is returned verbatim. |
+| `TestFirstError::test_rejects_body_with_leaked_non_finite_token` | Extraction fails if a bare non-finite token survived — the reason callers route through this helper. |
+| `TestFirstError::test_non_object_body_raises` | A non-object body fails with a descriptive message. |
+| `TestFirstError::test_empty_detail_list_raises` | An empty `detail` list has no first error to return. |
+| `TestFirstError::test_non_object_first_detail_entry_raises` | A non-object `detail[0]` fails rather than being returned. |
+
+Net effect: 9 duplicated helper copies removed, 2 shared helpers added, suite
+grows 995 → 1006 tests, backend coverage stays **100%**, and the full suite
+passes 3× with no flakiness.
+
+---
+
 ## 2026-07-08 — QA Agent: integration-gaps session (issue #384)
 
 Line/branch coverage of `app/main.py` is already **100%** (987 tests). This
