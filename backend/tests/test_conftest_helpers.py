@@ -8,7 +8,15 @@ future "cleanup" of the helper cannot silently shift every percentile-based
 guard (e.g. by switching to interpolation or forgetting the clamp) without a
 test going red.
 
-Only the extracted helper carrying real logic is tested here; the trivial
+The sanitizer suites lean on ``conftest.strict_json_loads`` / ``first_error`` to
+re-parse a 422 body *strictly* — proving no bare ``NaN``/``Infinity`` token
+leaked — and to pull out ``detail[0]``. Five files each carried a private copy of
+that ``parse_constant`` hook before it was consolidated, so its
+reject-on-non-standard-token contract is pinned here too: a regression that made
+the parser lenient again would let a leaked token pass silently through every
+caller.
+
+Only the extracted helpers carrying real logic are tested here; the trivial
 one-line wrappers (``timed_get``/``timed_post``) are exercised end-to-end by
 the perf suites that call them.
 """
@@ -17,7 +25,7 @@ from __future__ import annotations
 
 import pytest
 
-from .conftest import percentile
+from .conftest import first_error, percentile, strict_json_loads
 
 
 class TestPercentile:
@@ -80,3 +88,69 @@ class TestPercentile:
         p99 = percentile(values, 0.99)
         p100 = percentile(values, 1.0)
         assert values[0] <= p95 <= p99 <= p100 == values[-1]
+
+
+class TestStrictJsonLoads:
+    """``strict_json_loads`` parses valid JSON but rejects non-standard tokens."""
+
+    def test_parses_ordinary_json_object(self) -> None:
+        """A standard JSON object round-trips to the equivalent Python dict."""
+        assert strict_json_loads('{"a": 1, "b": [2, 3]}') == {"a": 1, "b": [2, 3]}
+
+    @pytest.mark.parametrize("token", ["NaN", "Infinity", "-Infinity"])
+    def test_bare_non_finite_token_raises_assertionerror(self, token: str) -> None:
+        """A bare ``NaN``/``Infinity``/``-Infinity`` scalar fails loudly, not silently.
+
+        ``json.loads`` would decode these to ``float('nan')`` etc. by default — the
+        very leniency the sanitizer suites re-parse strictly to catch. The message
+        names the offending token so a leak is self-describing.
+        """
+        with pytest.raises(AssertionError, match="non-standard JSON token"):
+            strict_json_loads(token)
+
+    def test_non_finite_token_nested_in_container_raises(self) -> None:
+        """A non-standard token buried inside a container is still rejected."""
+        with pytest.raises(AssertionError, match="non-standard JSON token"):
+            strict_json_loads('{"detail": [{"input": NaN}]}')
+
+    def test_quoted_nan_string_is_accepted(self) -> None:
+        """The *sanitized* form ``"nan"`` is an ordinary string and parses cleanly.
+
+        This is the exact shape a correctly-sanitized 422 body carries, so the
+        helper must accept it — only *bare* (unquoted) tokens are the failure.
+        """
+        assert strict_json_loads('{"input": "nan"}') == {"input": "nan"}
+
+
+class TestFirstError:
+    """``first_error`` returns ``detail[0]`` from a strictly-parsed 422 body."""
+
+    def test_returns_first_detail_entry(self) -> None:
+        """The first element of the ``detail`` list is returned verbatim."""
+        body = '{"detail": [{"loc": ["body"], "input": "nan"}, {"loc": ["body", "x"]}]}'
+        assert first_error(body) == {"loc": ["body"], "input": "nan"}
+
+    def test_rejects_body_with_leaked_non_finite_token(self) -> None:
+        """Extraction fails if a bare non-finite token survived into the body.
+
+        This is why the sanitizer suites route ``detail[0]`` access through this
+        helper rather than a plain ``json.loads`` — the strict parse turns a leaked
+        token into a failure *at the point of extraction*.
+        """
+        with pytest.raises(AssertionError, match="non-standard JSON token"):
+            first_error('{"detail": [{"input": Infinity}]}')
+
+    def test_non_object_body_raises(self) -> None:
+        """A body that is not a JSON object fails with a descriptive message."""
+        with pytest.raises(AssertionError, match="not a JSON object"):
+            first_error("[1, 2, 3]")
+
+    def test_empty_detail_list_raises(self) -> None:
+        """A body whose ``detail`` list is empty has no first error to return."""
+        with pytest.raises(AssertionError, match="no detail list"):
+            first_error('{"detail": []}')
+
+    def test_non_object_first_detail_entry_raises(self) -> None:
+        """``detail[0]`` that is not a JSON object fails, not silently returned."""
+        with pytest.raises(AssertionError, match="detail\\[0\\] is not an object"):
+            first_error('{"detail": ["oops"]}')

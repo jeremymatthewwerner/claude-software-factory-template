@@ -2,6 +2,7 @@
 Pytest configuration, fixtures, and shared test helpers.
 """
 
+import json
 import time
 from collections.abc import AsyncGenerator
 from datetime import datetime
@@ -201,3 +202,44 @@ def openapi_component_for_response(
     component_name = ref.rsplit("/", 1)[-1]
     component: dict[str, Any] = schema["components"]["schemas"][component_name]
     return component
+
+
+def strict_json_loads(text: str) -> Any:
+    """Parse ``text`` as JSON, rejecting the non-standard ``NaN`` / ``Infinity`` /
+    ``-Infinity`` tokens that Python's ``json.loads`` accepts by default.
+
+    That default leniency is the very behaviour behind the original 500s the
+    non-finite/surrogate sanitizers guard against, so several suites re-parse a
+    response body *strictly* — equivalent to a browser's ``JSON.parse`` — to prove
+    no bare non-finite token leaked into the output. Wiring a ``parse_constant``
+    that raises turns a surviving token into a loud failure instead of a silent
+    decode.
+
+    Centralised here because five suites each carried a byte-similar private copy
+    of this parser (spelled ``_strict_json_loads``, ``_reject_nonstandard_token``,
+    ``_reject_nonstandard_constant`` and ``_reject_constant``). Import this instead
+    of re-declaring the ``parse_constant`` hook.
+    """
+
+    def _reject(token: str) -> object:
+        raise AssertionError(f"response body contains a non-standard JSON token: {token!r}")
+
+    return json.loads(text, parse_constant=_reject)
+
+
+def first_error(response_text: str) -> dict[str, Any]:
+    """Return ``detail[0]`` from a 422 body, parsed strictly.
+
+    FastAPI validation errors have the shape ``{"detail": [ {...}, ... ]}``. The
+    sanitizer suites repeatedly reach for the first error object; routing the parse
+    through :func:`strict_json_loads` means the extraction *also* fails if a bare
+    non-standard token survived into the body. Callers wanting only the echoed
+    value use ``first_error(text)["input"]``.
+    """
+    body = strict_json_loads(response_text)
+    assert isinstance(body, dict), f"422 body is not a JSON object: {body!r}"
+    detail = body["detail"]
+    assert isinstance(detail, list) and detail, f"422 body has no detail list: {body!r}"
+    first = detail[0]
+    assert isinstance(first, dict), f"detail[0] is not an object: {first!r}"
+    return first
