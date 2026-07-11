@@ -4,6 +4,50 @@ Documents test coverage, test descriptions, and quality improvements.
 
 ---
 
+## 2026-07-11 — QA Agent: edge-cases session (issue #394)
+
+Line/branch coverage of `app/main.py` is already **100%** (1006 tests), so this
+Saturday **edge-cases** run chases *behaviour*, not lines. It closes a gap in the
+`POST /api/hello` name-echo contract.
+
+### Gap found — format/template metacharacters in `name` were never pinned
+
+`TestSecurityInputs` (test_main.py) pins that SQL-injection, emoji, RTL and
+zero-width names echo verbatim; `TestNameEchoBoundaries` (test_edge_cases.py) pins
+length/whitespace/control-char boundaries. Neither pins the adversarial class most
+coupled to *how the greeting is built* — **format-string / template metacharacters**
+in the name: Python `str.format` fields (`{}`, `{0}`, `{name}`, `{0.__class__}`),
+`printf`/`%` conversions (`%s`, `%d`, `%(name)s`), shell/JS template literals
+(`${name}`, `$name`), and unbalanced braces (`{`, `}`).
+
+The handler builds the greeting with an f-string (value substitution), so all of
+these must echo back **verbatim** with a 200. The pins guard against a refactor to
+`GREETING_TEMPLATE.format(request.name)` or `template % name` (interpolating the
+*user value* as a format template), under which `{0}`/`%s` would raise → **500**, a
+lone `{`/`}` would raise → **500**, and `{0.__class__}` could **leak internals** —
+the classic Python format-string information-disclosure vector.
+
+### Tests added — `tests/test_name_format_string_injection.py` (19 tests)
+
+#### `TestFormatStringMetacharactersEchoVerbatim` (1 logical test, 17 cases)
+
+| Test | What it validates |
+|------|-------------------|
+| `test_metacharacter_name_round_trips_exactly` (17 params) | Each format/template metacharacter name — `str.format` fields, `printf` conversions, shell/JS template literals, and unbalanced braces — yields 200 and the **exact** `expected_greeting(name)`, proving the name is an opaque value, not a format template. |
+
+#### `TestFStringDoesNotReInterpolateName` (2 tests)
+
+| Test | What it validates |
+|------|-------------------|
+| `test_literal_name_field_token_is_not_expanded` | A name of exactly `{name}` (the greeting template's own replacement field) echoes verbatim — a double-`format` regression would consume or re-substitute it. |
+| `test_attribute_traversal_field_does_not_leak_internals` | `{0.__class__}` echoes verbatim and the response contains no resolved class repr — pins that no attribute traversal / info-leak occurs. |
+
+### Verification
+
+- New tests pass 3× with no flakiness; full backend suite: **1025 pass** (was 1006; +19 new tests).
+- `ruff format` + `ruff check` + `mypy` clean; 100% line + branch coverage maintained on `app/`.
+- **No production code changed** — this run adds regression pins only.
+
 ## 2026-07-10 — QA Agent: test-refactoring session (issue #391)
 
 Line/branch coverage of `app/main.py` is already **100%** (995 tests), so this
