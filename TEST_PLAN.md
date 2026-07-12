@@ -3960,3 +3960,47 @@ gate turns into a loud failure.
 - New tests pass 3× with no flakiness; full backend suite: **995 pass** (was 987; +8 new tests).
 - `ruff format` + `ruff check` + `mypy` clean; 100% line + branch coverage maintained on `app/`.
 - **No production code changed** — this run adds regression pins only.
+
+## QA Run: Sunday 2026-07-12 — regression-prevention (issue #397)
+
+### Context — coverage saturated; this run closes a *boundary* gap on a recent fix
+
+`app/main.py` is already at 100% line + branch coverage, so this regression-prevention run
+targets a behavioral boundary rather than an uncovered line. Reviewing recent fix commits,
+`3c81af3` (#372) added the `HelloRequest.name` `field_validator` that rejects unpaired UTF-16
+surrogates while keeping legal surrogate *pairs* accepted, and `c0a816a` (#375) extended the
+echo sanitizer to object keys.
+
+### Gap — the accept-side of #372 was pinned only at a mid-range code point
+
+The **reject-side** of #372 is pinned exhaustively (`test_lone_surrogate_rejection.py`,
+`test_regression_surrogate_object_keys.py`, `test_combined_sanitizer_composition.py`). The
+**accept-side** — legal astral characters must NOT be rejected — was pinned at a single
+mid-range scalar (😀 / U+1F600). The **boundaries** of the valid astral range were untested:
+U+10000 (first astral, UTF-16 `𐀀` — min high + min low surrogate) and **U+10FFFF**
+(the *maximum* valid Unicode scalar, UTF-16 `􏿿` — max high + max low surrogate).
+
+### New tests — `backend/tests/test_regression_astral_boundary_names.py` (3 classes, 8 tests)
+
+| Test | What it validates |
+|------|-------------------|
+| `TestBoundaryAstralPairAcceptedViaEscape::test_boundary_pair_round_trips_200` (2 params: U+10000, U+10FFFF) | A boundary surrogate-pair `\uXXXX` escape decodes to its scalar and echoes with 200; pins the accept-side all the way to the maximum valid code point. |
+| `TestBoundaryAstralPairAcceptedViaEscape::test_200_body_bytes_are_utf8_clean` (2 params) | The raw 200 response bytes UTF-8-decode and contain the literal astral scalar — no lone surrogate leaks into the success path. |
+| `TestBoundaryAstralAcceptedViaRawUtf8::test_raw_utf8_boundary_char_round_trips_200` (2 params) | The same boundary scalars sent as native UTF-8 bytes (the real-client path via `httpx json=`) are accepted and echoed (200). |
+| `TestLoneSurrogateRejectionContractStable::test_unpaired_surrogate_still_rejected_with_stable_contract` | A lone `\uD83D` still yields 422 with the stable client-facing contract: `type=='value_error'`, `loc==['body','name']`, and the exact `msg` string. |
+| `TestLoneSurrogateRejectionContractStable::test_rejection_message_does_not_leak_the_offending_value` | The rejection `msg` is static and carries no raw surrogate code point — a future message that interpolated the value would re-introduce the #372 encode crash via `msg`. |
+
+### Why this gap matters
+
+U+10FFFF is the maximum valid Unicode scalar — a boundary the mid-range emoji test can never
+reach. A plausible over-correction of #372 (e.g. keying off the UTF-16 representation and
+rejecting anything needing a surrogate pair, or clamping below U+10FFFF) would wrongly 422
+legitimate astral input while the mid-range 😀 test stayed green. A mutation check confirms the
+teeth: replacing the validator's UTF-8-encodability check with a UTF-16 surrogate-unit scan
+makes 7 of the 8 new tests fail (the reject-contract test correctly still passes).
+
+### Verification
+
+- New tests pass 3× with no flakiness; full backend suite: **1033 pass** (was 1025; +8 new tests).
+- `ruff format` + `ruff check` + `mypy` clean; 100% line + branch coverage maintained on `app/`.
+- **No production code changed** — this run adds regression pins only.
