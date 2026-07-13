@@ -4,6 +4,44 @@ Documents test coverage, test descriptions, and quality improvements.
 
 ---
 
+## 2026-07-13 — QA Agent: coverage-sprint session (issue #400)
+
+Line/branch coverage is already **100%** on both stacks (backend `app/`: 1033
+tests; frontend `src/`: 96 tests) — the reported "12" starting figure was stale.
+This Monday **coverage-sprint** run therefore chases an unpinned *behaviour* in an
+already-100% area rather than padding lines: the combined request-body sanitizer
+composition `_replace_lone_surrogates(_replace_non_finite(...))`.
+
+### Gap found — a nested **list** under a field was never driven over HTTP
+
+`test_combined_sanitizer_composition.py` drives the handler with bodies carrying
+**both** defect kinds (a non-finite float *and* a lone UTF-16 surrogate), but the
+sanitizers' `list`-recursion branch is exercised at the HTTP boundary only via a
+**top-level array root** (`[NaN, "\uD83D"]`). The one nested case
+(`test_nested_dict_under_name_with_both_defects`) recurses through a **dict**, never
+a nested list. So the shape `{"name": [<non-finite>, "<surrogate>"]}` — where
+Pydantic echoes the offending **array** as the `body.name` error's `input`, one
+level deep — was unpinned. A regression that walked lists only at the document root
+(or special-cased the root container's type) would 500 on this body while the entire
+existing suite stayed green.
+
+### Tests added — `tests/test_combined_sanitizer_composition.py` (+1 test, 3 cases)
+
+Added to `TestBothDefectsInOneRequestBodyYieldCleanResponse`:
+
+| Test | What it validates |
+|------|-------------------|
+| `test_nested_list_under_name_with_both_defects` (3 params: NaN/Infinity/-Infinity) | Body `{"name": [<non-finite>, "\uD83D"]}` yields a clean 422 whose `body.name` error echoes the sanitized list `["<repr>", "\ud83d"]` — proving both sanitizers recurse through a **list nested beneath a field**, distinct from the root-array and nested-dict cases. |
+
+### Verification
+
+- New test passes 3× with no flakiness (3 parametrized cases each run).
+- Full backend suite: **1036 pass** (was 1033; +3 parametrized cases).
+- `ruff format` + `ruff check` clean; 100% line + branch coverage maintained on `app/`.
+- **No production code changed** — this run adds a regression pin only.
+
+---
+
 ## 2026-07-11 — QA Agent: edge-cases session (issue #394)
 
 Line/branch coverage of `app/main.py` is already **100%** (1006 tests), so this

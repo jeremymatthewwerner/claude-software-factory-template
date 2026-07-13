@@ -171,6 +171,40 @@ class TestBothDefectsInOneRequestBodyYieldCleanResponse:
             f"nested-under-name echoed input drifted to {echoed!r}"
         )
 
+    @pytest.mark.parametrize(
+        "token,expected_repr",
+        list(NONFINITE_TOKEN_TO_REPR.items()),
+        ids=list(NONFINITE_TOKEN_TO_REPR),
+    )
+    def test_nested_list_under_name_with_both_defects(
+        self, client: TestClient, token: str, expected_repr: str
+    ) -> None:
+        """Body ``{"name": [<non-finite>, "<surrogate>"]}`` → 422, nested list sanitized.
+
+        ``name`` expects a ``str``; supplying a JSON **array** makes Pydantic echo
+        that array as the field's ``input``, so both defects live inside a ``list``
+        that sits *one level deep* under the error structure — not at the document
+        root. The existing combined-defect suite drives the sanitizers' list-recursion
+        branch only via a **top-level array root**
+        (:meth:`test_top_level_array_root_with_both_defects`) and its nested case
+        (:meth:`test_nested_dict_under_name_with_both_defects`) recurses through a
+        **dict**, never a nested list. A regression that walked lists only at the
+        document root — or special-cased the root container's type — would 500 here
+        while every existing test stayed green. This pins the one uncovered shape:
+        both sanitizers recursing through a list nested beneath a field.
+        """
+        body = f'{{"name": [{token}, "{LONE_SURROGATE_ESCAPE}"]}}'.encode()
+        first = _assert_clean_422(client.post("/api/hello", content=body, headers=JSON_HEADERS))
+        assert first["loc"] == ["body", "name"], (
+            f"echoed error should locate the offending list at body.name, got {first['loc']!r}"
+        )
+        echoed = first["input"]
+        assert echoed == [expected_repr, LONE_SURROGATE_SANITIZED], (
+            f"nested-list-under-name echoed input drifted to {echoed!r}; expected the "
+            f"non-finite stringified to {expected_repr!r} and the surrogate to "
+            f"{LONE_SURROGATE_SANITIZED!r}"
+        )
+
     def test_lone_surrogate_in_object_key_alongside_nonfinite_value(
         self, client: TestClient
     ) -> None:
