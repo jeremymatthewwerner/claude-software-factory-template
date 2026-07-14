@@ -4,6 +4,53 @@ Documents test coverage, test descriptions, and quality improvements.
 
 ---
 
+## 2026-07-14 — QA Agent: flaky-hunt session (issue #404)
+
+Line/branch coverage is already **100%** on `app/` (76 stmts, 12 branches), so this
+Tuesday **flaky-hunt** run chases order-dependent flakiness risk rather than
+coverage. The suite runs under `pytest-randomly`, so file/test order changes every
+run. Empirically the suite is stable — full suite 5× and `test_performance.py` 20×
+produced **0 failures** across randomized orderings — so the value here is closing a
+*latent* flakiness hole, not chasing an active flake.
+
+### Gap found — shared mutable conftest constants had no immutability guard
+
+`conftest.py` exports `JSON_HEADERS` (a dict) and `GET_PATHS` (a list) that dozens of
+suites import directly. The conftest comment instructs callers to "Treat it as
+immutable — spread it (`{**JSON_HEADERS, ...}`) rather than mutating it in place," but
+**nothing enforced that**. Existing tests only guard that the *sanitizer helpers*
+don't mutate their *inputs*. Under `pytest-randomly`, a test that mutated one of these
+shared containers in place would corrupt only the tests that ran *after* it — a
+failure that appears or vanishes with the random seed, i.e. an order-dependent flake.
+
+### Backend — `backend/tests/conftest.py` (new session-scoped guard)
+
+Added `_guard_shared_constant_immutability`, a `scope="session"`, `autouse=True`
+fixture that deep-copies `JSON_HEADERS`/`GET_PATHS` before the first test and
+re-compares them (reading the *current* module globals, so both in-place mutation and
+rebinding are caught) after the last. A real leak becomes one deterministic,
+seed-independent failure naming the culprit constant, instead of a downstream flake.
+Verified by temporarily injecting a mutating test: the session failed at teardown with
+the expected message.
+
+### Backend — `backend/tests/test_shared_constant_immutability.py` (new — 3 classes, 13 tests)
+
+| Test class | What it validates |
+|------------|-------------------|
+| `TestSharedConstantCanonicalValues` (6 tests) | Pins the exact value/type of `JSON_HEADERS`, `GET_PATHS` (order + no duplicates), `GREETING_TEMPLATE`, and the three CORS origin constants. |
+| `TestSpreadIdiomLeavesSharedConstantIntact` (4 tests) | Proves the prescribed `{**JSON_HEADERS, ...}` spread idiom yields a distinct object, preserves the original contents, doesn't leak copy-writes back, and that slice-copying `GET_PATHS` never mutates it. |
+| `TestGuardDetectionLogic` (3 tests) | Exercises the deep-copy-then-compare mechanism the session guard uses — snapshot diverges after in-place dict/list mutation, stays equal when the source is untouched (guard does not misfire). |
+
+### Verification
+
+- New tests pass **3×** with no flakiness; new file runs in ~0.03s.
+- Full backend suite: **1049 pass** (was 1036; +13 new tests), verified 3× under
+  `pytest-randomly` with no order-dependent failures.
+- `ruff format` + `ruff check` clean; `mypy` clean; 100% line + branch coverage
+  maintained on `app/`.
+
+---
+
 ## 2026-07-13 — QA Agent: coverage-sprint session (issue #400)
 
 Line/branch coverage is already **100%** on both stacks (backend `app/`: 1033

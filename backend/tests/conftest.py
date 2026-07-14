@@ -2,9 +2,10 @@
 Pytest configuration, fixtures, and shared test helpers.
 """
 
+import copy
 import json
 import time
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Iterator
 from datetime import datetime
 from typing import Any
 
@@ -63,6 +64,41 @@ async def async_client() -> AsyncGenerator[AsyncClient, None]:
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         yield ac
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _guard_shared_constant_immutability() -> Iterator[None]:
+    """Fail the session if any shared, mutable module-level constant is mutated.
+
+    The constants above (``JSON_HEADERS``, ``GET_PATHS``) are documented as
+    immutable and imported by dozens of suites. Under ``pytest-randomly`` the
+    file/test order changes every run, so a test that mutated one of these
+    containers *in place* would silently corrupt every test that happened to run
+    *after* it — a failure that appears or vanishes depending on the random seed
+    (the definition of a flaky test).
+
+    This session-scoped, autouse guard deep-copies the mutable shared constants
+    before any test runs and re-compares them after the last test. A leak becomes
+    a single, deterministic, seed-independent failure that names the culprit
+    constant, instead of a mysterious downstream flake. Immutable scalars
+    (``GREETING_TEMPLATE`` and the origin strings) can't be mutated in place, so
+    they don't need snapshotting.
+    """
+    snapshot = {
+        "JSON_HEADERS": copy.deepcopy(JSON_HEADERS),
+        "GET_PATHS": copy.deepcopy(GET_PATHS),
+    }
+    yield
+    # Read the *current* module globals so both in-place mutation and rebinding
+    # are caught.
+    current = {"JSON_HEADERS": JSON_HEADERS, "GET_PATHS": GET_PATHS}
+    for name, original in snapshot.items():
+        assert current[name] == original, (
+            f"shared conftest constant {name!r} changed during the test session: "
+            f"expected {original!r}, found {current[name]!r}. These constants are "
+            "immutable — spread them (e.g. {**JSON_HEADERS, 'Origin': ...}) instead "
+            "of mutating in place."
+        )
 
 
 def expected_greeting(name: str) -> str:
