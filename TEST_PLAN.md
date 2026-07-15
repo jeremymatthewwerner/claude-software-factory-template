@@ -4089,3 +4089,53 @@ makes 7 of the 8 new tests fail (the reject-contract test correctly still passes
 - New tests pass 3× with no flakiness; full backend suite: **1033 pass** (was 1025; +8 new tests).
 - `ruff format` + `ruff check` + `mypy` clean; 100% line + branch coverage maintained on `app/`.
 - **No production code changed** — this run adds regression pins only.
+
+## QA Run: Wednesday 2026-07-15 — integration-gaps (issue #407)
+
+### Context — coverage saturated; this run closes a request→response *behavior* gap
+
+`app/main.py` is at 100% line + branch coverage, so the integration-gaps focus targets an
+untested *integration behavior* rather than an uncovered line. The app registers **no** caching
+or compression middleware, yet real clients (browsers, CDNs, generated SDKs) routinely attach
+conditional-request and content-negotiation headers to every GET.
+
+### Gap — the *behavioral* neutrality of conditional/negotiation request headers was unpinned
+
+`test_regression_prevention.py` pins the **absence** of `Cache-Control` / `ETag` / `Expires`
+*response* headers (the emission side). What was never pinned is the request-side *behavior*
+those absent headers imply:
+
+- No test sent `If-None-Match` / `If-Modified-Since`, so nothing guaranteed the server never
+  short-circuits to a `304 Not Modified` — which would starve clients of the fresh per-request
+  `timestamp` these dynamic endpoints exist to serve.
+- No test sent `Accept-Encoding: gzip`, so nothing guaranteed no compression layer silently
+  compresses the body or adds `Vary: Accept-Encoding`. A `GZipMiddleware` regression would slip
+  past every existing ETag/Cache-Control assertion because GZip emits **neither** of those.
+
+### New tests — `backend/tests/test_content_negotiation_integration_gaps.py` (6 classes, 33 tests)
+
+| Test | What it validates |
+|------|-------------------|
+| `TestConditionalRequestNeverReturns304::test_if_none_match_wildcard_returns_200` (×3 paths) | `If-None-Match: *` on every GET route yields a full `200`, never `304`. |
+| `TestConditionalRequestNeverReturns304::test_if_none_match_specific_etag_returns_200` (×3) | A concrete ETag the app never minted still yields `200`. |
+| `TestConditionalRequestNeverReturns304::test_if_modified_since_future_returns_200` (×3) | A far-future `If-Modified-Since` yields `200` (no `Last-Modified` to beat). |
+| `TestConditionalRequestNeverReturns304::test_all_conditional_headers_combined_returns_200` (×3) | `If-None-Match` + `If-Modified-Since` together still yield `200`. |
+| `TestConditionalRequestServesFreshBody::*` (4 tests) | Conditional GETs return the *full, fresh* body (healthy status, 3-field version payload, greeting) with a live UTC timestamp; two back-to-back conditional GETs are *both* full `200`s (rules out warm-on-first/304-on-second). |
+| `TestConditionalRequestDoesNotBlockWrites::*` (2 tests) | Conditional headers on `POST /api/hello` never suppress body processing — the greeting is still returned. |
+| `TestAcceptEncodingDoesNotCompress::*` (4 tests ×3 paths) | A gzip-accepting GET returns no `Content-Encoding` header, a body that parses as plain JSON, a `Content-Length` equal to the uncompressed body, and no `Accept-Encoding` token in `Vary`. |
+| `TestAcceptEncodingNeutralityOnPost::test_post_hello_gzip_accept_yields_uncompressed_greeting` | `POST /api/hello` with `Accept-Encoding: gzip` returns the plain, uncompressed greeting. |
+| `TestContentNegotiationAsyncTransportParity::*` (2 tests) | Conditional-GET-returns-200 and gzip-request-uncompressed both hold over the real-ASGI async transport. |
+
+### Why this gap matters
+
+A `304`-shaped caching regression or a `GZipMiddleware` addition are both plausible future
+changes that current assertions would miss: GZip emits neither `ETag` nor `Cache-Control`, so
+the existing emission-side pins are blind to it. These behavioral pins fail loudly if either
+appears, while the async-transport parity tests catch a middleware that behaves differently on
+the async path.
+
+### Verification
+
+- New tests pass 3× with no flakiness; full backend suite: **1082 pass** (was 1049; +33 new tests).
+- `ruff format` + `ruff check` + `mypy` clean; 100% line + branch coverage maintained on `app/`.
+- **No production code changed** — this run adds integration-behavior pins only.
